@@ -1,0 +1,12 @@
+FROM node:20-bookworm-slim
+
+RUN npm install -g @quasar/cli
+
+WORKDIR /app
+
+# Le code source est monté en volume — pas de COPY.
+# node_modules vit dans un volume nommé pour persister entre les builds.
+
+EXPOSE 9000
+
+CMD ["sh", "-c", "npm install && quasar dev"]

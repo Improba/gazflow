@@ -1,0 +1,42 @@
+services:
+  back:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.back
+    container_name: gazsim-back
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./back:/app                    # code source partagé
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - back-target:/app/target        # cache de compilation
+    environment:
+      - RUST_LOG=info
+      - CARGO_HOME=/usr/local/cargo
+    working_dir: /app
+    tty: true
+
+  front:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.front
+    container_name: gazsim-front
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./front:/app                   # code source partagé
+      - front-node-modules:/app/node_modules
+    environment:
+      - NODE_ENV=development
+      - API_URL=http://back:3001
+    working_dir: /app
+    depends_on:
+      - back
+    tty: true
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  back-target:
+  front-node-modules:

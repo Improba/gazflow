@@ -1,0 +1,20 @@
+FROM rust:1.83-bookworm
+
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    curl \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# cargo-watch pour le hot-reload en dev
+RUN cargo install cargo-watch
+
+WORKDIR /app
+
+# Le code source est monté en volume — pas de COPY.
+# Le cache Cargo est dans un volume nommé pour persister entre les builds.
+
+EXPOSE 3001
+
+CMD ["cargo", "watch", "-x", "run"]

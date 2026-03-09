@@ -1,0 +1,48 @@
+[package]
+name = "gazsim-back"
+version = "0.1.0"
+edition = "2024"
+description = "OpenGasSim — Simulateur d'écoulement de gaz en réseau"
+license = "MIT"
+
+[dependencies]
+# Web framework
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+
+# Sérialisation
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Parsing XML (GasLib)
+quick-xml = { version = "0.37", features = ["serialize"] }
+
+# Graphes & algèbre linéaire
+petgraph = "0.8"
+faer = "0.22"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilitaires
+anyhow = "1"
+thiserror = "2"
+
+[dev-dependencies]
+approx = "0.5"
+insta = { version = "1", features = ["yaml"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio-test = "0.4"
+reqwest = { version = "0.12", features = ["json"] }
+
+[[bench]]
+name = "solver_bench"
+harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
