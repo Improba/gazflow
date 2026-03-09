@@ -1,4 +1,4 @@
-# OpenGasSim
+# GazSim
 
 Simulateur d'écoulement de gaz naturel en réseau, inspiré de SIMONE.
 

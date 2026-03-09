@@ -1,4 +1,4 @@
-# Fonctionnalités MVP — OpenGasSim
+# Fonctionnalités MVP — GazSim
 
 ## Inclus dans le MVP
 

@@ -1,8 +1,8 @@
-# AGENTS.md — OpenGasSim
+# AGENTS.md — GazSim
 
 ## Vue d'ensemble du projet
 
-OpenGasSim est un simulateur d'écoulement de gaz naturel en réseau, inspiré de SIMONE.
+GazSim est un simulateur d'écoulement de gaz naturel en réseau, inspiré de SIMONE.
 Architecture monorepo : backend Rust (Axum + petgraph + faer) + frontend Vue 3 / QuasarJS / CesiumJS.
 
 Le plan d'implémentation détaillé (phases, tâches, tests) est par défaut dans `temp/plans/implementation-plan.md`.

@@ -1,4 +1,4 @@
-# Validation du solveur — OpenGasSim
+# Validation du solveur — GazSim
 
 ## Cas de test analytiques
 

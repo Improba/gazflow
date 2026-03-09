@@ -1,4 +1,4 @@
-# Plan d'implémentation — OpenGasSim MVP
+# Plan d'implémentation — GazSim MVP
 
 > Note de convention : la version de travail par défaut des plans est dans `temp/plans/`.
 > `docs/plans/` est réservé aux plans partagés.
@@ -197,7 +197,7 @@ Frontend                          Backend
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│ OpenGasSim                              [▶ Start] [⏹] │
+│ GazSim                                  [▶ Start] [⏹] │
 ├──────────────────────────────────┬─────────────────────┤
 │                                  │ Simulation           │
 │                                  │ ████████░░ 80%       │

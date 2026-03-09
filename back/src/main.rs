@@ -11,7 +11,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    tracing::info!("OpenGasSim backend starting…");
+    tracing::info!("GazSim backend starting…");
 
     let network = gaslib::load_network("dat/GasLib-11.net")?;
     tracing::info!(

@@ -1,4 +1,4 @@
-# Plan d'implémentation — OpenGasSim MVP
+# Plan d'implémentation — GazSim MVP
 
 Ce dossier `temp/plans/` est désormais l'emplacement **par défaut** des plans de travail.
 

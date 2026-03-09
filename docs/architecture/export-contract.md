@@ -1,4 +1,4 @@
-# Contrat d'export des résultats — OpenGasSim (v1)
+# Contrat d'export des résultats — GazSim (v1)
 
 ## Objectif
 
@@ -55,7 +55,7 @@ afin de garantir :
 
 ### Champs obligatoires
 
-- `schema_version`: `"opengassim-export/v1"`
+- `schema_version`: `"gazsim-export/v1"`
 - `simulation`
 - `units`
 - `results`
@@ -65,7 +65,7 @@ afin de garantir :
 
 ```json
 {
-  "schema_version": "opengassim-export/v1",
+  "schema_version": "gazsim-export/v1",
   "simulation": {
     "id": "sim_2026-03-09T10-15-27Z_3f6a",
     "created_at": "2026-03-09T10:15:27Z",
@@ -197,7 +197,7 @@ Recommandations implémentation:
 
 ## Versioning
 
-- Version actuelle: `opengassim-export/v1`.
+- Version actuelle: `gazsim-export/v1`.
 - Changement **breaking** (renommage/suppression de champ) => `v2`.
 - Changement **non-breaking** (ajout de champ facultatif) => même version majeure.
 

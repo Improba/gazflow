@@ -1,4 +1,4 @@
-# Architecture — OpenGasSim
+# Architecture — GazSim
 
 ## Principes directeurs
 

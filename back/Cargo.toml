@@ -2,7 +2,7 @@
 name = "gazsim-back"
 version = "0.1.0"
 edition = "2024"
-description = "OpenGasSim — Simulateur d'écoulement de gaz en réseau"
+description = "GazSim — Simulateur d'écoulement de gaz en réseau"
 license = "MIT"
 
 [dependencies]
