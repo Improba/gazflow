@@ -6,4 +6,7 @@
 pub(crate) mod newton;
 mod steady_state;
 
-pub use steady_state::{SolverResult, solve_steady_state};
+pub use steady_state::{
+    SolverControl, SolverProgress, SolverResult, solve_steady_state, solve_steady_state_jacobi,
+    solve_steady_state_with_initial_pressures, solve_steady_state_with_progress,
+};

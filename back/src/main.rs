@@ -1,11 +1,7 @@
-mod api;
-mod gaslib;
-mod graph;
-mod solver;
-
 use std::collections::HashMap;
 use std::path::Path;
 
+use gazsim_back::{api, gaslib};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]

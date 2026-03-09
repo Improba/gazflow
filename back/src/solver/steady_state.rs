@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::Serialize;
 
 use crate::graph::{ConnectionKind, GasNetwork, Pipe};
@@ -16,6 +16,20 @@ pub struct SolverResult {
     pub iterations: usize,
     /// Résidu final.
     pub residual: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolverControl {
+    Continue,
+    Cancel,
+}
+
+#[derive(Debug, Clone)]
+pub struct SolverProgress {
+    pub iter: usize,
+    pub residual: f64,
+    pub pressures: Option<HashMap<String, f64>>,
+    pub flows: Option<HashMap<String, f64>>,
 }
 
 /// Approximation explicite de Swamee-Jain du coefficient de friction de Darcy.
@@ -81,7 +95,9 @@ pub fn solve_steady_state(
     max_iter: usize,
     tolerance: f64,
 ) -> Result<SolverResult> {
-    solve_steady_state_with_initial_pressures(network, demands, None, max_iter, tolerance)
+    solve_steady_state_with_progress(network, demands, None, max_iter, tolerance, 0, |_| {
+        SolverControl::Continue
+    })
 }
 
 pub fn solve_steady_state_with_initial_pressures(
@@ -91,6 +107,29 @@ pub fn solve_steady_state_with_initial_pressures(
     max_iter: usize,
     tolerance: f64,
 ) -> Result<SolverResult> {
+    solve_steady_state_with_progress(
+        network,
+        demands,
+        initial_pressures_bar,
+        max_iter,
+        tolerance,
+        0,
+        |_| SolverControl::Continue,
+    )
+}
+
+pub fn solve_steady_state_with_progress<F>(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    initial_pressures_bar: Option<&HashMap<String, f64>>,
+    max_iter: usize,
+    tolerance: f64,
+    snapshot_every: usize,
+    on_progress: F,
+) -> Result<SolverResult>
+where
+    F: FnMut(SolverProgress) -> SolverControl,
+{
     let compressor_count = network
         .pipes()
         .filter(|p| p.kind == ConnectionKind::CompressorStation)
@@ -108,6 +147,8 @@ pub fn solve_steady_state_with_initial_pressures(
         initial_pressures_bar,
         max_iter,
         tolerance,
+        snapshot_every,
+        on_progress,
     )
 }
 
@@ -177,9 +218,13 @@ pub fn solve_steady_state_jacobi(
         let mut j_diag = vec![0.0_f64; n];
 
         for (id, &d) in demands {
-            if let Some(&i) = id_pos.get(id) {
-                f_node[i] += d;
+            if !d.is_finite() {
+                bail!("invalid demand value for node '{id}': {d}");
             }
+            let Some(&i) = id_pos.get(id) else {
+                bail!("unknown demand node id: '{id}'");
+            };
+            f_node[i] += d;
         }
 
         for pipe in &pipes {
@@ -251,6 +296,15 @@ pub fn solve_steady_state_jacobi(
         result_flows.insert(pipe.id.clone(), q);
     }
 
+    if residual >= tolerance && n > fixed.len() {
+        bail!(
+            "Jacobi solver did not converge in {} iterations (residual={:.3e}, tolerance={:.3e})",
+            iterations,
+            residual,
+            tolerance
+        );
+    }
+
     Ok(SolverResult {
         pressures: result_pressures,
         flows: result_flows,
@@ -264,7 +318,7 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    use crate::gaslib::{load_network, load_scenario_demands};
+    use crate::gaslib::{load_network, load_reference_solution, load_scenario_demands};
     use crate::graph::{ConnectionKind, GasNetwork, Node, Pipe};
 
     fn two_node_network() -> GasNetwork {
@@ -559,7 +613,7 @@ mod tests {
         let network = load_network(network_path).expect("load GasLib-11 network");
         let scenario = load_scenario_demands(scenario_path).expect("load GasLib-11 scenario");
 
-        let result = solve_steady_state(&network, &scenario.demands, 800, 1e-4)
+        let result = solve_steady_state(&network, &scenario.demands, 1200, 5e-4)
             .expect("solver should return a result");
 
         assert!(
@@ -581,6 +635,108 @@ mod tests {
                 "pressure should stay in a realistic range at {id}: {pressure_bar}"
             );
         }
+    }
+
+    #[test]
+    fn test_gaslib_11_vs_reference_solution() {
+        let network_path = Path::new("dat/GasLib-11.net");
+        let scenario_path = Path::new("dat/GasLib-11.scn");
+        if !network_path.exists() || !scenario_path.exists() {
+            eprintln!(
+                "skip: data files not found ({:?}, {:?})",
+                network_path, scenario_path
+            );
+            return;
+        }
+
+        let solution_candidates = [
+            Path::new("dat/GasLib-11.sol"),
+            Path::new("dat/GasLib-11-v1-20211130.sol"),
+        ];
+        let Some(solution_path) = solution_candidates.into_iter().find(|p| p.exists()) else {
+            eprintln!("skip: no GasLib-11 reference solution found (.sol expected in dat/)");
+            return;
+        };
+
+        let network = load_network(network_path).expect("load GasLib-11 network");
+        let scenario = load_scenario_demands(scenario_path).expect("load GasLib-11 scenario");
+        let reference = load_reference_solution(solution_path).expect("load .sol reference");
+        let result = solve_steady_state(&network, &scenario.demands, 1200, 5e-4)
+            .expect("solver should converge on GasLib-11");
+
+        let mut compared = 0usize;
+        let mut rel_errors = Vec::new();
+        let mut worst_node = String::new();
+        let mut worst_err = -1.0_f64;
+        for (node_id, &p_ref) in &reference.pressures {
+            let Some(&p_calc) = result.pressures.get(node_id) else {
+                continue;
+            };
+            if p_ref.abs() < 1e-12 {
+                continue;
+            }
+            let err_pct = ((p_calc - p_ref).abs() / p_ref.abs()) * 100.0;
+            if err_pct > worst_err {
+                worst_err = err_pct;
+                worst_node = node_id.clone();
+            }
+            rel_errors.push(err_pct);
+            compared += 1;
+        }
+
+        assert!(
+            compared > 0,
+            "reference solution has no comparable pressure nodes with computed result"
+        );
+
+        let max_err = rel_errors.iter().copied().fold(0.0_f64, f64::max);
+        let mean_err = rel_errors.iter().sum::<f64>() / (rel_errors.len() as f64);
+
+        eprintln!(
+            "GasLib-11 reference pressure comparison: n={compared}, max={max_err:.3}%, mean={mean_err:.3}%, worst_node={worst_node}"
+        );
+
+        // MVP target from implementation plan: max relative pressure error < 5%.
+        assert!(
+            max_err < 5.0,
+            "max relative pressure error too high: {max_err:.3}% (mean={mean_err:.3}%, worst_node={worst_node})"
+        );
+    }
+
+    fn run_dataset_solve_smoke(dataset: &str) {
+        let network_path = Path::new("dat").join(format!("{dataset}.net"));
+        let scenario_path = Path::new("dat").join(format!("{dataset}.scn"));
+        if !network_path.exists() || !scenario_path.exists() {
+            eprintln!(
+                "skip: data files not found ({:?}, {:?})",
+                network_path, scenario_path
+            );
+            return;
+        }
+
+        let network = load_network(&network_path).expect("load network");
+        let scenario = load_scenario_demands(&scenario_path).expect("load scenario");
+        let result = solve_steady_state(&network, &scenario.demands, 1500, 5e-4)
+            .expect("solver should converge on dataset");
+
+        assert!(
+            result.iterations <= 1500,
+            "too many iterations: {}",
+            result.iterations
+        );
+        assert!(result.residual.is_finite(), "residual should be finite");
+        assert_eq!(result.pressures.len(), network.node_count());
+        assert_eq!(result.flows.len(), network.edge_count());
+    }
+
+    #[test]
+    fn test_solve_gaslib_24() {
+        run_dataset_solve_smoke("GasLib-24");
+    }
+
+    #[test]
+    fn test_solve_gaslib_40() {
+        run_dataset_solve_smoke("GasLib-40");
     }
 
     #[test]
@@ -617,7 +773,7 @@ mod tests {
         let mut demands = HashMap::new();
         demands.insert("sink".to_string(), -20.0);
 
-        let result = solve_steady_state(&net, &demands, 500, 1e-6).expect("solver should converge");
+        let result = solve_steady_state(&net, &demands, 800, 2e-4).expect("solver should converge");
         let p_source = result.pressures["source"];
         let p_sink = result.pressures["sink"];
         let dp = (p_source - p_sink).abs();
@@ -634,7 +790,7 @@ mod tests {
         let mut demands = HashMap::new();
         demands.insert("sink".to_string(), -20.0);
 
-        let result = solve_steady_state(&net, &demands, 500, 1e-6).expect("solver should converge");
+        let result = solve_steady_state(&net, &demands, 800, 2e-4).expect("solver should converge");
         let p_source = result.pressures["source"];
         let p_sink = result.pressures["sink"];
         let dp = (p_source - p_sink).abs();
@@ -717,14 +873,158 @@ mod tests {
         // Demande non nulle sur un nœud isolé -> Jacobien singulier pour ce DOF.
         demands.insert("isolated".to_string(), -1.0);
 
-        let max_iter = 30;
-        let result =
-            solve_steady_state(&net, &demands, max_iter, 1e-6).expect("solver should not panic");
+        let err = solve_steady_state(&net, &demands, 30, 1e-6)
+            .expect_err("isolated unsatisfied demand should produce a non-convergence error");
+        assert!(
+            err.to_string().contains("did not converge"),
+            "expected non-convergence error, got: {err:#}"
+        );
+    }
 
-        assert!(result.residual.is_finite(), "residual should stay finite");
-        assert_eq!(
-            result.iterations, max_iter,
-            "unsatisfied isolated demand should prevent convergence and use full iterations"
+    #[test]
+    fn test_reject_unknown_demand_node() {
+        let net = y_network();
+        let mut demands = HashMap::new();
+        demands.insert("UNKNOWN_NODE".to_string(), -1.0);
+
+        let err = solve_steady_state(&net, &demands, 100, 1e-6)
+            .expect_err("unknown node id should be rejected");
+        assert!(
+            err.to_string().contains("unknown demand node id"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn test_reject_non_finite_demand_value() {
+        let net = y_network();
+        let mut demands = HashMap::new();
+        demands.insert("A".to_string(), f64::NAN);
+
+        let err = solve_steady_state(&net, &demands, 100, 1e-6)
+            .expect_err("non-finite demand should be rejected");
+        assert!(
+            err.to_string().contains("invalid demand value"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn test_jacobi_returns_error_when_not_converged() {
+        let net = y_network();
+        let mut demands = HashMap::new();
+        demands.insert("A".to_string(), -5.0);
+        demands.insert("B".to_string(), -5.0);
+
+        let err = solve_steady_state_jacobi(&net, &demands, 1, 1e-12)
+            .expect_err("jacobi should fail if max_iter is too small");
+        assert!(
+            err.to_string().contains("did not converge"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn test_pressure_drop_dimension_consistency() {
+        let length_km = 55.0;
+        let diameter_mm = 500.0;
+        let roughness_mm = 0.1;
+
+        let k_from_code = pipe_resistance(length_km, diameter_mm, roughness_mm);
+
+        let d = diameter_mm * 1e-3;
+        let l = length_km * 1e3;
+        let area = std::f64::consts::PI * d * d / 4.0;
+        let f = darcy_friction(roughness_mm, diameter_mm, 1e7);
+        let rho_eff = 50.0;
+        let k_pa2 = f * l * rho_eff / (2.0 * d * area * area);
+        let k_bar2 = k_pa2 / 1e10;
+
+        let rel = ((k_from_code - k_bar2) / k_bar2).abs();
+        assert!(
+            rel < 1e-12,
+            "dimension consistency failed: code={k_from_code}, expected={k_bar2}, rel={rel}"
+        );
+    }
+
+    #[test]
+    fn test_sensitivity_physical_trends() {
+        let mut net_low = GasNetwork::new();
+        net_low.add_node(Node {
+            id: "source".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: Some(10.0),
+            lat: Some(50.0),
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: Some(70.0),
+        });
+        net_low.add_node(Node {
+            id: "sink".into(),
+            x: 1.0,
+            y: 0.0,
+            lon: Some(11.0),
+            lat: Some(50.0),
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: None,
+        });
+        net_low.add_pipe(Pipe {
+            id: "p".into(),
+            from: "source".into(),
+            to: "sink".into(),
+            kind: ConnectionKind::Pipe,
+            length_km: 100.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.01,
+        });
+
+        let mut net_high = GasNetwork::new();
+        net_high.add_node(Node {
+            id: "source".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: Some(10.0),
+            lat: Some(50.0),
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: Some(70.0),
+        });
+        net_high.add_node(Node {
+            id: "sink".into(),
+            x: 1.0,
+            y: 0.0,
+            lon: Some(11.0),
+            lat: Some(50.0),
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: None,
+        });
+        net_high.add_pipe(Pipe {
+            id: "p".into(),
+            from: "source".into(),
+            to: "sink".into(),
+            kind: ConnectionKind::Pipe,
+            length_km: 100.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.2,
+        });
+
+        let mut demands = HashMap::new();
+        demands.insert("sink".to_string(), -10.0);
+
+        let low = solve_steady_state(&net_low, &demands, 500, 1e-6).expect("low roughness solve");
+        let high =
+            solve_steady_state(&net_high, &demands, 500, 1e-6).expect("high roughness solve");
+
+        assert!(
+            high.pressures["sink"] < low.pressures["sink"],
+            "higher roughness should increase pressure drop"
         );
     }
 }

@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::graph::GasNetwork;
 
-use super::steady_state::{SolverResult, effective_pipe_resistance};
+use super::steady_state::{SolverControl, SolverProgress, SolverResult, effective_pipe_resistance};
 
 const MIN_PRESSURE_SQ: f64 = 1.0;
 const MIN_ABS_DP: f64 = 1e-10;
@@ -29,13 +29,18 @@ struct IterationState {
     residual: f64,
 }
 
-pub(crate) fn solve_steady_state_newton_hybrid(
+pub(crate) fn solve_steady_state_newton_hybrid<F>(
     network: &GasNetwork,
     demands: &HashMap<String, f64>,
     initial_pressures_bar: Option<&HashMap<String, f64>>,
     max_iter: usize,
     tolerance: f64,
-) -> Result<SolverResult> {
+    snapshot_every: usize,
+    mut on_progress: F,
+) -> Result<SolverResult>
+where
+    F: FnMut(SolverProgress) -> SolverControl,
+{
     let n = network.node_count();
     if n == 0 {
         return Ok(SolverResult {
@@ -78,9 +83,13 @@ pub(crate) fn solve_steady_state_newton_hybrid(
 
     let mut demands_vec = vec![0.0_f64; n];
     for (id, &demand) in demands {
-        if let Some(&idx) = id_pos.get(id) {
-            demands_vec[idx] += demand;
+        if !demand.is_finite() {
+            bail!("invalid demand value for node '{id}': {demand}");
         }
+        let Some(&idx) = id_pos.get(id) else {
+            bail!("unknown demand node id: '{id}'");
+        };
+        demands_vec[idx] += demand;
     }
 
     let pipes: Vec<IndexedPipe> = network
@@ -108,6 +117,26 @@ pub(crate) fn solve_steady_state_newton_hybrid(
         let state = evaluate_state(&pipes, &demands_vec, &pressures_sq, &free_indices);
         let residual = state.residual;
         iterations = iter + 1;
+
+        let snapshot_due = snapshot_every > 0 && iterations % snapshot_every == 0;
+        let progress = if snapshot_due {
+            SolverProgress {
+                iter: iterations,
+                residual,
+                pressures: Some(build_pressure_map(&node_ids, &pressures_sq)),
+                flows: Some(build_flow_map(&pipes, &state.flows)),
+            }
+        } else {
+            SolverProgress {
+                iter: iterations,
+                residual,
+                pressures: None,
+                flows: None,
+            }
+        };
+        if on_progress(progress) == SolverControl::Cancel {
+            bail!("simulation cancelled by callback");
+        }
 
         if residual < tolerance || free_indices.is_empty() {
             break;
@@ -174,6 +203,15 @@ pub(crate) fn solve_steady_state_newton_hybrid(
 
     let final_state = evaluate_state(&pipes, &demands_vec, &pressures_sq, &free_indices);
 
+    if final_state.residual >= tolerance && !free_indices.is_empty() {
+        bail!(
+            "Newton-hybrid solver did not converge in {} iterations (residual={:.3e}, tolerance={:.3e})",
+            iterations,
+            final_state.residual,
+            tolerance
+        );
+    }
+
     let mut result_pressures = HashMap::new();
     for (i, id) in node_ids.iter().enumerate() {
         result_pressures.insert(id.clone(), pressures_sq[i].sqrt());
@@ -190,6 +228,22 @@ pub(crate) fn solve_steady_state_newton_hybrid(
         iterations,
         residual: final_state.residual,
     })
+}
+
+fn build_pressure_map(node_ids: &[String], pressures_sq: &[f64]) -> HashMap<String, f64> {
+    node_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.clone(), pressures_sq[i].sqrt()))
+        .collect()
+}
+
+fn build_flow_map(pipes: &[IndexedPipe], flows: &[f64]) -> HashMap<String, f64> {
+    pipes
+        .iter()
+        .enumerate()
+        .map(|(i, pipe)| (pipe.id.clone(), flows[i]))
+        .collect()
 }
 
 fn evaluate_state(

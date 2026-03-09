@@ -1,0 +1,184 @@
+---
+source: src/gaslib/parser.rs
+expression: snapshot
+---
+node_count: 11
+edge_count: 11
+nodes:
+  - id: N01
+    x: 400
+    y: 0
+    lon: ~
+    lat: ~
+    height_m: 0
+    pressure_lower_bar: 40
+    pressure_upper_bar: 70
+    pressure_fixed_bar: ~
+  - id: N02
+    x: 600
+    y: 100
+    lon: ~
+    lat: ~
+    height_m: 0
+    pressure_lower_bar: 40
+    pressure_upper_bar: 70
+    pressure_fixed_bar: ~
+  - id: N03
+    x: 600
+    y: -100
+    lon: ~
+    lat: ~
+    height_m: 0
+    pressure_lower_bar: 40
+    pressure_upper_bar: 70
+    pressure_fixed_bar: ~
+  - id: N04
+    x: 800
+    y: 0
+    lon: ~
+    lat: ~
+    height_m: 0
+    pressure_lower_bar: 40
+    pressure_upper_bar: 70
+    pressure_fixed_bar: ~
+  - id: N05
+    x: 1000
+    y: 0
+    lon: ~
+    lat: ~
+    height_m: 0
+    pressure_lower_bar: 40
+    pressure_upper_bar: 70
+    pressure_fixed_bar: ~
+  - id: entry01
+    x: 0
+    y: 0
+    lon: ~
+    lat: ~
+    height_m: 0
+    pressure_lower_bar: 40
+    pressure_upper_bar: 70
+    pressure_fixed_bar: ~
+  - id: entry02
+    x: 600
+    y: -300
+    lon: ~
+    lat: ~
+    height_m: 0
+    pressure_lower_bar: 40
+    pressure_upper_bar: 70
+    pressure_fixed_bar: ~
+  - id: entry03
+    x: 200
+    y: 0
+    lon: ~
+    lat: ~
+    height_m: 0
+    pressure_lower_bar: 40
+    pressure_upper_bar: 70
+    pressure_fixed_bar: ~
+  - id: exit01
+    x: 600
+    y: 300
+    lon: ~
+    lat: ~
+    height_m: 0
+    pressure_lower_bar: 40
+    pressure_upper_bar: 70
+    pressure_fixed_bar: ~
+  - id: exit02
+    x: 1141
+    y: 141
+    lon: ~
+    lat: ~
+    height_m: 0
+    pressure_lower_bar: 40
+    pressure_upper_bar: 60
+    pressure_fixed_bar: ~
+  - id: exit03
+    x: 1141
+    y: -141
+    lon: ~
+    lat: ~
+    height_m: 0
+    pressure_lower_bar: 40
+    pressure_upper_bar: 60
+    pressure_fixed_bar: ~
+pipes:
+  - id: CS01_entry03_N01
+    from: entry03
+    to: N01
+    kind: compressorStation
+    length_km: 0.001
+    diameter_mm: 1000
+    roughness_mm: 0.012
+  - id: CS02_N04_N05
+    from: N04
+    to: N05
+    kind: compressorStation
+    length_km: 0.001
+    diameter_mm: 1000
+    roughness_mm: 0.012
+  - id: V01_N01_N03
+    from: N01
+    to: N03
+    kind: valve
+    length_km: 0.001
+    diameter_mm: 1000
+    roughness_mm: 0.012
+  - id: pipe01_entry01_entry03
+    from: entry01
+    to: entry03
+    kind: pipe
+    length_km: 55
+    diameter_mm: 500
+    roughness_mm: 0.1
+  - id: pipe02_N01_N02
+    from: N01
+    to: N02
+    kind: pipe
+    length_km: 55
+    diameter_mm: 500
+    roughness_mm: 0.1
+  - id: pipe03_entry02_N03
+    from: entry02
+    to: N03
+    kind: pipe
+    length_km: 55
+    diameter_mm: 500
+    roughness_mm: 0.1
+  - id: pipe04_N02_exit01
+    from: N02
+    to: exit01
+    kind: pipe
+    length_km: 55
+    diameter_mm: 500
+    roughness_mm: 0.1
+  - id: pipe05_N02_N04
+    from: N02
+    to: N04
+    kind: pipe
+    length_km: 55
+    diameter_mm: 500
+    roughness_mm: 0.1
+  - id: pipe06_N03_N04
+    from: N03
+    to: N04
+    kind: pipe
+    length_km: 55
+    diameter_mm: 500
+    roughness_mm: 0.1
+  - id: pipe07_N05_exit02
+    from: N05
+    to: exit02
+    kind: pipe
+    length_km: 55
+    diameter_mm: 500
+    roughness_mm: 0.1
+  - id: pipe08_N05_exit03
+    from: N05
+    to: exit03
+    kind: pipe
+    length_km: 55
+    diameter_mm: 500
+    roughness_mm: 0.1

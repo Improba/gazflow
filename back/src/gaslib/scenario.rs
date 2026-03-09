@@ -196,4 +196,15 @@ mod tests {
             "scenario should be globally balanced, got sum={sum}"
         );
     }
+
+    #[test]
+    fn test_units_scn_to_si() {
+        let v1 = convert_flow_to_m3_per_s(1.0, Some("1000m_cube_per_hour"));
+        let v2 = convert_flow_to_m3_per_s(3600.0, Some("m_cube_per_hour"));
+        let v3 = convert_flow_to_m3_per_s(1.0, Some("m_cube_per_second"));
+
+        assert!((v1 - (1000.0 / 3600.0)).abs() < 1e-12);
+        assert!((v2 - 1.0).abs() < 1e-12);
+        assert!((v3 - 1.0).abs() < 1e-12);
+    }
 }

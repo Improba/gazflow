@@ -222,6 +222,15 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Serialize;
+
+    #[derive(Debug, Serialize)]
+    struct NetworkSnapshot {
+        node_count: usize,
+        edge_count: usize,
+        nodes: Vec<crate::graph::Node>,
+        pipes: Vec<crate::graph::Pipe>,
+    }
 
     #[test]
     fn test_parse_minimal_xml() {
@@ -376,6 +385,30 @@ mod tests {
         assert_eq!(pipes, 8, "GasLib-11 should contain 8 pipes");
         assert_eq!(valves, 1, "GasLib-11 should contain 1 valve");
         assert_eq!(compressors, 2, "GasLib-11 should contain 2 compressors");
+    }
+
+    #[test]
+    fn test_gaslib_11_snapshot() {
+        let path = Path::new("dat/GasLib-11.net");
+        if !path.exists() {
+            eprintln!("skip: {:?} not found", path);
+            return;
+        }
+
+        let net = load_network(path).expect("load GasLib-11");
+        let mut nodes: Vec<_> = net.nodes().cloned().collect();
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut pipes: Vec<_> = net.pipes().cloned().collect();
+        pipes.sort_by(|a, b| a.id.cmp(&b.id));
+
+        let snapshot = NetworkSnapshot {
+            node_count: net.node_count(),
+            edge_count: net.edge_count(),
+            nodes,
+            pipes,
+        };
+
+        insta::assert_yaml_snapshot!("gaslib_11_network", snapshot);
     }
 
     #[test]

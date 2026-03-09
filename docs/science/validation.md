@@ -53,3 +53,37 @@ Les résultats GasLib sont documentés dans :
 > Schmidt, M. et al. (2017). "GasLib — A Library of Gas Network Instances." *Data*, 2(4), 40.
 
 Des solutions de référence seront comparées lorsque disponibles.
+
+---
+
+## Rapport protocole scientifique v1 (intermédiaire)
+
+- Date: 2026-03-09
+- Portée: backend Rust (`back/`) sur branche locale de travail
+- Commandes exécutées: suite T1..T8 + T10 (T9 dépend d'un fichier `.sol` non présent localement)
+
+### Statut T1..T10
+
+| ID | Test | Statut | Note |
+|---|---|---|---|
+| T1 | Friction Darcy en turbulent | ✅ Pass | `darcy_friction_turbulent` OK |
+| T2 | Résistance de tuyau positive/finie | ✅ Pass | `pipe_resistance_positive` OK |
+| T3 | Cas analytique 2 nœuds | ✅ Pass | `steady_state_two_nodes` OK |
+| T4 | Réseau en Y: conservation locale | ✅ Pass | `steady_state_y_network_mass_conservation` OK |
+| T5 | Hybride vs Jacobi | ✅ Pass | `test_newton_vs_jacobi_same_result` OK |
+| T6 | Sanity check GasLib-11 | ✅ Pass | `test_solve_gaslib_11` OK (si données présentes) |
+| T7 | Conversion unités scénario -> SI | ✅ Pass | `test_units_scn_to_si` OK |
+| T8 | Cohérence dimensionnelle chute de pression | ✅ Pass | `test_pressure_drop_dimension_consistency` OK |
+| T9 | Validation vs référence `.sol` | ⏸️ Bloqué données | test ajouté (`test_gaslib_11_vs_reference_solution`) avec skip propre si `.sol` absent |
+| T10 | Sensibilité physique (rugosité, Z, T) | ✅ Pass | `test_sensitivity_physical_trends` OK |
+
+### Métriques T9 (référence `.sol`)
+
+- Max erreur pression: N/A (fichier `.sol` absent localement)
+- Erreur moyenne: N/A
+- Nœud le plus en écart: N/A
+
+### Décision Go/No-Go
+
+- **No-Go strict sortie Phase 2 complète** tant que T9 ne peut pas être exécuté.
+- **Go technique conditionnel MVP** sur la robustesse interne (T1-T8 + T10 passants), en attente de jeu de référence `.sol` pour qualification scientifique complète.

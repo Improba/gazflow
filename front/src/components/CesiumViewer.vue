@@ -1,5 +1,23 @@
 <template>
-  <div ref="cesiumContainer" class="cesium-container" />
+  <div class="viewer-root">
+    <div ref="canvasArea" class="canvas-area">
+      <div ref="cesiumContainer" class="canvas-element cesium-container" />
+      <q-btn
+        dense
+        round
+        icon="speed"
+        color="dark"
+        class="perf-toggle"
+        @click="debugOverlayEnabled = !debugOverlayEnabled"
+      />
+      <div v-if="debugOverlayEnabled" class="perf-overlay">
+        <div><b>Debug perf</b></div>
+        <div>FPS: {{ fps.toFixed(1) }}</div>
+        <div>Maj couleurs: {{ renderUpdateMs.toFixed(2) }} ms</div>
+        <div>Entites: {{ entityCount }}</div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -18,9 +36,16 @@ import { useSimulateStore } from 'src/stores/simulate';
 
 const cesiumContainer = ref<HTMLElement>();
 let viewer: Viewer | null = null;
+let postRenderCb: (() => void) | null = null;
 
 const networkStore = useNetworkStore();
 const simulateStore = useSimulateStore();
+const debugOverlayEnabled = ref(false);
+const fps = ref(0);
+const renderUpdateMs = ref(0);
+const entityCount = ref(0);
+const canvasArea = ref<HTMLElement>();
+let resizeObserver: ResizeObserver | null = null;
 
 onMounted(async () => {
   if (!cesiumContainer.value) return;
@@ -40,18 +65,49 @@ onMounted(async () => {
 
   await networkStore.fetchNetwork();
   renderNetwork();
+
+  let frames = 0;
+  let lastSampleAt = performance.now();
+  postRenderCb = () => {
+    frames += 1;
+    const now = performance.now();
+    if (now - lastSampleAt >= 500) {
+      fps.value = (frames * 1000) / (now - lastSampleAt);
+      frames = 0;
+      lastSampleAt = now;
+    }
+  };
+  viewer.scene.postRender.addEventListener(postRenderCb);
+
+  if (canvasArea.value) {
+    resizeObserver = new ResizeObserver(() => {
+      viewer?.resize();
+      viewer?.scene.requestRender();
+    });
+    resizeObserver.observe(canvasArea.value);
+  }
 });
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+  if (viewer && postRenderCb) {
+    viewer.scene.postRender.removeEventListener(postRenderCb);
+  }
+  postRenderCb = null;
   viewer?.destroy();
   viewer = null;
 });
 
-watch(() => simulateStore.result, () => {
-  if (simulateStore.result) {
-    updateColors();
-  }
-});
+watch(
+  () => simulateStore.liveFlows,
+  () => {
+    if (Object.keys(simulateStore.liveFlows).length > 0) {
+      updateColors();
+    }
+  },
+  { deep: true },
+);
 
 function renderNetwork() {
   if (!viewer) return;
@@ -77,7 +133,12 @@ function renderNetwork() {
   for (const pipe of pipes) {
     const fromNode = nodes.find((n) => n.id === pipe.from);
     const toNode = nodes.find((n) => n.id === pipe.to);
-    if (!fromNode?.lon || !fromNode?.lat || !toNode?.lon || !toNode?.lat) continue;
+    if (
+      fromNode?.lon == null ||
+      fromNode?.lat == null ||
+      toNode?.lon == null ||
+      toNode?.lat == null
+    ) continue;
 
     viewer.entities.add({
       polyline: {
@@ -99,12 +160,18 @@ function renderNetwork() {
   }
 
   viewer.zoomTo(viewer.entities);
+  entityCount.value = viewer.entities.values.length;
 }
 
 function updateColors() {
   // Colorer les tuyaux selon le débit après simulation
-  if (!viewer || !simulateStore.result) return;
-  const flows = simulateStore.result.flows;
+  if (!viewer) return;
+  const startedAt = performance.now();
+  const flows =
+    Object.keys(simulateStore.liveFlows).length > 0
+      ? simulateStore.liveFlows
+      : (simulateStore.result?.flows ?? {});
+  if (Object.keys(flows).length === 0) return;
   const maxFlow = Math.max(...Object.values(flows).map(Math.abs), 1);
 
   viewer.entities.values.forEach((entity) => {
@@ -121,5 +188,51 @@ function updateColors() {
       color,
     }) as never;
   });
+  renderUpdateMs.value = performance.now() - startedAt;
 }
 </script>
+
+<style scoped>
+.viewer-root {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.canvas-area {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.canvas-element {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.perf-toggle {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+}
+
+.perf-overlay {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  min-width: 170px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(18, 18, 18, 0.88);
+  color: #d9f3ff;
+  font-size: 12px;
+  line-height: 1.5;
+  z-index: 10;
+  border: 1px solid rgba(120, 180, 220, 0.45);
+}
+</style>

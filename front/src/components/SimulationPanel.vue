@@ -2,14 +2,39 @@
   <div>
     <div class="text-h6 q-mb-sm">Simulation</div>
 
-    <q-btn
-      label="Lancer la simulation"
-      color="primary"
-      icon="play_arrow"
-      class="full-width q-mb-md"
-      :loading="simulateStore.loading"
-      @click="simulateStore.runSimulation()"
-    />
+    <div class="row q-col-gutter-sm q-mb-md">
+      <div class="col">
+        <q-btn
+          label="Lancer"
+          color="primary"
+          icon="play_arrow"
+          class="full-width"
+          :loading="simulateStore.loading"
+          @click="simulateStore.runSimulation()"
+        />
+      </div>
+      <div class="col">
+        <q-btn
+          label="Stop"
+          color="negative"
+          icon="stop"
+          class="full-width"
+          :disable="!simulateStore.loading"
+          @click="simulateStore.cancelSimulation()"
+        />
+      </div>
+    </div>
+
+    <ProgressBar />
+
+    <q-banner
+      v-if="simulateStore.errorMessage"
+      dense
+      rounded
+      class="bg-red-10 text-red-2 q-mb-md"
+    >
+      {{ simulateStore.errorMessage }}
+    </q-banner>
 
     <template v-if="simulateStore.result">
       <div class="text-subtitle2 q-mb-xs">
@@ -48,13 +73,14 @@
       </q-list>
     </template>
 
-    <div v-else class="text-caption text-grey-5 q-mt-md">
-      Cliquez sur "Lancer" pour exécuter le solveur.
-    </div>
+    <q-separator dark class="q-my-sm" />
+    <LogPanel />
   </div>
 </template>
 
 <script setup lang="ts">
+import LogPanel from 'src/components/LogPanel.vue';
+import ProgressBar from 'src/components/ProgressBar.vue';
 import { useSimulateStore } from 'src/stores/simulate';
 
 const simulateStore = useSimulateStore();
