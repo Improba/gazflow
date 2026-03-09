@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.back
-    container_name: gazsim-back
+    container_name: gazflow-back
     ports:
       - "3001:3001"
     volumes:
@@ -21,7 +21,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.front
-    container_name: gazsim-front
+    container_name: gazflow-front
     ports:
       - "9000:9000"
     volumes:

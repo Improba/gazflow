@@ -1,8 +1,8 @@
 [package]
-name = "gazsim-back"
+name = "gazflow-back"
 version = "0.1.0"
 edition = "2024"
-description = "GazSim — Simulateur d'écoulement de gaz en réseau"
+description = "GazFlow — Simulateur d'écoulement de gaz en réseau"
 license = "MIT"
 
 [dependencies]

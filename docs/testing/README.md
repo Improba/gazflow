@@ -10,7 +10,7 @@ Le protocole de validation scientifique détaillé est maintenu dans
 
 ## Commandes recommandées
 
-Depuis la racine `gazsim/` :
+Depuis la racine du projet :
 
 ```bash
 ./scripts/back-test.sh     # tests backend Rust

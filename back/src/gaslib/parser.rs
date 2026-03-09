@@ -287,7 +287,7 @@ mod tests {
   </connections>
 </network>"#;
 
-        let dir = std::env::temp_dir().join("gazsim_test_xml");
+        let dir = std::env::temp_dir().join("gazflow_test_xml");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test_connections.net");
         std::fs::write(&path, xml).unwrap();
@@ -342,7 +342,7 @@ mod tests {
   </connections>
 </network>"#;
 
-        let dir = std::env::temp_dir().join("gazsim_test_xml");
+        let dir = std::env::temp_dir().join("gazflow_test_xml");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test_child_values.net");
         std::fs::write(&path, xml).unwrap();
@@ -424,7 +424,7 @@ mod tests {
   </connections>
 </network>"#;
 
-        let dir = std::env::temp_dir().join("gazsim_test_xml");
+        let dir = std::env::temp_dir().join("gazflow_test_xml");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.net");
         std::fs::write(&path, xml).unwrap();

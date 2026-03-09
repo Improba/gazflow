@@ -1,6 +1,6 @@
-# Plan d'implémentation — GazSim MVP
+# Plan d'implémentation — GazFlow MVP
 
-> Note de convention : la version de travail par défaut des plans est dans `temp/plans/`.
+> Note de convention : la version de travail locale des plans est dans `docs/temps/plans/` (non versionnée).
 > `docs/plans/` est réservé aux plans partagés.
 
 ## Objectif
@@ -251,7 +251,7 @@ Frontend                          Backend
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│ GazSim                                  [▶ Start] [⏹] │
+│ GazFlow                                 [▶ Start] [⏹] │
 ├──────────────────────────────────┬─────────────────────┤
 │                                  │ Simulation           │
 │                                  │ ████████░░ 80%       │

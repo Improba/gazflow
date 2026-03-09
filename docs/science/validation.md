@@ -1,4 +1,4 @@
-# Validation du solveur — GazSim
+# Validation du solveur — GazFlow
 
 ## Cas de test analytiques
 

@@ -1,4 +1,4 @@
-# AGENTS.md — GazSim
+# AGENTS.md — GazFlow
 
 Ce fichier définit uniquement les règles de contribution pour agents/assistants.
 Les procédures d'exécution détaillées (setup, scripts, tests) sont dans les READMEs.
@@ -7,7 +7,8 @@ Les procédures d'exécution détaillées (setup, scripts, tests) sont dans les 
 
 - Setup et scripts: `README.md`
 - Exécution des tests: `docs/testing/README.md`
-- Priorités projet et protocole scientifique détaillé: `docs/plans/implementation-plan.md`
+- Priorités projet et protocole scientifique détaillé (partagé): `docs/plans/implementation-plan.md`
+- Plans/brouillons locaux non versionnés: `docs/temps/`
 - Modèle physique / équations: `docs/science/equations.md`
 
 ## Règles de contribution
@@ -18,6 +19,7 @@ Les procédures d'exécution détaillées (setup, scripts, tests) sont dans les 
 4. **Si logique physique modifiée**: mettre à jour la doc scientifique et les tests associés.
 5. **Si tâches plan impactées**: mettre à jour le statut dans `docs/plans/implementation-plan.md`.
 6. **Ne jamais versionner les données GasLib** dans `back/dat/`.
+7. **Fichiers temporaires de plan**: utiliser `docs/temps/` (contenu local ignoré par git).
 
 ## Conventions techniques minimales
 

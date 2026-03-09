@@ -1,4 +1,4 @@
-# Architecture — GazSim
+# Architecture — GazFlow
 
 ## Principes directeurs
 
@@ -207,7 +207,7 @@ cd back && cargo build --release
 cd front && quasar build
 
 # Le binaire Rust sert à la fois l'API et les fichiers statiques
-./target/release/gazsim-back
+./target/release/gazflow-back
 # :3001/api/*      → API REST + WebSocket
 # :3001/*          → fichiers statiques Quasar (tower-http::fs)
 ```

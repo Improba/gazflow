@@ -1,4 +1,4 @@
-# Équations physiques — GazSim
+# Équations physiques — GazFlow
 
 ## 1. Écoulement de gaz en conduite
 

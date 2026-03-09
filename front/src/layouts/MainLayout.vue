@@ -3,7 +3,7 @@
     <q-header elevated class="bg-dark">
       <q-toolbar>
         <q-toolbar-title class="text-weight-bold">
-          GazSim
+          GazFlow
         </q-toolbar-title>
         <q-btn flat round icon="refresh" @click="simulateStore.runSimulation()" />
         <q-btn flat round icon="info" @click="showInfo = true" />
@@ -17,7 +17,7 @@
     <q-dialog v-model="showInfo">
       <q-card style="min-width: 350px">
         <q-card-section>
-          <div class="text-h6">GazSim</div>
+          <div class="text-h6">GazFlow</div>
         </q-card-section>
         <q-card-section>
           Simulateur d'écoulement de gaz en réseau. Données : GasLib.

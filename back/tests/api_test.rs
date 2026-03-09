@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use futures_util::{SinkExt, StreamExt};
-use gazsim_back::api;
-use gazsim_back::graph::{ConnectionKind, GasNetwork, Node, Pipe};
+use gazflow_back::api;
+use gazflow_back::graph::{ConnectionKind, GasNetwork, Node, Pipe};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};

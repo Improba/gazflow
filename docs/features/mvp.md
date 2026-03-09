@@ -1,4 +1,4 @@
-# Fonctionnalités MVP — GazSim
+# Fonctionnalités MVP — GazFlow
 
 ## Inclus dans le MVP
 

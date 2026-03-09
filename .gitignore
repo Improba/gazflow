@@ -1,5 +1,4 @@
 # === Monorepo: fichiers non versionnés ===
-docs/temp/
 back/dat/
 
 # === Rust ===

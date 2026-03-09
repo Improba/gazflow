@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use gazsim_back::{api, gaslib};
+use gazflow_back::{api, gaslib};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    tracing::info!("GazSim backend starting…");
+    tracing::info!("GazFlow backend starting…");
 
     let network = gaslib::load_network("dat/GasLib-11.net")?;
     tracing::info!(

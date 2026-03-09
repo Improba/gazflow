@@ -9,7 +9,7 @@ describe('buildWsUrlForOrigin', () => {
   });
 
   it('maps https origin to wss url', () => {
-    expect(buildWsUrlForOrigin('https://gazsim.example.com', '/api/ws/sim'))
-      .toBe('wss://gazsim.example.com/api/ws/sim');
+    expect(buildWsUrlForOrigin('https://gazflow.example.com', '/api/ws/sim'))
+      .toBe('wss://gazflow.example.com/api/ws/sim');
   });
 });

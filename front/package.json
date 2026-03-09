@@ -1,8 +1,8 @@
 {
-  "name": "gazsim-front",
+  "name": "gazflow-front",
   "version": "0.1.0",
   "private": true,
-  "description": "GazSim — Visualisation CesiumJS du réseau gazier",
+  "description": "GazFlow — Visualisation CesiumJS du réseau gazier",
   "type": "module",
   "scripts": {
     "dev": "quasar dev",

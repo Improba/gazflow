@@ -9,7 +9,7 @@ ROOT="$SCRIPT_DIR/.."
 cd "$ROOT"
 
 echo "========================================="
-echo "  GazSim CI (Docker)"
+echo "  GazFlow CI (Docker)"
 echo "========================================="
 
 echo ""

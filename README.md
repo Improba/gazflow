@@ -1,4 +1,4 @@
-# GazSim
+# GazFlow
 
 Simulateur d'écoulement de gaz naturel en réseau, inspiré de SIMONE.
 
@@ -71,5 +71,5 @@ sont visibles sur l'hôte et versionnées par git.
 - [Architecture](docs/architecture/overview.md)
 - [Contrat d'export des résultats](docs/architecture/export-contract.md)
 - [Équations physiques](docs/science/equations.md)
-- [Plan d'implémentation (travail local)](temp/plans/implementation-plan.md)
+- [Plan d'implémentation (partagé)](docs/plans/implementation-plan.md)
 - [Fonctionnalités MVP](docs/features/mvp.md)
