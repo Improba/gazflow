@@ -3,22 +3,26 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::{
-    Router,
-    Json,
-    extract::State,
-    routing::get,
-};
+use axum::{Json, Router, extract::State, routing::get};
 use serde::Serialize;
 use tower_http::cors::CorsLayer;
 
 use crate::graph::GasNetwork;
 use crate::solver;
 
-type SharedNetwork = Arc<GasNetwork>;
+#[derive(Clone)]
+struct AppState {
+    network: Arc<GasNetwork>,
+    default_demands: Arc<HashMap<String, f64>>,
+}
 
-pub fn create_router(network: GasNetwork) -> Router {
-    let shared: SharedNetwork = Arc::new(network);
+type SharedState = Arc<AppState>;
+
+pub fn create_router(network: GasNetwork, default_demands: HashMap<String, f64>) -> Router {
+    let shared: SharedState = Arc::new(AppState {
+        network: Arc::new(network),
+        default_demands: Arc::new(default_demands),
+    });
 
     Router::new()
         .route("/api/health", get(health))
@@ -57,8 +61,9 @@ struct PipeDto {
     diameter_mm: f64,
 }
 
-async fn get_network(State(net): State<SharedNetwork>) -> Json<NetworkResponse> {
-    let nodes: Vec<NodeDto> = net
+async fn get_network(State(state): State<SharedState>) -> Json<NetworkResponse> {
+    let nodes: Vec<NodeDto> = state
+        .network
         .nodes()
         .map(|n| NodeDto {
             id: n.id.clone(),
@@ -68,7 +73,8 @@ async fn get_network(State(net): State<SharedNetwork>) -> Json<NetworkResponse> 
         })
         .collect();
 
-    let pipes: Vec<PipeDto> = net
+    let pipes: Vec<PipeDto> = state
+        .network
         .pipes()
         .map(|p| PipeDto {
             id: p.id.clone(),
@@ -80,21 +86,23 @@ async fn get_network(State(net): State<SharedNetwork>) -> Json<NetworkResponse> 
         .collect();
 
     Json(NetworkResponse {
-        node_count: net.node_count(),
-        edge_count: net.edge_count(),
+        node_count: state.network.node_count(),
+        edge_count: state.network.edge_count(),
         nodes,
         pipes,
     })
 }
 
-async fn run_simulation(State(net): State<SharedNetwork>) -> Json<solver::SolverResult> {
-    let demands = HashMap::new();
-    let result = solver::solve_steady_state(&net, &demands, 200, 1e-4)
-        .unwrap_or_else(|_| solver::SolverResult {
-            pressures: HashMap::new(),
-            flows: HashMap::new(),
-            iterations: 0,
-            residual: f64::MAX,
+async fn run_simulation(State(state): State<SharedState>) -> Json<solver::SolverResult> {
+    let demands = (*state.default_demands).clone();
+    let result =
+        solver::solve_steady_state(&state.network, &demands, 200, 1e-4).unwrap_or_else(|_| {
+            solver::SolverResult {
+                pressures: HashMap::new(),
+                flows: HashMap::new(),
+                iterations: 0,
+                residual: f64::MAX,
+            }
         });
 
     Json(result)

@@ -1,75 +1,55 @@
 # Testing — Comment exécuter les tests
 
-Ce dossier centralise la procédure de test du projet GazSim.
+Ce document complète le `README.md` avec un focus exécution des tests.
+Le setup de l'environnement (Docker, lancement des services, scripts) reste documenté dans `README.md`.
 
-## Prérequis
+## Validation scientifique
 
-- Docker et Docker Compose installés.
-- Services lancés via les scripts du projet.
+Le protocole de validation scientifique détaillé est maintenu dans
+`docs/plans/implementation-plan.md` (Phase 2).
 
-## Démarrage rapide
+## Commandes recommandées
 
 Depuis la racine `gazsim/` :
 
 ```bash
-./scripts/dev.sh
+./scripts/back-test.sh     # tests backend Rust
+./scripts/front-test.sh    # tests frontend
+./scripts/ci.sh            # build + tests complets
 ```
 
-Cette commande lance les services backend et frontend dans les conteneurs.
+## Tests backend
 
-## Exécuter les tests backend
-
-Commande recommandée :
-
-```bash
-./scripts/back-test.sh
-```
-
-Alternative en shell conteneur backend :
+Exécution complète :
 
 ```bash
 ./scripts/back-shell.sh
 cargo test
 ```
 
-Pour un test ciblé :
+Test ciblé :
 
 ```bash
 cargo test steady_state_two_nodes
 ```
 
-## Exécuter les tests frontend
+## Tests frontend
 
-Commande recommandée :
-
-```bash
-./scripts/front-test.sh
-```
-
-Alternative en shell conteneur frontend :
+Exécution complète :
 
 ```bash
 ./scripts/front-shell.sh
 npm test
 ```
 
-Selon la configuration du front, vous pouvez aussi utiliser :
+Alternative fréquente :
 
 ```bash
 npx vitest run
 ```
 
-## Exécuter la CI locale complète
-
-Pour valider build + tests en une seule commande :
-
-```bash
-./scripts/ci.sh
-```
-
 ## Bonnes pratiques
 
-- Lancer les tests backend après chaque modification dans `back/`.
-- Lancer les tests frontend après chaque modification dans `front/`.
-- Exécuter `./scripts/ci.sh` avant de finaliser une livraison.
-- Éviter d'exécuter `cargo`/`npm` directement sur l'hôte : utiliser les conteneurs.
+- Exécuter au minimum les tests ciblés du scope modifié.
+- Exécuter `./scripts/ci.sh` avant merge/livraison.
+- Garder les commandes `cargo`/`npm` dans les conteneurs.

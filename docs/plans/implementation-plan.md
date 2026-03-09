@@ -84,6 +84,8 @@ cargo test test_parse_scenario_scn     # T1-5 : demandes parsées
 ### Fondements mathématiques
 
 Voir `docs/science/equations.md`.
+Le protocole de validation scientifique détaillé est défini dans cette phase
+(section "Protocole de validation scientifique détaillé (v1)").
 
 > **⚠️ Scaling : la tâche 2.4 (Newton complet avec Jacobien creux) est un prérequis
 > pour la Phase 3.** Le solveur Jacobi diagonal (2.3) converge sur GasLib-11 mais
@@ -109,6 +111,7 @@ Voir `docs/science/equations.md`.
 | 2.13 | **Warm-start : initialiser Newton depuis la solution précédente** | Backend | `solver/steady_state.rs` | ⬜ |
 | 2.14 | **Modélisation valves (K≈0 ouvert, arc supprimé fermé) et shortPipes** | Backend | `solver/steady_state.rs`, `graph/mod.rs` | ⬜ |
 | 2.15 | **Compresseurs : ignorer gracieusement (log warning, traiter comme pipe K≈0)** | Backend | `solver/steady_state.rs` | ⬜ |
+| 2.16 | **Exécuter le protocole de validation scientifique v1 (T1→T10) et publier un rapport Go/No-Go** | Science + Backend | `docs/plans/implementation-plan.md`, `docs/science/validation.md` | ⬜ |
 
 ### Tests automatiques
 
@@ -126,7 +129,58 @@ cargo test test_newton_jacobi_hybrid_fallback        # T2-10 ⬜ (fallback Jacob
 cargo test test_warm_start_fewer_iterations          # T2-11 ⬜ (warm-start converge en ≤ 5 iter vs ~20 cold)
 cargo test test_valve_open_zero_resistance            # T2-12 ⬜ (valve ouverte : ΔP ≈ 0)
 cargo test test_compressor_ignored_with_warning       # T2-13 ⬜ (compresseur → warning + K≈0)
+cargo test test_units_scn_to_si                       # T2-14 ⬜ (conversion d'unités scénario vers SI)
+cargo test test_pressure_drop_dimension_consistency   # T2-15 ⬜ (cohérence dimensionnelle SI <-> bar²)
+cargo test test_gaslib_11_vs_reference_solution       # T2-16 ⬜ (validation vs .sol, cible < 5% MVP)
+cargo test test_sensitivity_physical_trends           # T2-17 ⬜ (tendances physiques monotones)
 ```
+
+### Protocole de validation scientifique détaillé (v1)
+
+**Objectif :** qualifier la solidité scientifique du solveur stationnaire avant
+de passer aux phases UI/perf.
+
+#### Pré-conditions
+
+- `./scripts/dev.sh`
+- `./scripts/back-shell.sh`
+- données GasLib présentes dans `back/dat/`
+
+#### Tests, critères et statut
+
+| ID | Test | Commande | Critère d'acceptation | Statut |
+|---|---|---|---|---|
+| T1 | Friction Darcy en turbulent | `cargo test darcy_friction_turbulent` | Test passe, facteur de friction dans une plage physique réaliste | ✅ |
+| T2 | Résistance de tuyau positive/finie | `cargo test pipe_resistance_positive` | Test passe, `K > 0` et fini | ✅ |
+| T3 | Cas analytique 2 nœuds | `cargo test steady_state_two_nodes` | Pression source ~fixe, pression aval positive et < amont | ✅ |
+| T4 | Réseau en Y: conservation locale | `cargo test steady_state_y_network_mass_conservation` | `\|Q_SJ - Q_JA - Q_JB\| < 1e-4` | ✅ |
+| T5 | Hybride vs Jacobi | `cargo test test_newton_vs_jacobi_same_result` | Pressions proches, itérations hybride <= Jacobi sur le cas test | ✅ |
+| T6 | Sanity check GasLib-11 | `cargo test test_solve_gaslib_11` | Convergence, pressions finies/positives, cardinalités cohérentes | ⬜ |
+| T7 | Conversion unités scénario -> SI | `cargo test test_units_scn_to_si` | Erreur relative de conversion < `1e-6` | ⬜ (à créer) |
+| T8 | Cohérence dimensionnelle chute de pression | `cargo test test_pressure_drop_dimension_consistency` | Équivalence SI <-> bar² dans la tolérance numérique | ⬜ (à créer) |
+| T9 | Validation vs référence GasLib `.sol` | `cargo test test_gaslib_11_vs_reference_solution` | MVP: erreur max pression < 5%; post-upgrade: < 1% | ⬜ |
+| T10 | Sensibilité physique (rugosité, Z, T) | `cargo test test_sensitivity_physical_trends` | Tendances monotones physiques cohérentes | ⬜ (à créer) |
+
+#### Ordre d'exécution recommandé
+
+1. **Base équations** : T1 -> T4
+2. **Solveur** : T5 -> T6
+3. **Qualité scientifique** : T7 -> T10
+
+#### Gate Go/No-Go
+
+- **No-Go immédiat** si un test T1-T6 échoue.
+- **Go MVP scientifique** si T1-T8 + T9(MVP) passent (seuil `< 5%`).
+- **Go robuste** si T1-T10 + T9(post-upgrade) passent (seuil `< 1%`).
+
+#### Livrable attendu (tâche 2.16)
+
+Publier un rapport court dans `docs/science/validation.md` contenant :
+
+- date et commit testés;
+- statut Pass/Fail T1..T10;
+- métriques de T9 (erreur max, moyenne, nœud le plus en écart);
+- décision explicite: **Go** ou **No-Go** pour sortie de Phase 2.
 
 ---
 
@@ -348,7 +402,7 @@ cd front && npx playwright test                # T5-4 : scénario E2E export + f
 |-------|----------|-------------|
 | M0 | Monorepo compilable, Docker | `cargo check` + `quasar build` | ✅ |
 | M1 | GasLib-11 parsé en graphe | 11 nœuds, snapshot insta |
-| M2 | Simulation régime permanent + Newton complet + validation référence | 13 tests passent, erreur < 5% vs .sol | ✅ partiel |
+| M2 | Simulation régime permanent + Newton complet + validation référence | Tests T2-1..T2-13 + protocole scientifique v1 (Go/No-Go), erreur < 5% vs .sol | ✅ partiel |
 | M3 | **WebSocket live + logs + carte temps réel + annulation** | Simulation visible en live, cancel fonctionne |
 | M4 | **Multi-threading + scaling vérifié** | GasLib-135 < 100ms, GasLib-582 converge, courbe scaling documentée |
 | M4+ | **Solveur itératif (stretch goal)** | GasLib-4197 converge avec GMRES+ILU |

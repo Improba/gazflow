@@ -18,11 +18,21 @@ pub struct Node {
     pub pressure_fixed_bar: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectionKind {
+    Pipe,
+    Valve,
+    ShortPipe,
+    CompressorStation,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Pipe {
     pub id: String,
     pub from: String,
     pub to: String,
+    pub kind: ConnectionKind,
     pub length_km: f64,
     pub diameter_mm: f64,
     pub roughness_mm: f64,
@@ -50,9 +60,10 @@ impl GasNetwork {
     }
 
     pub fn add_pipe(&mut self, pipe: Pipe) {
-        if let (Some(&from), Some(&to)) =
-            (self.id_to_index.get(&pipe.from), self.id_to_index.get(&pipe.to))
-        {
+        if let (Some(&from), Some(&to)) = (
+            self.id_to_index.get(&pipe.from),
+            self.id_to_index.get(&pipe.to),
+        ) {
             self.graph.add_edge(from, to, pipe);
         }
     }
@@ -87,8 +98,10 @@ mod tests {
         let mut net = GasNetwork::new();
         net.add_node(Node {
             id: "A".into(),
-            x: 0.0, y: 0.0,
-            lon: Some(10.0), lat: Some(50.0),
+            x: 0.0,
+            y: 0.0,
+            lon: Some(10.0),
+            lat: Some(50.0),
             height_m: 0.0,
             pressure_lower_bar: None,
             pressure_upper_bar: None,
@@ -96,8 +109,10 @@ mod tests {
         });
         net.add_node(Node {
             id: "B".into(),
-            x: 1.0, y: 1.0,
-            lon: Some(11.0), lat: Some(51.0),
+            x: 1.0,
+            y: 1.0,
+            lon: Some(11.0),
+            lat: Some(51.0),
             height_m: 0.0,
             pressure_lower_bar: None,
             pressure_upper_bar: None,
@@ -107,6 +122,7 @@ mod tests {
             id: "P1".into(),
             from: "A".into(),
             to: "B".into(),
+            kind: ConnectionKind::Pipe,
             length_km: 50.0,
             diameter_mm: 500.0,
             roughness_mm: 0.012,

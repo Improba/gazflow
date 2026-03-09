@@ -1,5 +1,5 @@
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::collections::HashMap;
-use criterion::{criterion_group, criterion_main, Criterion};
 
 fn bench_steady_state(_c: &mut Criterion) {
     // Placeholder — sera enrichi avec un réseau GasLib réel.

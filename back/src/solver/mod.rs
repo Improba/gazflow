@@ -3,6 +3,7 @@
 //! Algorithme : Newton-Raphson nodal.
 //! Équations : Darcy-Weisbach pour la perte de charge.
 
+pub(crate) mod newton;
 mod steady_state;
 
 pub use steady_state::{SolverResult, solve_steady_state};
