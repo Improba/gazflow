@@ -5,6 +5,10 @@
 OpenGasSim est un simulateur d'écoulement de gaz naturel en réseau, inspiré de SIMONE.
 Architecture monorepo : backend Rust (Axum + petgraph + faer) + frontend Vue 3 / QuasarJS / CesiumJS.
 
+Le plan d'implémentation détaillé (phases, tâches, tests) est par défaut dans `temp/plans/implementation-plan.md`.
+Si un plan doit être partagé, il est alors copié dans `docs/plans/`.
+Le guide d'exécution des tests est dans `docs/testing/README.md`.
+
 ---
 
 ## Structure du monorepo
@@ -16,35 +20,29 @@ gazsim/
 │   │   ├── gaslib/        # Parseur XML GasLib
 │   │   ├── graph/         # Structure de données réseau (petgraph)
 │   │   ├── solver/        # Solveur Newton-Raphson (régime permanent)
-│   │   └── api/           # Endpoints REST Axum
+│   │   └── api/           # Endpoints REST + WebSocket Axum
 │   ├── dat/               # Données GasLib (NON versionné)
 │   └── benches/           # Benchmarks Criterion
 ├── front/             # Frontend QuasarJS + CesiumJS
 │   └── src/
-│       ├── components/    # CesiumViewer, SimulationPanel
+│       ├── components/    # CesiumViewer, SimulationPanel, LogPanel
 │       ├── stores/        # Pinia stores (network, simulate)
-│       ├── services/      # Client API axios
+│       ├── services/      # Client API axios + WebSocket
 │       └── pages/         # MapPage
 ├── docker/            # Dockerfiles
 │   ├── Dockerfile.back    # Image Rust + cargo-watch
 │   └── Dockerfile.front   # Image Node 20 + @quasar/cli
 ├── scripts/           # Scripts utilitaires
-│   ├── dev.sh             # Lance docker compose up --build
-│   ├── stop.sh            # Arrête les conteneurs
-│   ├── back-shell.sh      # Shell dans le conteneur back
-│   ├── front-shell.sh     # Shell dans le conteneur front
-│   ├── back-test.sh       # cargo test dans le conteneur
-│   ├── front-test.sh      # npm test dans le conteneur
-│   ├── ci.sh              # CI complète via Docker
-│   └── fetch_gaslib.sh    # Télécharge les données GasLib
 ├── docker-compose.yml # Orchestration des services
-├── docs/              # Documentation du projet
-│   ├── architecture/
-│   ├── science/
-│   ├── features/
-│   ├── reviews/
-│   ├── plans/
-│   └── temp/              # Brouillons (NON versionné)
+├── docs/              # Documentation du projet (partageable)
+│   ├── architecture/      # Diagrammes, stratégie multi-thread
+│   ├── science/           # Équations, validation
+│   ├── features/          # Spécifications fonctionnelles
+│   ├── reviews/           # Résumés de phase
+│   ├── testing/           # Guide pour exécuter les tests
+│   └── plans/             # Plans partagés uniquement
+├── temp/              # Documents de travail locaux (par défaut)
+│   └── plans/             # Plans en cours (source de vérité locale)
 └── AGENTS.md          # Ce fichier
 ```
 
@@ -56,126 +54,95 @@ gazsim/
 > Ne jamais exécuter `cargo`, `npm`, `npx` ou `quasar` directement sur la machine hôte.
 > Les volumes partagés synchronisent le code source automatiquement.
 
-### Démarrage
+### Commandes courantes
 
 ```bash
-./scripts/dev.sh          # lance back + front (docker compose up --build)
-./scripts/stop.sh         # arrête tout
+./scripts/dev.sh           # lance back + front (docker compose up --build)
+./scripts/stop.sh          # arrête tout
+
+./scripts/back-shell.sh    # shell dans le conteneur back
+./scripts/front-shell.sh   # shell dans le conteneur front
+
+./scripts/back-test.sh     # cargo test dans le conteneur
+./scripts/front-test.sh    # npm test dans le conteneur
+./scripts/ci.sh            # CI complète (build + tests)
 ```
 
 ### Ajouter une dépendance
 
 ```bash
-# Backend (Rust)
-./scripts/back-shell.sh
-cargo add nom_du_crate    # dans le shell conteneur
+# Backend : ouvrir un shell conteneur, puis :
+cargo add nom_du_crate
 
-# Frontend (Node)
-./scripts/front-shell.sh
-npm install nom_du_package  # dans le shell conteneur
+# Frontend : ouvrir un shell conteneur, puis :
+npm install nom_du_package
 ```
 
-Les fichiers `Cargo.toml` / `Cargo.lock` et `package.json` / `package-lock.json` sont
-sur le volume partagé : les modifications faites dans le conteneur sont visibles sur l'hôte
-et versionnées par git normalement.
-
-### Tests
-
-```bash
-./scripts/back-test.sh    # cargo test dans le conteneur
-./scripts/front-test.sh   # npm test dans le conteneur
-./scripts/ci.sh           # CI complète (build + tests back & front)
-```
+Les fichiers `Cargo.toml` / `package.json` sont sur le volume partagé :
+les modifications dans le conteneur sont visibles sur l'hôte et versionnées normalement.
 
 ### Volumes Docker
 
-| Volume | Rôle | Partagé avec l'hôte ? |
-|--------|------|-----------------------|
-| `./back` → `/app` | Code source Rust | Oui (bind mount) |
-| `./front` → `/app` | Code source front | Oui (bind mount) |
-| `back-target` | Cache de compilation Rust (`target/`) | Non (volume nommé) |
-| `cargo-registry` | Cache des crates téléchargés | Non (volume nommé) |
-| `cargo-git` | Cache git de Cargo | Non (volume nommé) |
-| `front-node-modules` | `node_modules/` | Non (volume nommé) |
+| Volume | Rôle | Partagé hôte ? |
+|--------|------|----------------|
+| `./back` → `/app` | Code source Rust | Oui |
+| `./front` → `/app` | Code source front | Oui |
+| `back-target` | Cache compilation (`target/`) | Non |
+| `cargo-registry` | Cache crates | Non |
+| `cargo-git` | Cache git Cargo | Non |
+| `front-node-modules` | `node_modules/` | Non |
 
-Les volumes nommés (`back-target`, `front-node-modules`, etc.) persistent entre les
-redémarrages de conteneurs. Pour les purger : `docker compose down -v`.
-
----
-
-## Conventions
-
-- **Langage backend** : Rust edition 2024. Utiliser `anyhow` pour les erreurs applicatives, `thiserror` pour les erreurs de bibliothèque.
-- **Langage frontend** : TypeScript strict. Composition API uniquement (pas d'Options API).
-- **Tests** : Chaque module Rust doit avoir un bloc `#[cfg(test)]` avec des tests unitaires. Utiliser `insta` pour les snapshot tests du parseur XML. Utiliser `vitest` côté frontend.
-- **Documentation** : Les modules Rust doivent avoir un doc-comment `//!` en en-tête. Les fonctions publiques doivent être documentées.
-- **Données** : Les fichiers GasLib (.net, .scn, .cs) vont dans `back/dat/`. Ne jamais les committer.
-- **Exécution** : Toujours passer par les conteneurs Docker. Ne jamais installer de dépendances sur la machine hôte.
+Purger les volumes : `docker compose down -v`.
 
 ---
 
-## Matrices de tâches par agent
+## Conventions de code
 
-### Agent "Backend Rust" (back/)
+### Rust (back/)
 
-| Priorité | Tâche | Fichiers | Critère de succès |
-|----------|-------|----------|-------------------|
-| P0 | Parseur GasLib XML complet | `gaslib/parser.rs` | Parse GasLib-11.net sans erreur ; snapshot test insta |
-| P0 | Structure GasNetwork robuste | `graph/mod.rs` | Tests unitaires : ajout nœuds/arêtes, requêtes voisins |
-| P1 | Solveur steady-state Newton-Raphson | `solver/steady_state.rs` | Réseau 2 nœuds converge ; pression source = fixée |
-| P1 | API REST `/api/network` + `/api/simulate` | `api/mod.rs` | Réponse JSON valide, test d'intégration reqwest |
-| P2 | Support GasLib-24 et GasLib-40 | `gaslib/parser.rs` | Parse sans erreur, cohérence topologique |
-| P2 | Solveur : support compresseurs | `solver/` | Station de compression augmente la pression |
-| P3 | Benchmarks Criterion | `benches/solver_bench.rs` | GasLib-135 résolu en < 100ms |
+- Edition 2024.
+- `anyhow` pour les erreurs applicatives, `thiserror` pour les erreurs de bibliothèque.
+- Chaque module doit avoir un doc-comment `//!` en en-tête.
+- Les fonctions publiques doivent être documentées.
+- Chaque module doit avoir un bloc `#[cfg(test)]` avec des tests unitaires.
+- Utiliser `insta` pour les snapshot tests du parseur XML.
+- Le solveur ne doit jamais bloquer le runtime tokio : utiliser `spawn_blocking`.
+- Paralléliser les boucles sur les pipes via `rayon::par_iter` quand le réseau dépasse ~50 tuyaux.
 
-### Agent "Frontend Vue/Quasar" (front/)
+### TypeScript / Vue (front/)
 
-| Priorité | Tâche | Fichiers | Critère de succès |
-|----------|-------|----------|-------------------|
-| P0 | CesiumViewer : afficher nœuds + tuyaux | `components/CesiumViewer.vue` | Nœuds visibles sur le globe, tuyaux connectés |
-| P0 | Store network : fetch et cache | `stores/network.ts` | Données chargées au mount, réactives |
-| P1 | SimulationPanel : lancer simulation | `components/SimulationPanel.vue` | Bouton déclenche /api/simulate, résultats affichés |
-| P1 | Coloration dynamique des tuyaux | `components/CesiumViewer.vue` | Couleur = f(débit), légende visible |
-| P2 | Sélection d'un nœud → détails | `components/` | Click sur nœud → popup pression |
-| P2 | Contrôles de demande (sliders) | `components/DemandControls.vue` | Modifier les demandes, relancer la simulation |
-| P3 | Mode sombre / thème industriel | `css/app.scss` | Thème cohérent avec l'esthétique SCADA |
+- TypeScript strict.
+- Composition API uniquement (pas d'Options API).
+- Utiliser `vitest` pour les tests unitaires.
+- Communication simulation via WebSocket (pas de polling REST).
 
-### Agent "Science & Validation" (docs/science/)
+### Données
 
-| Priorité | Tâche | Fichiers | Critère de succès |
-|----------|-------|----------|-------------------|
-| P0 | Documenter les équations (Darcy-Weisbach, Newton-Raphson) | `docs/science/equations.md` | Formules LaTeX vérifiées |
-| P1 | Valider le solveur vs solution analytique 2 nœuds | `docs/science/validation.md` | Écart < 1% |
-| P2 | Comparer résultats GasLib-11 avec littérature | `docs/science/validation.md` | Résultats cohérents |
-
-### Agent "DevOps & Tests" (racine)
-
-| Priorité | Tâche | Fichiers | Critère de succès |
-|----------|-------|----------|-------------------|
-| P0 | `cargo test` passe (tous les tests Rust) | `back/` | Exit code 0 |
-| P0 | `vitest run` passe (tests frontend) | `front/` | Exit code 0 |
-| P1 | Script CI : build back + front | `scripts/ci.sh` | Script exécutable, retour 0 |
-| P2 | Téléchargement automatique GasLib | `scripts/fetch_gaslib.sh` | GasLib-11 dans back/dat/ |
+- Les fichiers GasLib (.net, .scn, .cs) vont dans `back/dat/`. Ne jamais les committer.
 
 ---
 
 ## Workflow de développement
 
 1. **Avant chaque modification** : lire les fichiers concernés, comprendre le contexte.
-2. **Après chaque modification** : lancer les tests via les scripts Docker (`./scripts/back-test.sh` ou `./scripts/front-test.sh`).
-3. **Pour ajouter une lib** : ouvrir un shell dans le conteneur concerné (`./scripts/back-shell.sh` ou `./scripts/front-shell.sh`), puis utiliser `cargo add` ou `npm install`.
-4. **Après chaque phase** : mettre à jour `docs/reviews/` avec un résumé des changements.
-5. **Résolution de problèmes** : documenter dans `docs/temp/` (non versionné) puis synthétiser dans `docs/features/`.
+2. **Après chaque modification** : lancer les tests via les scripts Docker.
+3. **Pour ajouter une lib** : passer par le shell conteneur.
+4. **Après chaque phase** : mettre à jour `docs/reviews/` avec un résumé.
+5. **Résolution de problèmes** : documenter dans `temp/` puis synthétiser dans `docs/features/`.
+6. **Référence** : par défaut, le plan d'implémentation fait foi dans `temp/plans/implementation-plan.md`.
+   Si le plan est destiné au partage, publier une copie dans `docs/plans/`.
 
 ---
 
-## Dépendances externes critiques
+## Dépendances externes
 
-| Composant | Crate / Package | Version | Rôle |
-|-----------|----------------|---------|------|
-| Graphes | `petgraph` | 0.8 | Représentation du réseau |
-| Algèbre linéaire | `faer` | 0.22 | Matrices creuses, Newton-Raphson |
-| XML parsing | `quick-xml` | 0.37 | Lecture GasLib |
-| Web server | `axum` | 0.8 | API REST |
-| Globe 3D | `cesium` | 1.138 | Visualisation géospatiale |
-| UI framework | `quasar` | 2.17 | Composants Vue 3 |
+| Composant | Crate / Package | Rôle |
+|-----------|----------------|------|
+| Graphes | `petgraph` | Représentation du réseau |
+| Algèbre linéaire | `faer` | Matrices creuses, Newton complet |
+| Parallélisme | `rayon` | Itération parallèle sur les pipes |
+| XML parsing | `quick-xml` | Lecture GasLib |
+| Web server | `axum` | API REST + WebSocket |
+| Async runtime | `tokio` | spawn_blocking, mpsc channels |
+| Globe 3D | `cesium` | Visualisation géospatiale |
+| UI framework | `quasar` | Composants Vue 3 |

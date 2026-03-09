@@ -1,13 +1,28 @@
 # Plan d'implémentation — OpenGasSim MVP
 
+> Note de convention : la version de travail par défaut des plans est dans `temp/plans/`.
+> `docs/plans/` est réservé aux plans partagés.
+
 ## Objectif
 
 Simuler l'écoulement en régime permanent sur un petit réseau GasLib (GasLib-11, 11 nœuds)
-et visualiser les résultats (pressions, débits) sur un globe CesiumJS.
+et visualiser les résultats (pressions, débits) **en temps réel** sur un globe CesiumJS,
+avec streaming des logs du solveur et mise à jour progressive de la carte 3D.
+Le MVP doit aussi permettre **l'export des résultats** (JSON/CSV) et garantir une
+**expérience fluide** (interaction carte + panneau sans lag perceptible).
+
+## Exigences transverses (non négociables)
+
+- **Export des résultats** : chaque simulation convergée doit pouvoir être exportée
+  avec pressions, débits, métadonnées (timestamp, scénario/demandes, unités, itérations, résidu).
+- **Fluidité UX** : navigation Cesium (pan/zoom/rotate) et updates live doivent rester fluides
+  (pas de freezes UI, pas de backlog WS visible côté utilisateur).
+- **Lisibilité opérationnelle** : légendes, unités et états (running/converged/cancelled/error)
+  doivent rester visibles même en charge.
 
 ---
 
-## Phase 0 : Bootstrap (jour 1)
+## Phase 0 : Bootstrap (jour 1) ✅
 
 ### Tâches
 
@@ -15,9 +30,10 @@ et visualiser les résultats (pressions, débits) sur un globe CesiumJS.
 - [x] Initialiser le projet Rust (Cargo.toml, modules)
 - [x] Initialiser le projet Quasar + CesiumJS
 - [x] Écrire AGENTS.md
+- [x] Docker Compose (back + front, volumes partagés)
+- [x] Premier `cargo check` sans erreur
+- [x] Premier `npm install` + `quasar build` sans erreur
 - [ ] Télécharger GasLib-11 dans `back/dat/`
-- [ ] Premier `cargo build` sans erreur
-- [ ] Premier `npm install` + `quasar dev` sans erreur
 
 ### Tests automatiques
 
@@ -25,15 +41,9 @@ et visualiser les résultats (pressions, débits) sur un globe CesiumJS.
 # T0-1 : Le backend compile
 cd back && cargo check
 
-# T0-2 : Le frontend s'installe
+# T0-2 : Le frontend build
 cd front && npm install && npx quasar build
 ```
-
-### Critères de passage
-
-- `cargo check` → 0 erreurs
-- `npm install` → 0 erreurs critiques
-- Les fichiers GasLib-11 (.net, .scn) sont présents dans `back/dat/`
 
 ---
 
@@ -47,38 +57,25 @@ cd front && npm install && npx quasar build
 
 ### Tâches
 
-| # | Tâche | Agent | Fichier(s) |
-|---|-------|-------|------------|
-| 1.1 | Script de téléchargement GasLib | DevOps | `scripts/fetch_gaslib.sh` |
-| 1.2 | Parseur XML : nœuds (source, sink, innode) | Backend | `gaslib/parser.rs` |
-| 1.3 | Parseur XML : connexions (pipe, compressorStation, valve) | Backend | `gaslib/parser.rs` |
-| 1.4 | Parseur XML : scénarios (.scn) — demandes aux nœuds | Backend | `gaslib/parser.rs` |
-| 1.5 | Construction du GasNetwork depuis les données parsées | Backend | `graph/mod.rs` |
-| 1.6 | Snapshot tests insta du parseur | Backend | `gaslib/parser.rs` |
+| # | Tâche | Agent | Fichier(s) | Status |
+|---|-------|-------|------------|--------|
+| 1.1 | Script de téléchargement GasLib | DevOps | `scripts/fetch_gaslib.sh` | ✅ |
+| 1.2 | Parseur XML : nœuds (source, sink, innode) | Backend | `gaslib/parser.rs` | ✅ |
+| 1.3 | Parseur XML : connexions (pipe, valve, shortPipe) | Backend | `gaslib/parser.rs` | ⬜ partiel |
+| 1.4 | Parseur XML : compressorStation | Backend | `gaslib/parser.rs` | ⬜ |
+| 1.5 | Parseur XML : scénarios (.scn) — demandes aux nœuds | Backend | `gaslib/scenario.rs` | ⬜ |
+| 1.6 | Construction du GasNetwork depuis les données parsées | Backend | `graph/mod.rs` | ✅ |
+| 1.7 | Snapshot tests insta du parseur | Backend | `gaslib/parser.rs` | ⬜ |
 
 ### Tests automatiques
 
 ```bash
-# T1-1 : Le parseur charge GasLib-11 sans panique
-cargo test test_parse_gaslib_11
-
-# T1-2 : Le graphe a le bon nombre de nœuds/arêtes
-cargo test test_gaslib_11_topology -- --nocapture
-# Attendu : 11 nœuds, ~12 connexions
-
-# T1-3 : Snapshot test (structure JSON du réseau parsé)
-cargo test test_gaslib_11_snapshot
-# Utilise insta::assert_yaml_snapshot!
-
-# T1-4 : Chaque nœud a des coordonnées GPS valides
-cargo test test_all_nodes_have_gps
+cargo test test_parse_gaslib_11        # T1-1 : charge sans panique
+cargo test test_gaslib_11_topology     # T1-2 : 11 nœuds, ~12 connexions
+cargo test test_gaslib_11_snapshot     # T1-3 : insta::assert_yaml_snapshot!
+cargo test test_all_nodes_have_gps     # T1-4 : coordonnées GPS valides
+cargo test test_parse_scenario_scn     # T1-5 : demandes parsées
 ```
-
-### Critères de passage
-
-- GasLib-11.net parsé → 11 nœuds avec coordonnées GPS
-- Aucun nœud orphelin
-- Snapshot insta validé
 
 ---
 
@@ -86,134 +83,261 @@ cargo test test_all_nodes_have_gps
 
 ### Fondements mathématiques
 
-Voir `docs/science/equations.md` pour le détail.
+Voir `docs/science/equations.md`.
 
-**Équation de Darcy-Weisbach pour le gaz :**
-
-```
-P_in² - P_out² = K · Q · |Q|
-```
-
-où `K = f · L · ρ_n · T · Z / (D⁵ · π²/16)` (simplifié).
-
-**Algorithme Newton-Raphson nodal :**
-
-1. Initialiser les pressions (ex: 70 bar partout).
-2. Calculer les débits dans chaque tuyau en fonction de ΔP².
-3. Calculer le résidu (bilan de masse à chaque nœud).
-4. Construire le Jacobien et résoudre le système linéaire.
-5. Mettre à jour les pressions.
-6. Répéter jusqu'à convergence (résidu < tolérance).
+> **⚠️ Scaling : la tâche 2.4 (Newton complet avec Jacobien creux) est un prérequis
+> pour la Phase 3.** Le solveur Jacobi diagonal (2.3) converge sur GasLib-11 mais
+> divergera sur des réseaux plus grands ou plus couplés. Ne pas passer en Phase 3
+> sans un Newton fonctionnel sur GasLib-11.
 
 ### Tâches
 
-| # | Tâche | Agent | Fichier(s) |
-|---|-------|-------|------------|
-| 2.1 | Friction de Darcy (Swamee-Jain) | Backend | `solver/steady_state.rs` |
-| 2.2 | Résistance hydraulique d'un tuyau | Backend | `solver/steady_state.rs` |
-| 2.3 | Boucle Newton-Raphson (Picard simplifié d'abord) | Backend | `solver/steady_state.rs` |
-| 2.4 | Upgrade vers vrai Newton-Raphson avec Jacobien (faer) | Backend | `solver/steady_state.rs` |
-| 2.5 | Validation analytique : réseau 2 nœuds | Science | `docs/science/validation.md` |
-| 2.6 | Validation : réseau en Y (3 branches) | Science | `docs/science/validation.md` |
-| 2.7 | Exécution sur GasLib-11 complet | Backend | `main.rs` |
+| # | Tâche | Agent | Fichier(s) | Status |
+|---|-------|-------|------------|--------|
+| 2.1 | Friction de Darcy (Swamee-Jain) | Backend | `solver/steady_state.rs` | ✅ |
+| 2.2 | Résistance hydraulique d'un tuyau | Backend | `solver/steady_state.rs` | ✅ |
+| 2.3 | Newton-Raphson diagonal (Jacobi) | Backend | `solver/steady_state.rs` | ✅ |
+| 2.4 | **🔴 CRITIQUE : vrai Newton-Raphson avec Jacobien creux (faer)** | Backend | `solver/newton.rs` | ⬜ |
+| 2.5 | **Équation d'état du gaz (densité = f(P, T))** | Backend | `solver/gas_properties.rs` | ⬜ |
+| 2.6 | **Non-dimensionnalisation des variables** | Backend | `solver/steady_state.rs` | ⬜ |
+| 2.7 | Validation analytique : réseau 2 nœuds | Science | `docs/science/validation.md` | ✅ |
+| 2.8 | Validation : réseau en Y (conservation de masse) | Science | `docs/science/validation.md` | ✅ |
+| 2.9 | Exécution sur GasLib-11 complet | Backend | `main.rs` | ⬜ |
+| 2.10 | **Validation contre solutions de référence GasLib-11 (.sol)** | Science | `solver/steady_state.rs`, `docs/science/validation.md` | ⬜ |
+| 2.11 | **Line search (backtracking) + fallback hybride Newton/Jacobi** | Backend | `solver/newton.rs` | ⬜ |
+| 2.12 | **Documenter les conversions d'unités (Pa²→bar², ρ_eff) dans equations.md** | Science | `docs/science/equations.md` | ⬜ |
+| 2.13 | **Warm-start : initialiser Newton depuis la solution précédente** | Backend | `solver/steady_state.rs` | ⬜ |
+| 2.14 | **Modélisation valves (K≈0 ouvert, arc supprimé fermé) et shortPipes** | Backend | `solver/steady_state.rs`, `graph/mod.rs` | ⬜ |
+| 2.15 | **Compresseurs : ignorer gracieusement (log warning, traiter comme pipe K≈0)** | Backend | `solver/steady_state.rs` | ⬜ |
 
 ### Tests automatiques
 
 ```bash
-# T2-1 : Friction de Darcy dans la plage réaliste
-cargo test darcy_friction_turbulent
-
-# T2-2 : Réseau 2 nœuds converge, pression source correcte
-cargo test steady_state_two_nodes
-
-# T2-3 : Réseau en Y — conservation de masse
-cargo test steady_state_y_network
-# ΣQ_in = ΣQ_out à chaque nœud (tolérance 1e-6)
-
-# T2-4 : GasLib-11 — le solveur converge
-cargo test test_solve_gaslib_11
-# Converge en < 100 itérations, toutes pressions > 0
-
-# T2-5 : Benchmark
-cargo bench -- steady_state
+cargo test darcy_friction_turbulent                  # T2-1 ✅
+cargo test steady_state_two_nodes                    # T2-2 ✅
+cargo test steady_state_y_network_mass_conservation  # T2-3 ✅
+cargo test pipe_resistance_positive                  # T2-4 ✅
+cargo test test_solve_gaslib_11                      # T2-5 ⬜
+cargo test test_newton_vs_jacobi_same_result         # T2-6 ⬜
+cargo bench -- steady_state                          # T2-7 ⬜
+cargo test test_gaslib_11_vs_reference_solution      # T2-8 ⬜ (erreur relative < 5% MVP, < 1% post-upgrade)
+cargo test test_newton_line_search_convergence       # T2-9 ⬜ (Newton converge même avec init éloigné)
+cargo test test_newton_jacobi_hybrid_fallback        # T2-10 ⬜ (fallback Jacobi si line search échoue)
+cargo test test_warm_start_fewer_iterations          # T2-11 ⬜ (warm-start converge en ≤ 5 iter vs ~20 cold)
+cargo test test_valve_open_zero_resistance            # T2-12 ⬜ (valve ouverte : ΔP ≈ 0)
+cargo test test_compressor_ignored_with_warning       # T2-13 ⬜ (compresseur → warning + K≈0)
 ```
-
-### Critères de passage
-
-- Réseau 2 nœuds : erreur pression < 0.1 bar vs analytique
-- GasLib-11 : convergence, toutes pressions ∈ [1, 100] bar
-- Résidu < 1e-4
 
 ---
 
-## Phase 3 : API REST + Frontend CesiumJS (jours 10-14)
+## Phase 3 : WebSocket + Interface live (jours 10-16)
+
+### Architecture de communication
+
+```
+Frontend                          Backend
+┌──────────┐  WS /api/ws/sim   ┌─────────────┐
+│ SimPanel  │◄═══════════════►│ Axum WS     │
+│ LogPanel  │  { type, data }  │ handler     │
+│ CesiumMap │                  └──────┬──────┘
+└──────────┘                         │ mpsc channel
+                               ┌─────▼──────┐
+                               │ Solver      │
+                               │ (spawn_blocking + rayon) │
+                               └─────────────┘
+```
+
+**Protocole WebSocket (JSON) :**
+
+```jsonc
+// Client → Serveur : lancer une simulation
+{ "type": "start_simulation", "demands": { "sink_1": -10.0 } }
+
+// Client → Serveur : annuler la simulation en cours
+{ "type": "cancel_simulation" }
+
+// Serveur → Client : progression à chaque itération
+{ "type": "iteration", "iter": 5, "residual": 0.0023, "elapsed_ms": 12 }
+
+// Serveur → Client : résultats intermédiaires (toutes les N itérations)
+{ "type": "snapshot", "pressures": {...}, "flows": {...} }
+
+// Serveur → Client : convergence atteinte
+{ "type": "converged", "result": {...}, "total_ms": 45 }
+
+// Serveur → Client : simulation annulée (par le client ou par timeout)
+{ "type": "cancelled", "reason": "client_request" | "timeout" | "diverged" }
+
+// Serveur → Client : erreur (fatal=true → connexion fermée, fatal=false → peut relancer)
+{ "type": "error", "message": "...", "fatal": false }
+```
 
 ### Tâches
 
-| # | Tâche | Agent | Fichier(s) |
-|---|-------|-------|------------|
-| 3.1 | Endpoint `/api/health` | Backend | `api/mod.rs` |
-| 3.2 | Endpoint `/api/network` (JSON nœuds + tuyaux) | Backend | `api/mod.rs` |
-| 3.3 | Endpoint `/api/simulate` (exécuter le solveur) | Backend | `api/mod.rs` |
-| 3.4 | Tests d'intégration API (reqwest) | Backend | `tests/api_test.rs` |
-| 3.5 | `npm install` + résoudre les dépendances | Frontend | `package.json` |
-| 3.6 | Boot CesiumJS (globe vide, assets copiés) | Frontend | `boot/cesium.ts` |
-| 3.7 | CesiumViewer : afficher les nœuds GasLib sur le globe | Frontend | `CesiumViewer.vue` |
-| 3.8 | CesiumViewer : tracer les tuyaux entre nœuds | Frontend | `CesiumViewer.vue` |
-| 3.9 | SimulationPanel : appel API + affichage résultats | Frontend | `SimulationPanel.vue` |
-| 3.10 | Coloration dynamique des tuyaux par débit | Frontend | `CesiumViewer.vue` |
+| # | Tâche | Agent | Fichier(s) | Status |
+|---|-------|-------|------------|--------|
+| 3.1 | WebSocket handler Axum | Backend | `api/ws.rs` | ⬜ |
+| 3.2 | Solver avec callback de progression | Backend | `solver/steady_state.rs` | ⬜ |
+| 3.3 | `tokio::spawn_blocking` pour le solveur | Backend | `api/ws.rs` | ⬜ |
+| 3.4 | Channel `mpsc` : solver → WS → client | Backend | `api/ws.rs` | ⬜ |
+| 3.5 | Endpoint REST `/api/network` | Backend | `api/mod.rs` | ✅ |
+| 3.6 | Tests d'intégration API (reqwest + WS) | Backend | `tests/api_test.rs` | ⬜ |
+| 3.7 | WebSocket client (composable Vue) | Frontend | `services/ws.ts` | ⬜ |
+| 3.8 | LogPanel : logs du solveur en temps réel | Frontend | `components/LogPanel.vue` | ⬜ |
+| 3.9 | CesiumViewer : afficher nœuds + tuyaux | Frontend | `CesiumViewer.vue` | ✅ |
+| 3.10 | CesiumViewer : mise à jour live des couleurs | Frontend | `CesiumViewer.vue` | ⬜ |
+| 3.11 | SimulationPanel : start/stop via WebSocket | Frontend | `SimulationPanel.vue` | ⬜ |
+| 3.12 | Barre de progression + indicateur de résidu | Frontend | `components/ProgressBar.vue` | ⬜ |
+| 3.13 | **Annulation de simulation (CancellationToken + timeout)** | Backend | `api/ws.rs`, `solver/steady_state.rs` | ⬜ |
+| 3.14 | **Backpressure WS : buffer borné + drop de snapshots intermédiaires** | Backend | `api/ws.rs` | ⬜ |
+| 3.15 | **Fluidité live : throttling des snapshots UI (max ~10 Hz) + coalescing des messages** | Frontend | `services/ws.ts`, `stores/simulate.ts` | ⬜ |
+| 3.16 | **Mesures perf UI dev : FPS map + temps de rendu update (overlay debug activable)** | Frontend | `CesiumViewer.vue` | ⬜ |
+
+### Interface cible
+
+```
+┌────────────────────────────────────────────────────────┐
+│ OpenGasSim                              [▶ Start] [⏹] │
+├──────────────────────────────────┬─────────────────────┤
+│                                  │ Simulation           │
+│                                  │ ████████░░ 80%       │
+│       Globe CesiumJS             │ Iter: 42 / 100       │
+│   (tuyaux colorés en live,       │ Résidu: 2.3e-4       │
+│    nœuds avec pression)          │ Temps: 34ms          │
+│                                  ├─────────────────────┤
+│                                  │ Logs                 │
+│                                  │ [42] res=2.3e-4      │
+│                                  │ [41] res=5.1e-4      │
+│                                  │ [40] res=1.2e-3      │
+│                                  │ ...                  │
+│                                  ├─────────────────────┤
+│                                  │ Pressions (bar)      │
+│                                  │ S: 70.00  J: 68.45   │
+│                                  │ A: 65.12  B: 66.30   │
+│                                  ├─────────────────────┤
+│                                  │ Débits (m³/s)        │
+│                                  │ SJ: 10.0  JA: 5.2    │
+│                                  │ JB: 4.8              │
+└──────────────────────────────────┴─────────────────────┘
+```
 
 ### Tests automatiques
 
 ```bash
-# T3-1 : API health check
-cargo test test_api_health
-
-# T3-2 : API network retourne le bon nombre de nœuds
-cargo test test_api_network_count
-
-# T3-3 : Frontend build sans erreur
-cd front && npm run build
-
-# T3-4 : Frontend unit tests (stores)
-cd front && npx vitest run
+cargo test test_ws_start_simulation    # T3-1 : WS connecte et reçoit iterations
+cargo test test_ws_convergence_message # T3-2 : message "converged" reçu
+cargo test test_api_network_count      # T3-3 : REST network OK
+cd front && npx vitest run             # T3-4 : stores + composables
+cd front && npx quasar build           # T3-5 : build sans erreur
+cargo test test_ws_cancel_simulation   # T3-6 ⬜ : cancel mid-solve, reçoit "cancelled"
+cargo test test_ws_timeout_diverged    # T3-7 ⬜ : solveur qui diverge → timeout auto
 ```
-
-### Critères de passage
-
-- Le globe CesiumJS affiche les 11 nœuds de GasLib-11 aux bonnes coordonnées GPS
-- Les tuyaux sont tracés entre les nœuds connectés
-- Un clic sur "Lancer la simulation" affiche les pressions/débits
-- Les tuyaux changent de couleur selon le débit
 
 ---
 
-## Phase 4 : Intégration complète + polish (jours 15-18)
+## Phase 4 : Multi-threading + performance + scaling (jours 17-22)
+
+### Architecture multi-thread
+
+```
+┌───────────────────────────────────────────────────────────┐
+│                    tokio runtime                           │
+│  ┌─────────────┐  ┌─────────────┐  ┌───────────┐         │
+│  │ Axum HTTP   │  │ Axum WS     │  │ Axum WS   │         │
+│  │ /api/network│  │ client #1   │  │ client #2 │         │
+│  └─────────────┘  └──────┬──────┘  └─────┬─────┘         │
+│                          │                │               │
+│            ┌─────────────▼────────────────▼─────┐         │
+│            │       spawn_blocking pool          │         │
+│            │    (borné par Semaphore, max N)     │         │
+│            │  ┌──────────────────────────────┐  │         │
+│            │  │     Solver (1 par simulation) │  │         │
+│            │  │  ┌────────┐ ┌────────┐       │  │         │
+│            │  │  │ Rayon  │ │ Rayon  │ ...   │  │         │
+│            │  │  │ thread │ │ thread │       │  │         │
+│            │  │  └────────┘ └────────┘       │  │         │
+│            │  └──────────────────────────────┘  │         │
+│            └────────────────────────────────────┘         │
+└───────────────────────────────────────────────────────────┘
+```
+
+### Stratégie de scaling par taille de réseau
+
+| Taille réseau | Solveur recommandé | Parallélisme |
+|---|---|---|
+| ≤ 50 nœuds | Newton + LU direct creux (faer) | Séquentiel (overhead Rayon > gain) |
+| 50–2000 nœuds | Newton + LU direct creux (faer) | Rayon `par_iter` sur assemblage résidu/Jacobien |
+| 2000–5000 nœuds | Newton + GMRES préconditionné ILU (stretch) | Rayon + solveur itératif |
+| > 5000 nœuds | Hors scope MVP — nécessite domain decomposition | — |
+
+> **Note :** Le LU creux sur un Jacobien de réseau de gaz (~3 non-zéros par ligne)
+> a une complexité effective O(N^{1.2} à N^{1.5}) grâce à l'ordering AMD, bien
+> inférieure au O(N³) du LU dense. Le seuil GMRES ne s'applique que si le profiling
+> (tâche 4.9) révèle que la factorisation LU devient le bottleneck.
 
 ### Tâches
 
-| # | Tâche | Agent | Fichier(s) |
-|---|-------|-------|------------|
-| 4.1 | Sliders de demande aux nœuds puits | Frontend | `DemandControls.vue` |
-| 4.2 | POST `/api/simulate` avec demandes custom | Backend | `api/mod.rs` |
-| 4.3 | Légende de couleurs (pression / débit) | Frontend | `components/Legend.vue` |
-| 4.4 | Thème sombre SCADA | Frontend | `css/app.scss` |
-| 4.5 | Script CI complet | DevOps | `scripts/ci.sh` |
-| 4.6 | Documentation architecture finale | Science | `docs/architecture/` |
-| 4.7 | Support GasLib-24 (24 nœuds, réseau plus complexe) | Backend | `gaslib/parser.rs` |
+| # | Tâche | Agent | Fichier(s) | Status |
+|---|-------|-------|------------|--------|
+| 4.1 | Vérifier que `spawn_blocking` (3.3) + Rayon ne causent pas de contention | Backend | `api/ws.rs` | ⬜ |
+| 4.2 | Rayon `par_iter` sur les pipes (résidu + Jacobien), seuil ≥ 50 pipes | Backend | `solver/steady_state.rs` | ⬜ |
+| 4.3 | Assemblage Jacobien creux parallèle (faer) | Backend | `solver/newton.rs` | ⬜ |
+| 4.4 | Benchmark Criterion : Jacobi vs Newton, 1 thread vs N | Backend | `benches/solver_bench.rs` | ⬜ |
+| 4.5 | Simulations concurrentes (plusieurs WS clients) | Backend | `api/ws.rs` | ⬜ |
+| 4.6 | Support GasLib-24 + GasLib-40 | Backend | `gaslib/parser.rs` | ⬜ |
+| 4.7 | Benchmark sur GasLib-135 (stress test) | Backend | `benches/solver_bench.rs` | ⬜ |
+| 4.8 | **Sémaphore : limiter les simulations concurrentes (max N configurable)** | Backend | `api/ws.rs` | ⬜ |
+| 4.9 | **Profiling flamegraph intégré (tracing + inferno ou perf)** | Backend | `benches/`, `scripts/profile.sh` | ⬜ |
+| 4.10 | **Support GasLib-582 + GasLib-4197 (cibles de scaling)** | Backend | `gaslib/parser.rs`, `scripts/fetch_gaslib.sh` | ⬜ |
+| 4.11 | **🔵 STRETCH : Solveur itératif GMRES + préconditionneur ILU (si LU creux insuffisant au-delà de ~2000 nœuds)** | Backend | `solver/iterative.rs` | ⬜ |
+| 4.12 | **Benchmark scaling : temps vs N nœuds (11, 24, 40, 135, 582, 4197)** | Backend | `benches/scaling_bench.rs` | ⬜ |
 
 ### Tests automatiques
 
 ```bash
-# T4-1 : CI complète
-./scripts/ci.sh
-# cargo test + npm run build + npm run test
+cargo test test_parallel_solver_same_result    # T4-1 : même résultat 1 vs N threads
+cargo test test_concurrent_simulations         # T4-2 : 2 WS clients simultanés
+cargo bench -- steady_state                    # T4-3 : Jacobi vs Newton perf
+cargo test test_solve_gaslib_24                # T4-4 : convergence GasLib-24
+cargo test test_solve_gaslib_40                # T4-5 : convergence GasLib-40
+cargo test test_semaphore_rejects_overflow     # T4-6 ⬜ : N+1ème simulation reçoit "queued" ou rejet
+cargo test test_solve_gaslib_582               # T4-7 ⬜ : convergence GasLib-582 (Newton+LU)
+cargo test test_solve_gaslib_4197              # T4-8 ⬜ : convergence GasLib-4197 (GMRES+ILU)
+cargo bench -- scaling                         # T4-9 ⬜ : courbe temps vs N nœuds
+```
 
-# T4-2 : GasLib-24 converge
-cargo test test_solve_gaslib_24
+---
 
-# T4-3 : API avec demandes custom
-cargo test test_api_simulate_with_demands
+## Phase 5 : Intégration complète + polish (jours 23-28)
+
+Référence contrat d'export : `docs/architecture/export-contract.md` (source de vérité API/format).
+
+### Tâches
+
+| # | Tâche | Agent | Fichier(s) | Status |
+|---|-------|-------|------------|--------|
+| 5.1 | Sliders de demande aux nœuds puits | Frontend | `DemandControls.vue` | ⬜ |
+| 5.2 | POST `/api/simulate` avec demandes custom (REST fallback) | Backend | `api/mod.rs` | ⬜ |
+| 5.3 | Légende de couleurs (gradient pression / débit) | Frontend | `components/Legend.vue` | ⬜ |
+| 5.4 | Sélection d'un nœud → popup avec pression, voisins | Frontend | `CesiumViewer.vue` | ⬜ |
+| 5.5 | Thème sombre SCADA (palette industrielle) | Frontend | `css/app.scss` | ⬜ |
+| 5.6 | Script CI complet via Docker | DevOps | `scripts/ci.sh` | ✅ |
+| 5.7 | Documentation architecture finale | Science | `docs/architecture/` | ⬜ |
+| 5.8 | **LOD CesiumJS : clustering de nœuds à faible zoom (> 200 entités)** | Frontend | `CesiumViewer.vue` | ⬜ |
+| 5.9 | **Primitives WebGL pour grands réseaux (PolylineCollection au lieu d'entités)** | Frontend | `CesiumViewer.vue` | ⬜ |
+| 5.10 | **Warm-start via slider : réutiliser la solution précédente quand la demande change** | Frontend + Backend | `DemandControls.vue`, `api/ws.rs` | ⬜ |
+| 5.11 | **Export backend : endpoint d'export des résultats (`json`, `csv`) avec métadonnées (conforme contrat v1)** | Backend | `api/mod.rs`, `api/export.rs` | ⬜ |
+| 5.12 | **Export frontend : boutons "Exporter JSON/CSV" dans le panel simulation (état `exporting` non bloquant)** | Frontend | `components/SimulationPanel.vue` | ⬜ |
+| 5.13 | **Export complet : bundle `.zip` optionnel (résultats + logs + contexte simulation, contrat v1)** | Frontend + Backend | `components/SimulationPanel.vue`, `api/export.rs` | ⬜ |
+| 5.14 | **Fluidité UI en charge : virtualisation listes + debounce sliders + budget frame-time** | Frontend | `components/`, `stores/` | ⬜ |
+
+### Tests automatiques
+
+```bash
+cargo test test_export_result_json_schema      # T5-1 : JSON export contient données + métadonnées + unités
+cargo test test_export_result_csv_headers      # T5-2 : CSV export colonnes stables et parseables
+cd front && npx vitest run                     # T5-3 : bouton export visible/actif selon état simulation
+cd front && npx playwright test                # T5-4 : scénario E2E export + fluidité navigation map
 ```
 
 ---
@@ -222,11 +346,13 @@ cargo test test_api_simulate_with_demands
 
 | Jalon | Livrable | Vérification |
 |-------|----------|-------------|
-| M0 | Monorepo compilable | `cargo check` + `npm install` |
+| M0 | Monorepo compilable, Docker | `cargo check` + `quasar build` | ✅ |
 | M1 | GasLib-11 parsé en graphe | 11 nœuds, snapshot insta |
-| M2 | Simulation régime permanent | Convergence GasLib-11 |
-| M3 | Globe CesiumJS + résultats | Tuyaux colorés, panel résultats |
-| M4 | MVP complet | CI verte, demandes interactives |
+| M2 | Simulation régime permanent + Newton complet + validation référence | 13 tests passent, erreur < 5% vs .sol | ✅ partiel |
+| M3 | **WebSocket live + logs + carte temps réel + annulation** | Simulation visible en live, cancel fonctionne |
+| M4 | **Multi-threading + scaling vérifié** | GasLib-135 < 100ms, GasLib-582 converge, courbe scaling documentée |
+| M4+ | **Solveur itératif (stretch goal)** | GasLib-4197 converge avec GMRES+ILU |
+| M5 | MVP complet + LOD + export résultats | CI verte, demandes interactives, export JSON/CSV, 4000 entités sans lag |
 
 ---
 
@@ -234,8 +360,18 @@ cargo test test_api_simulate_with_demands
 
 | Risque | Impact | Mitigation |
 |--------|--------|------------|
-| Parsing XML GasLib complexe (namespaces) | Bloquant P1 | Commencer par GasLib-11 (le plus simple), tests insta |
-| Solveur ne converge pas | Bloquant P2 | Picard d'abord (simple), Newton-Raphson ensuite |
-| CesiumJS lourd (bundle > 50 MB) | Lenteur frontend | Static copy, lazy loading, tree-shaking widgets |
-| Coordonnées GPS absentes dans GasLib | Pas de carte | Utiliser les coordonnées `x`, `y` comme fallback projeté |
-| Stabilité numérique grandes matrices | Résultats faux | Non-dimensionnalisation, faer pour les matrices creuses |
+| Parsing XML GasLib complexe (namespaces) | Bloquant P1 | ✅ Résolu : `alias` serde |
+| Solveur ne converge pas | Bloquant P2 | ✅ Jacobi converge (8 tests) |
+| Newton complet instable (singularité Jacobien) | P2/P4 | Fallback Jacobi, régularisation + **line search backtracking + hybride** (tâche 2.11) |
+| Écart vs solutions de référence GasLib > 5% | P2 | Upgrade ρ(P,T) et Z (tâche 2.5), puis viser < 1% |
+| CesiumJS lourd (bundle > 50 MB) | Lenteur frontend | Static copy, lazy loading |
+| WebSocket déconnexion pendant simulation | P3 | Reconnexion automatique + cache résultat |
+| Rayon dans spawn_blocking : contention | P4 | Benchmark systématique, pool sizing |
+| GasLib-135+ : solveur lent | P4 | Matrices creuses faer, profilage |
+| **Simulation divergente bloque un slot indéfiniment** | P3/P4 | Timeout configurable + CancellationToken (tâche 3.13) |
+| **Simulations concurrentes saturent la mémoire / CPU** | P4 | Sémaphore borné (tâche 4.8), rejet gracieux si plein |
+| **LU creux trop lent pour N > ~2000 (fill-in, mémoire)** | P4 | Profiling (4.9) puis GMRES+ILU en fallback si nécessaire (tâche 4.11) |
+| **CesiumJS lag avec > 1000 entités individuelles** | P5 | LOD + clustering (5.8) + PolylineCollection (5.9) |
+| **Pas de warm-start : chaque slider re-solve from scratch** | P5 | Warm-start (2.13) + protocole WS avec solution initiale (5.10) |
+| **Exports incomplets/incohérents (unités, métadonnées manquantes)** | P5 | Contrat d'export versionné + tests T5-1/T5-2 + exemples documentés |
+| **UX non fluide en conditions réelles (backlog snapshots, jank UI)** | P3/P5 | Throttling/coalescing (3.15), LOD/primitives (5.8/5.9), budget frame-time (5.14) |
