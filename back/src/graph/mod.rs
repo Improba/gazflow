@@ -24,6 +24,7 @@ pub enum ConnectionKind {
     Pipe,
     Valve,
     ShortPipe,
+    Resistor,
     CompressorStation,
 }
 
@@ -33,9 +34,12 @@ pub struct Pipe {
     pub from: String,
     pub to: String,
     pub kind: ConnectionKind,
+    pub is_open: bool,
     pub length_km: f64,
     pub diameter_mm: f64,
     pub roughness_mm: f64,
+    #[serde(skip_serializing)]
+    pub compressor_ratio_max: Option<f64>,
 }
 
 /// Réseau gazier : graphe orienté (nœuds + tuyaux).
@@ -123,9 +127,11 @@ mod tests {
             from: "A".into(),
             to: "B".into(),
             kind: ConnectionKind::Pipe,
+            is_open: true,
             length_km: 50.0,
             diameter_mm: 500.0,
             roughness_mm: 0.012,
+            compressor_ratio_max: None,
         });
 
         assert_eq!(net.node_count(), 2);

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import type { SimulationResult } from 'src/services/api';
+import { api, type SimulationResult } from 'src/services/api';
 import {
   SimulationWsClient,
   type WsServerMessage,
@@ -20,6 +20,7 @@ export const useSimulateStore = defineStore('simulate', () => {
   const residual = ref<number | null>(null);
   const elapsedMs = ref<number | null>(null);
   const logs = ref<string[]>([]);
+  const exporting = ref(false);
 
   const livePressures = ref<Record<string, number>>({});
   const liveFlows = ref<Record<string, number>>({});
@@ -57,6 +58,9 @@ export const useSimulateStore = defineStore('simulate', () => {
     options?: WsStartOptions,
   ) {
     await ensureConnectedWs();
+    const warmStartPressures =
+      result.value?.pressures ??
+      (Object.keys(livePressures.value).length > 0 ? { ...livePressures.value } : undefined);
     resetRuntimeState();
     currentRunId.value = `run-${Date.now()}`;
     loading.value = true;
@@ -70,6 +74,7 @@ export const useSimulateStore = defineStore('simulate', () => {
         timeout_ms: 30_000,
         max_iter: 1000,
         tolerance: 5e-4,
+        initial_pressures: warmStartPressures,
         ...(options ?? {}),
       },
     });
@@ -172,6 +177,31 @@ export const useSimulateStore = defineStore('simulate', () => {
     logs.value = [`[${new Date().toLocaleTimeString()}] ${entry}`, ...logs.value].slice(0, 200);
   }
 
+  async function exportResult(format: 'json' | 'csv' | 'zip') {
+    if (!currentRunId.value || status.value !== 'converged') {
+      return;
+    }
+    exporting.value = true;
+    try {
+      const blob = await api.exportSimulation(currentRunId.value, format);
+      const href = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = href;
+      anchor.download = `${currentRunId.value}.${format}`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(href);
+      addLog(`export ${format} ready`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'export failed';
+      errorMessage.value = msg;
+      addLog(`error: export ${format} failed (${msg})`);
+    } finally {
+      exporting.value = false;
+    }
+  }
+
   return {
     result,
     loading,
@@ -182,9 +212,11 @@ export const useSimulateStore = defineStore('simulate', () => {
     residual,
     elapsedMs,
     logs,
+    exporting,
     livePressures,
     liveFlows,
     runSimulation,
     cancelSimulation,
+    exportResult,
   };
 });

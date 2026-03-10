@@ -2,6 +2,7 @@
 //!
 //! Référence : <https://gaslib.zib.de/documentation.html>
 
+mod compressor;
 mod parser;
 mod scenario;
 mod solution;

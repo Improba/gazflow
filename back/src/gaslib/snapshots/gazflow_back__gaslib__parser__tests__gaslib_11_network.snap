@@ -109,6 +109,7 @@ pipes:
     from: entry03
     to: N01
     kind: compressorStation
+    is_open: true
     length_km: 0.001
     diameter_mm: 1000
     roughness_mm: 0.012
@@ -116,6 +117,7 @@ pipes:
     from: N04
     to: N05
     kind: compressorStation
+    is_open: true
     length_km: 0.001
     diameter_mm: 1000
     roughness_mm: 0.012
@@ -123,6 +125,7 @@ pipes:
     from: N01
     to: N03
     kind: valve
+    is_open: true
     length_km: 0.001
     diameter_mm: 1000
     roughness_mm: 0.012
@@ -130,6 +133,7 @@ pipes:
     from: entry01
     to: entry03
     kind: pipe
+    is_open: true
     length_km: 55
     diameter_mm: 500
     roughness_mm: 0.1
@@ -137,6 +141,7 @@ pipes:
     from: N01
     to: N02
     kind: pipe
+    is_open: true
     length_km: 55
     diameter_mm: 500
     roughness_mm: 0.1
@@ -144,6 +149,7 @@ pipes:
     from: entry02
     to: N03
     kind: pipe
+    is_open: true
     length_km: 55
     diameter_mm: 500
     roughness_mm: 0.1
@@ -151,6 +157,7 @@ pipes:
     from: N02
     to: exit01
     kind: pipe
+    is_open: true
     length_km: 55
     diameter_mm: 500
     roughness_mm: 0.1
@@ -158,6 +165,7 @@ pipes:
     from: N02
     to: N04
     kind: pipe
+    is_open: true
     length_km: 55
     diameter_mm: 500
     roughness_mm: 0.1
@@ -165,6 +173,7 @@ pipes:
     from: N03
     to: N04
     kind: pipe
+    is_open: true
     length_km: 55
     diameter_mm: 500
     roughness_mm: 0.1
@@ -172,6 +181,7 @@ pipes:
     from: N05
     to: exit02
     kind: pipe
+    is_open: true
     length_km: 55
     diameter_mm: 500
     roughness_mm: 0.1
@@ -179,6 +189,7 @@ pipes:
     from: N05
     to: exit03
     kind: pipe
+    is_open: true
     length_km: 55
     diameter_mm: 500
     roughness_mm: 0.1

@@ -61,8 +61,9 @@ $$
 \rho_{\text{eff}} \approx \frac{P \cdot M}{Z \cdot R \cdot T} \approx 50\ \text{kg/m}^3
 $$
 
-**Limitation :** $\rho_{\text{eff}}$ fixe introduit une erreur croissante lorsque la pression
-s'éloigne de 70 bar. Upgrade prévu : calculer $\rho(P, T)$ dynamiquement via §2.1 et §2.2.
+**Mise à jour implémentation :** le solveur Newton/Jacobi utilise désormais
+$\rho(P,T)$ dynamique (Papay + gaz parfait corrigé) via la pression moyenne de chaque tronçon.
+La forme à $\rho_{\text{eff}}$ fixe reste conservée comme baseline de compatibilité/test.
 
 ### 1.3 Coefficient de friction — Approximation de Swamee-Jain
 
@@ -93,7 +94,8 @@ Pour le gaz naturel haute pression ($P \approx 70$ bar), $Re \approx 10^6 - 10^7
 
 ### 2.1 Équation d'état (BWRS simplifiée)
 
-**Status :** ⬜ Non implémenté. Le MVP utilise $\rho_{eff} = 50$ kg/m³ en dur.
+**Status :** ✅ Implémenté (MVP+): $\rho(P,T)$ calculé dans `solver/gas_properties.rs`
+et injecté dans les résistances de tuyau (Newton/Jacobi) via la pression moyenne du tronçon.
 
 Pour aller au-delà du gaz parfait, la densité à pression $P$ et température $T$ :
 
@@ -232,7 +234,7 @@ Algorithme :
 Cela garantit la convergence globale même loin de la solution (initialisation
 à pression uniforme, Jacobien mal conditionné aux premières itérations).
 
-### 4.4 Non-dimensionnalisation ⬜
+### 4.4 Non-dimensionnalisation ✅
 
 Pour la stabilité numérique sur les grands réseaux, adimensionner les variables :
 
@@ -241,6 +243,12 @@ $$
 $$
 
 Avec $\pi_{ref} = P_{source}^2$ et $Q_{ref} = \max(|d_i|)$.
+
+**Implémentation :**
+
+- mise en place d'un scaling commun `NondimScaling` dans `solver/steady_state.rs`;
+- calcul des flux/conductances via les variables adimensionnées (`flow_and_conductance`);
+- utilisation de ce chemin dans les solveurs Jacobi et Newton hybride.
 
 ### 4.5 Convergence
 
@@ -261,7 +269,7 @@ réduire $\alpha$ de moitié et réessayer.
 | $\rho_{eff}$ fixe (50 kg/m³) | ✅ implémenté | Eq. d'état (§2.1)       |
 | $Re$ fixe ($10^7$)           | ✅ implémenté | Re dynamique (§1.4)     |
 | Température uniforme 288 K   | ✅ implémenté | Profil thermique        |
-| Pas de compresseurs          | ⬜            | Modèle enthalpique      |
+| Compresseurs (uplift MVP directionnel) | ✅ implémenté | Modèle enthalpique      |
 | Pas d'effets gravitaires     | ⬜            | Terme $\rho g \Delta h$ |
 | Régime permanent             | ✅ implémenté | Transitoire (PDE)       |
 | Solveur Jacobi diagonal      | ✅ implémenté | Newton creux (§4.3)     |

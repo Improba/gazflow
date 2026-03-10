@@ -2,6 +2,8 @@
   <div>
     <div class="text-h6 q-mb-sm">Simulation</div>
 
+    <DemandControls v-model="demandOverrides" />
+
     <div class="row q-col-gutter-sm q-mb-md">
       <div class="col">
         <q-btn
@@ -10,7 +12,7 @@
           icon="play_arrow"
           class="full-width"
           :loading="simulateStore.loading"
-          @click="simulateStore.runSimulation()"
+          @click="startSimulation"
         />
       </div>
       <div class="col">
@@ -40,6 +42,42 @@
       <div class="text-subtitle2 q-mb-xs">
         Convergence en {{ simulateStore.result.iterations }} itérations
         (résidu : {{ simulateStore.result.residual.toExponential(2) }})
+      </div>
+
+      <div class="row q-col-gutter-sm q-mb-sm">
+        <div class="col">
+          <q-btn
+            label="Exporter JSON"
+            icon="download"
+            color="secondary"
+            class="full-width"
+            :loading="simulateStore.exporting"
+            :disable="simulateStore.status !== 'converged' || simulateStore.exporting"
+            @click="simulateStore.exportResult('json')"
+          />
+        </div>
+        <div class="col">
+          <q-btn
+            label="Exporter CSV"
+            icon="table_view"
+            color="secondary"
+            class="full-width"
+            :loading="simulateStore.exporting"
+            :disable="simulateStore.status !== 'converged' || simulateStore.exporting"
+            @click="simulateStore.exportResult('csv')"
+          />
+        </div>
+        <div class="col">
+          <q-btn
+            label="Exporter ZIP"
+            icon="folder_zip"
+            color="secondary"
+            class="full-width"
+            :loading="simulateStore.exporting"
+            :disable="simulateStore.status !== 'converged' || simulateStore.exporting"
+            @click="simulateStore.exportResult('zip')"
+          />
+        </div>
       </div>
 
       <q-separator dark class="q-my-sm" />
@@ -79,9 +117,17 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue';
+import DemandControls from 'src/components/DemandControls.vue';
 import LogPanel from 'src/components/LogPanel.vue';
 import ProgressBar from 'src/components/ProgressBar.vue';
 import { useSimulateStore } from 'src/stores/simulate';
 
 const simulateStore = useSimulateStore();
+const demandOverrides = ref<Record<string, number>>({});
+
+function startSimulation() {
+  const hasOverrides = Object.keys(demandOverrides.value).length > 0;
+  simulateStore.runSimulation(hasOverrides ? demandOverrides.value : undefined);
+}
 </script>

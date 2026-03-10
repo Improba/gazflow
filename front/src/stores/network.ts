@@ -7,6 +7,7 @@ export interface NodeDto {
   lon: number | null;
   lat: number | null;
   height_m: number;
+  pressure_fixed_bar: number | null;
 }
 
 export interface PipeDto {

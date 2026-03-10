@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use quick_xml::de::from_str;
 use serde::Deserialize;
 
+use super::compressor::load_compressor_ratios;
 use crate::graph::{ConnectionKind, GasNetwork};
 
 // ---------------------------------------------------------------------------
@@ -70,6 +72,8 @@ struct XmlBound {
 struct XmlValue {
     #[serde(rename = "@value")]
     value: f64,
+    #[serde(rename = "@unit", default)]
+    unit: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,6 +103,14 @@ struct XmlConnectionRaw {
     diameter: Option<XmlValue>,
     #[serde(rename = "roughness", default)]
     roughness: Option<XmlValue>,
+    #[serde(rename = "flowMin", default)]
+    flow_min: Option<XmlValue>,
+    #[serde(rename = "flowMax", default)]
+    flow_max: Option<XmlValue>,
+    #[serde(rename = "@dragFactor", default)]
+    drag_factor_attr: Option<f64>,
+    #[serde(rename = "dragFactor", default)]
+    drag_factor: Option<XmlValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +121,10 @@ enum XmlConnection {
     Valve(XmlConnectionRaw),
     #[serde(rename = "shortPipe")]
     ShortPipe(XmlConnectionRaw),
+    #[serde(rename = "resistor")]
+    Resistor(XmlConnectionRaw),
+    #[serde(rename = "controlValve")]
+    ControlValve(XmlConnectionRaw),
     #[serde(rename = "compressorStation")]
     CompressorStation(XmlConnectionRaw),
 }
@@ -119,6 +135,8 @@ impl XmlConnection {
             Self::Pipe(raw)
             | Self::Valve(raw)
             | Self::ShortPipe(raw)
+            | Self::Resistor(raw)
+            | Self::ControlValve(raw)
             | Self::CompressorStation(raw) => raw,
         }
     }
@@ -128,6 +146,10 @@ impl XmlConnection {
             Self::Pipe(_) => ConnectionKind::Pipe,
             Self::Valve(_) => ConnectionKind::Valve,
             Self::ShortPipe(_) => ConnectionKind::ShortPipe,
+            Self::Resistor(_) => ConnectionKind::Resistor,
+            // MVP: les controlValve GasLib sont traitées comme liaisons quasi-passantes
+            // (évite de couper le réseau sur des états partiels de contrôle).
+            Self::ControlValve(_) => ConnectionKind::ShortPipe,
             Self::CompressorStation(_) => ConnectionKind::CompressorStation,
         }
     }
@@ -137,10 +159,48 @@ fn connection_defaults(kind: ConnectionKind) -> (f64, f64, f64) {
     match kind {
         ConnectionKind::Pipe => (1.0, 500.0, 0.012),
         // MVP: valve/shortPipe/compressor sont traités comme des liaisons quasi-passantes.
-        ConnectionKind::Valve | ConnectionKind::ShortPipe | ConnectionKind::CompressorStation => {
-            (0.001, 1000.0, 0.012)
-        }
+        ConnectionKind::Valve
+        | ConnectionKind::ShortPipe
+        | ConnectionKind::CompressorStation
+        | ConnectionKind::Resistor => (0.001, 1000.0, 0.012),
     }
+}
+
+fn parse_length_km(value: &XmlValue) -> f64 {
+    match value.unit.as_deref() {
+        Some("km") | None => value.value,
+        Some("m") => value.value / 1000.0,
+        _ => value.value,
+    }
+}
+
+fn parse_diameter_mm(value: &XmlValue) -> f64 {
+    match value.unit.as_deref() {
+        Some("mm") | None => value.value,
+        Some("m") => value.value * 1000.0,
+        _ => value.value,
+    }
+}
+
+fn parse_roughness_mm(value: &XmlValue) -> f64 {
+    match value.unit.as_deref() {
+        Some("mm") | None => value.value,
+        Some("m") => value.value * 1000.0,
+        _ => value.value,
+    }
+}
+
+fn valve_is_open(kind: ConnectionKind, raw: &XmlConnectionRaw) -> bool {
+    if kind != ConnectionKind::Valve {
+        return true;
+    }
+    let Some(min) = raw.flow_min.as_ref().map(|v| v.value) else {
+        return true;
+    };
+    let Some(max) = raw.flow_max.as_ref().map(|v| v.value) else {
+        return true;
+    };
+    !(min.abs() < 1e-12 && max.abs() < 1e-12)
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +213,21 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
         .with_context(|| format!("lecture de {:?}", path.as_ref()))?;
 
     let raw: XmlNetwork = from_str(&xml).with_context(|| "parsing XML GasLib")?;
+    let cs_path = path.as_ref().with_extension("cs");
+    let compressor_ratios = if cs_path.exists() {
+        match load_compressor_ratios(&cs_path) {
+            Ok(map) => map,
+            Err(err) => {
+                tracing::warn!(
+                    "unable to load compressor station file {:?}: {err:#}",
+                    cs_path
+                );
+                HashMap::new()
+            }
+        }
+    } else {
+        HashMap::new()
+    };
 
     let mut net = GasNetwork::new();
 
@@ -188,31 +263,41 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
     for conn in &raw.connections.entries {
         let src = conn.raw();
         let kind = conn.kind();
+        let is_open = valve_is_open(kind, src);
         let (default_length_km, default_diameter_mm, default_roughness_mm) =
             connection_defaults(kind);
+        let compressor_ratio_max = if kind == ConnectionKind::CompressorStation {
+            Some(compressor_ratios.get(&src.id).copied().unwrap_or(1.08))
+        } else {
+            None
+        };
         net.add_pipe(crate::graph::Pipe {
             id: src.id.clone(),
             from: src.from.clone(),
             to: src.to.clone(),
             kind,
+            is_open,
             length_km: src
                 .length
                 .as_ref()
-                .map(|v| v.value)
+                .map(parse_length_km)
                 .or(src.length_km_attr)
                 .unwrap_or(default_length_km),
             diameter_mm: src
                 .diameter
                 .as_ref()
-                .map(|v| v.value)
+                .map(parse_diameter_mm)
                 .or(src.diameter_mm_attr)
                 .unwrap_or(default_diameter_mm),
             roughness_mm: src
                 .roughness
                 .as_ref()
-                .map(|v| v.value)
+                .map(parse_roughness_mm)
                 .or(src.roughness_mm_attr)
+                .or(src.drag_factor.as_ref().map(|v| v.value))
+                .or(src.drag_factor_attr)
                 .unwrap_or(default_roughness_mm),
+            compressor_ratio_max,
         });
     }
 
@@ -283,7 +368,8 @@ mod tests {
     <pipe id="P1" from="A" to="B" length="10.0" diameter="500.0" roughness="0.02"/>
     <valve id="V1" from="B" to="C"/>
     <shortPipe id="SP1" from="C" to="D"/>
-    <compressorStation id="CS1" from="D" to="E"/>
+    <resistor id="R1" from="D" to="E"/>
+    <compressorStation id="CS1" from="E" to="A"/>
   </connections>
 </network>"#;
 
@@ -293,14 +379,15 @@ mod tests {
         std::fs::write(&path, xml).unwrap();
 
         let net = load_network(&path).expect("load_network");
-        assert_eq!(net.edge_count(), 4);
+        assert_eq!(net.edge_count(), 5);
 
         let mut kinds: Vec<_> = net.pipes().map(|p| p.kind).collect();
         kinds.sort_by_key(|k| match k {
             ConnectionKind::Pipe => 0,
             ConnectionKind::Valve => 1,
             ConnectionKind::ShortPipe => 2,
-            ConnectionKind::CompressorStation => 3,
+            ConnectionKind::Resistor => 3,
+            ConnectionKind::CompressorStation => 4,
         });
         assert_eq!(
             kinds,
@@ -308,6 +395,7 @@ mod tests {
                 ConnectionKind::Pipe,
                 ConnectionKind::Valve,
                 ConnectionKind::ShortPipe,
+                ConnectionKind::Resistor,
                 ConnectionKind::CompressorStation,
             ]
         );
@@ -315,6 +403,36 @@ mod tests {
         let valve = net.pipes().find(|p| p.id == "V1").expect("valve exists");
         assert_eq!(valve.length_km, 0.001);
         assert_eq!(valve.diameter_mm, 1000.0);
+        assert!(valve.is_open, "default valve should be treated as open");
+    }
+
+    #[test]
+    fn test_parse_closed_valve_from_zero_flow_bounds() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <nodes>
+    <node id="A" x="0" y="0"/>
+    <node id="B" x="1" y="0"/>
+  </nodes>
+  <connections>
+    <valve id="V1" from="A" to="B">
+      <flowMin value="0.0"/>
+      <flowMax value="0.0"/>
+    </valve>
+  </connections>
+</network>"#;
+
+        let dir = std::env::temp_dir().join("gazsim_test_xml");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test_closed_valve.net");
+        std::fs::write(&path, xml).unwrap();
+
+        let net = load_network(&path).expect("load_network");
+        let valve = net.pipes().find(|p| p.id == "V1").expect("valve exists");
+        assert!(
+            !valve.is_open,
+            "zero flow bounds should mark valve as closed"
+        );
     }
 
     #[test]
@@ -379,12 +497,83 @@ mod tests {
                 ConnectionKind::Pipe => pipes += 1,
                 ConnectionKind::Valve => valves += 1,
                 ConnectionKind::CompressorStation => compressors += 1,
-                ConnectionKind::ShortPipe => {}
+                ConnectionKind::ShortPipe | ConnectionKind::Resistor => {}
             }
         }
         assert_eq!(pipes, 8, "GasLib-11 should contain 8 pipes");
         assert_eq!(valves, 1, "GasLib-11 should contain 1 valve");
         assert_eq!(compressors, 2, "GasLib-11 should contain 2 compressors");
+
+        for pipe in net
+            .pipes()
+            .filter(|p| p.kind == ConnectionKind::CompressorStation)
+        {
+            let ratio = pipe.compressor_ratio_max.unwrap_or(1.0);
+            assert!(
+                ratio >= 1.0,
+                "compressor ratio should be >= 1 for {}",
+                pipe.id
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_nodes_have_gps() {
+        let path = Path::new("dat/GasLib-11.net");
+        if !path.exists() {
+            eprintln!("skip: {:?} not found", path);
+            return;
+        }
+
+        let net = load_network(path).expect("load GasLib-11");
+        for node in net.nodes() {
+            assert!(
+                node.x.is_finite(),
+                "invalid x for node {}: {}",
+                node.id,
+                node.x
+            );
+            assert!(
+                node.y.is_finite(),
+                "invalid y for node {}: {}",
+                node.id,
+                node.y
+            );
+            match (node.lon, node.lat) {
+                (Some(lon), Some(lat)) => {
+                    assert!(
+                        (-180.0..=180.0).contains(&lon),
+                        "invalid lon for node {}: {}",
+                        node.id,
+                        lon
+                    );
+                    assert!(
+                        (-90.0..=90.0).contains(&lat),
+                        "invalid lat for node {}: {}",
+                        node.id,
+                        lat
+                    );
+                }
+                (None, None) => {}
+                _ => panic!("partial GPS data for node {}", node.id),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_gaslib_24_extended_connection_kinds() {
+        let path = Path::new("dat/GasLib-24.net");
+        if !path.exists() {
+            eprintln!("skip: {:?} not found", path);
+            return;
+        }
+
+        let net = load_network(path).expect("load GasLib-24");
+        let has_resistor = net.pipes().any(|p| p.kind == ConnectionKind::Resistor);
+        assert!(
+            has_resistor,
+            "GasLib-24 should include at least one resistor connection"
+        );
     }
 
     #[test]

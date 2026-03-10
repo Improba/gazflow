@@ -3,6 +3,7 @@ export interface WsStartOptions {
   tolerance?: number;
   snapshot_every?: number;
   timeout_ms?: number;
+  initial_pressures?: Record<string, number>;
 }
 
 export interface WsSimulationResult {

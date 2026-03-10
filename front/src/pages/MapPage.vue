@@ -4,11 +4,13 @@
       <CesiumViewer />
     </div>
     <SimulationPanel class="sidebar-panel" />
+    <Legend class="legend-panel" />
   </q-page>
 </template>
 
 <script setup lang="ts">
 import CesiumViewer from 'src/components/CesiumViewer.vue';
+import Legend from 'src/components/Legend.vue';
 import SimulationPanel from 'src/components/SimulationPanel.vue';
 </script>
 

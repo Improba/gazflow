@@ -50,9 +50,11 @@ fn build_test_network(with_isolated: bool) -> GasNetwork {
         from: "source".into(),
         to: "sink".into(),
         kind: ConnectionKind::Pipe,
+        is_open: true,
         length_km: 10.0,
         diameter_mm: 500.0,
         roughness_mm: 0.012,
+        compressor_ratio_max: None,
     });
     net
 }

@@ -49,6 +49,8 @@ struct StartOptions {
     snapshot_every: usize,
     #[serde(default = "default_timeout_ms")]
     timeout_ms: u64,
+    #[serde(default)]
+    initial_pressures: Option<HashMap<String, f64>>,
 }
 
 impl Default for StartOptions {
@@ -59,6 +61,7 @@ impl Default for StartOptions {
             iteration_every: default_iteration_every(),
             snapshot_every: default_snapshot_every(),
             timeout_ms: default_timeout_ms(),
+            initial_pressures: None,
         }
     }
 }
@@ -172,11 +175,11 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                 }).await;
 
                                 let tx_for_solver = tx.clone();
-                                let network = state.network.clone();
+                                let state_for_solver = state.clone();
                                 task::spawn_blocking(move || {
                                     let _permit = permit;
                                     run_solver_stream(
-                                        network,
+                                        state_for_solver,
                                         demands,
                                         options,
                                         run_id,
@@ -243,7 +246,7 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
 }
 
 fn run_solver_stream(
-    network: Arc<crate::graph::GasNetwork>,
+    state: super::SharedState,
     demands: HashMap<String, f64>,
     options: StartOptions,
     run_id: String,
@@ -255,51 +258,64 @@ fn run_solver_stream(
     let timeout = Duration::from_millis(options.timeout_ms);
     let mut seq = 1_u64;
 
-    let result = solver::solve_steady_state_with_progress(
-        &network,
-        &demands,
-        None,
-        options.max_iter,
-        options.tolerance,
-        options.snapshot_every,
-        |progress: SolverProgress| {
-            if options.timeout_ms == 0 || (options.timeout_ms > 0 && started.elapsed() >= timeout) {
-                cancel_reason.store(CANCEL_TIMEOUT, Ordering::Relaxed);
-                cancel_flag.store(true, Ordering::Relaxed);
-            }
-            if cancel_flag.load(Ordering::Relaxed) {
-                return SolverControl::Cancel;
-            }
+    let result = state.rayon_pool.install(|| {
+        solver::solve_steady_state_with_progress(
+            &state.network,
+            &demands,
+            options.initial_pressures.as_ref(),
+            options.max_iter,
+            options.tolerance,
+            options.snapshot_every,
+            |progress: SolverProgress| {
+                if options.timeout_ms == 0
+                    || (options.timeout_ms > 0 && started.elapsed() >= timeout)
+                {
+                    cancel_reason.store(CANCEL_TIMEOUT, Ordering::Relaxed);
+                    cancel_flag.store(true, Ordering::Relaxed);
+                }
+                if cancel_flag.load(Ordering::Relaxed) {
+                    return SolverControl::Cancel;
+                }
 
-            if progress.iter == 1 || progress.iter % options.iteration_every.max(1) == 0 {
-                seq += 1;
-                let _ = tx.blocking_send(ServerMessage::Iteration {
-                    run_id: run_id.clone(),
-                    seq,
-                    iter: progress.iter,
-                    residual: progress.residual,
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                });
-            }
+                if progress.iter == 1 || progress.iter % options.iteration_every.max(1) == 0 {
+                    seq += 1;
+                    let _ = tx.blocking_send(ServerMessage::Iteration {
+                        run_id: run_id.clone(),
+                        seq,
+                        iter: progress.iter,
+                        residual: progress.residual,
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                    });
+                }
 
-            if let (Some(pressures), Some(flows)) = (progress.pressures, progress.flows) {
-                seq += 1;
-                let snapshot = ServerMessage::Snapshot {
-                    run_id: run_id.clone(),
-                    seq,
-                    iter: progress.iter,
-                    pressures,
-                    flows,
-                };
-                let _ = tx.try_send(snapshot);
-            }
+                if let (Some(pressures), Some(flows)) = (progress.pressures, progress.flows) {
+                    seq += 1;
+                    let snapshot = ServerMessage::Snapshot {
+                        run_id: run_id.clone(),
+                        seq,
+                        iter: progress.iter,
+                        pressures,
+                        flows,
+                    };
+                    let _ = tx.try_send(snapshot);
+                }
 
-            SolverControl::Continue
-        },
-    );
+                SolverControl::Continue
+            },
+        )
+    });
 
     match result {
         Ok(final_result) => {
+            super::export::store_export_record(
+                &state,
+                super::export::new_export_record(
+                    run_id.clone(),
+                    demands.clone(),
+                    final_result.clone(),
+                    started.elapsed().as_millis() as u64,
+                ),
+            );
             seq += 1;
             let _ = tx.blocking_send(ServerMessage::Converged {
                 run_id,
@@ -407,9 +423,11 @@ mod tests {
             from: "source".into(),
             to: "sink".into(),
             kind: ConnectionKind::Pipe,
+            is_open: true,
             length_km: 10.0,
             diameter_mm: 500.0,
             roughness_mm: 0.012,
+            compressor_ratio_max: None,
         });
 
         let mut defaults = HashMap::new();
@@ -419,6 +437,55 @@ mod tests {
 
     fn test_router() -> axum::Router {
         test_router_with_capacity(4)
+    }
+
+    fn test_router_with_runtime_limits(
+        max_concurrent_simulations: usize,
+        rayon_threads: usize,
+    ) -> axum::Router {
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "source".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: Some(10.0),
+            lat: Some(50.0),
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: Some(70.0),
+        });
+        net.add_node(Node {
+            id: "sink".into(),
+            x: 1.0,
+            y: 0.0,
+            lon: Some(11.0),
+            lat: Some(50.0),
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: None,
+        });
+        net.add_pipe(Pipe {
+            id: "p1".into(),
+            from: "source".into(),
+            to: "sink".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 10.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+        });
+
+        let mut defaults = HashMap::new();
+        defaults.insert("sink".to_string(), -5.0);
+        super::super::create_router_with_runtime_limits(
+            net,
+            defaults,
+            max_concurrent_simulations,
+            rayon_threads,
+        )
     }
 
     fn test_router_with_isolated() -> axum::Router {
@@ -461,9 +528,11 @@ mod tests {
             from: "source".into(),
             to: "sink".into(),
             kind: ConnectionKind::Pipe,
+            is_open: true,
             length_km: 10.0,
             diameter_mm: 500.0,
             roughness_mm: 0.012,
+            compressor_ratio_max: None,
         });
 
         let mut defaults = HashMap::new();
@@ -648,5 +717,61 @@ mod tests {
         ))
         .await
         .expect("send cancel cap-1");
+    }
+
+    #[tokio::test]
+    async fn test_ws_concurrent_with_single_rayon_thread_no_deadlock() {
+        let (addr, _server) = spawn_test_server(test_router_with_runtime_limits(2, 1)).await;
+        let url = format!("ws://{addr}/api/ws/sim");
+        let (mut ws1, _) = connect_async(url.clone()).await.expect("connect ws1");
+        let (mut ws2, _) = connect_async(url).await.expect("connect ws2");
+
+        ws1.send(WsMessage::Text(
+            serde_json::json!({
+                "type": "start_simulation",
+                "run_id": "rt-1",
+                "options": {"max_iter": 400, "tolerance": 1e-4, "snapshot_every": 10, "timeout_ms": 10_000}
+            })
+            .to_string(),
+        ))
+        .await
+        .expect("send start ws1");
+        ws2.send(WsMessage::Text(
+            serde_json::json!({
+                "type": "start_simulation",
+                "run_id": "rt-2",
+                "options": {"max_iter": 400, "tolerance": 1e-4, "snapshot_every": 10, "timeout_ms": 10_000}
+            })
+            .to_string(),
+        ))
+        .await
+        .expect("send start ws2");
+
+        let mut conv1 = false;
+        let mut conv2 = false;
+        for _ in 0..300 {
+            if !conv1 {
+                if let Ok(Some(Ok(WsMessage::Text(txt)))) =
+                    tokio::time::timeout(Duration::from_millis(100), ws1.next()).await
+                {
+                    let msg: serde_json::Value = serde_json::from_str(&txt).expect("json ws1");
+                    conv1 = msg.get("type").and_then(|x| x.as_str()) == Some("converged");
+                }
+            }
+            if !conv2 {
+                if let Ok(Some(Ok(WsMessage::Text(txt)))) =
+                    tokio::time::timeout(Duration::from_millis(100), ws2.next()).await
+                {
+                    let msg: serde_json::Value = serde_json::from_str(&txt).expect("json ws2");
+                    conv2 = msg.get("type").and_then(|x| x.as_str()) == Some("converged");
+                }
+            }
+            if conv1 && conv2 {
+                break;
+            }
+        }
+
+        assert!(conv1, "first run should converge");
+        assert!(conv2, "second run should converge");
     }
 }

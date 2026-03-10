@@ -1,9 +1,11 @@
 //! API REST exposée via Axum.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
@@ -11,6 +13,7 @@ use tower_http::cors::CorsLayer;
 use crate::graph::GasNetwork;
 use crate::solver;
 
+mod export;
 mod ws;
 
 #[derive(Clone)]
@@ -18,6 +21,8 @@ struct AppState {
     network: Arc<GasNetwork>,
     default_demands: Arc<HashMap<String, f64>>,
     simulation_slots: Arc<Semaphore>,
+    rayon_pool: Arc<ThreadPool>,
+    exports: Arc<RwLock<HashMap<String, export::ExportRecord>>>,
 }
 
 type SharedState = Arc<AppState>;
@@ -36,15 +41,46 @@ pub fn create_router_with_limits(
     default_demands: HashMap<String, f64>,
     max_concurrent_simulations: usize,
 ) -> Router {
+    create_router_with_runtime_limits(
+        network,
+        default_demands,
+        max_concurrent_simulations,
+        rayon_threads_from_env(max_concurrent_simulations),
+    )
+}
+
+pub fn create_router_with_runtime_limits(
+    network: GasNetwork,
+    default_demands: HashMap<String, f64>,
+    max_concurrent_simulations: usize,
+    rayon_threads: usize,
+) -> Router {
+    let simulation_capacity = max_concurrent_simulations.max(1);
+    let rayon_threads = rayon_threads.max(1);
+    let rayon_pool = ThreadPoolBuilder::new()
+        .num_threads(rayon_threads)
+        .thread_name(|idx| format!("solver-rayon-{idx}"))
+        .build()
+        .expect("build solver rayon pool");
+
+    tracing::info!(
+        simulation_capacity,
+        rayon_threads,
+        "Configured solver runtime limits"
+    );
+
     let shared: SharedState = Arc::new(AppState {
         network: Arc::new(network),
         default_demands: Arc::new(default_demands),
-        simulation_slots: Arc::new(Semaphore::new(max_concurrent_simulations.max(1))),
+        simulation_slots: Arc::new(Semaphore::new(simulation_capacity)),
+        rayon_pool: Arc::new(rayon_pool),
+        exports: Arc::new(RwLock::new(HashMap::new())),
     });
 
     Router::new()
         .route("/api/health", get(health))
         .route("/api/network", get(get_network))
+        .route("/api/export/{simulation_id}", get(export::get_export))
         .route("/api/ws/sim", get(ws::ws_simulation_handler))
         .route(
             "/api/simulate",
@@ -55,11 +91,29 @@ pub fn create_router_with_limits(
 }
 
 fn max_concurrent_simulations_from_env() -> usize {
-    std::env::var("GAZSIM_MAX_CONCURRENT_SIMULATIONS")
+    std::env::var("GAZFLOW_MAX_CONCURRENT_SIMULATIONS")
         .ok()
+        .or_else(|| std::env::var("GAZSIM_MAX_CONCURRENT_SIMULATIONS").ok())
         .and_then(|raw| raw.parse::<usize>().ok())
         .filter(|&n| n > 0)
         .unwrap_or(2)
+}
+
+fn rayon_threads_from_env(max_concurrent_simulations: usize) -> usize {
+    if let Some(value) = std::env::var("GAZFLOW_RAYON_THREADS")
+        .ok()
+        .or_else(|| std::env::var("GAZSIM_RAYON_THREADS").ok())
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+    {
+        return value;
+    }
+
+    let cpu = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2);
+    // Heuristique anti-contention: répartir les cores selon le nombre max de solves concurrents.
+    (cpu / max_concurrent_simulations.max(1)).max(1)
 }
 
 async fn health() -> &'static str {
@@ -80,6 +134,7 @@ struct NodeDto {
     lon: Option<f64>,
     lat: Option<f64>,
     height_m: f64,
+    pressure_fixed_bar: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -110,6 +165,7 @@ async fn get_network(State(state): State<SharedState>) -> Json<NetworkResponse> 
             lon: n.lon,
             lat: n.lat,
             height_m: n.height_m,
+            pressure_fixed_bar: n.pressure_fixed_bar,
         })
         .collect();
 
@@ -137,30 +193,57 @@ async fn run_simulation_default(
     State(state): State<SharedState>,
 ) -> ApiResult<solver::SolverResult> {
     let demands = (*state.default_demands).clone();
-    run_simulation_with_demands(&state, demands)
+    run_simulation_with_demands(&state, demands).await
 }
 
 async fn run_simulation_custom(
     State(state): State<SharedState>,
     Json(payload): Json<SimulateRequest>,
 ) -> ApiResult<solver::SolverResult> {
-    run_simulation_with_demands(&state, payload.demands)
+    run_simulation_with_demands(&state, payload.demands).await
 }
 
-fn run_simulation_with_demands(
+async fn run_simulation_with_demands(
     state: &SharedState,
     demands: HashMap<String, f64>,
 ) -> ApiResult<solver::SolverResult> {
-    solver::solve_steady_state(&state.network, &demands, 1000, 5e-4)
-        .map(Json)
-        .map_err(|err| {
-            (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ApiError {
-                    error: err.to_string(),
-                }),
-            )
-        })
+    let demands_for_export = demands.clone();
+    let network = state.network.clone();
+    let pool = state.rayon_pool.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        pool.install(|| solver::solve_steady_state(&network, &demands, 1000, 5e-4))
+    })
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: format!("simulation task join error: {err}"),
+            }),
+        )
+    })?
+    .map_err(|err| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: err.to_string(),
+            }),
+        )
+    })?;
+
+    let export_id = format!(
+        "rest-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    export::store_export_record(
+        state,
+        export::new_export_record(export_id, demands_for_export, result.clone(), 0),
+    );
+
+    Ok(Json(result))
 }
 
 #[cfg(test)]
@@ -202,14 +285,16 @@ mod tests {
             from: "source".into(),
             to: "sink".into(),
             kind: ConnectionKind::Pipe,
+            is_open: true,
             length_km: 10.0,
             diameter_mm: 500.0,
             roughness_mm: 0.012,
+            compressor_ratio_max: None,
         });
 
         let mut defaults = HashMap::new();
         defaults.insert("sink".to_string(), -5.0);
-        create_router_with_limits(net, defaults, 4)
+        create_router_with_runtime_limits(net, defaults, 4, 2)
     }
 
     #[tokio::test]

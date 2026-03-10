@@ -24,8 +24,10 @@
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import {
   Viewer,
+  Entity,
   Cartesian3,
   Color,
+  PolylineCollection,
   PolylineGlowMaterialProperty,
   HeightReference,
   LabelStyle,
@@ -37,6 +39,11 @@ import { useSimulateStore } from 'src/stores/simulate';
 const cesiumContainer = ref<HTMLElement>();
 let viewer: Viewer | null = null;
 let postRenderCb: (() => void) | null = null;
+let cameraChangedCb: (() => void) | null = null;
+let pipeCollection: PolylineCollection | null = null;
+const nodeEntities: Entity[] = [];
+const pipeEntitiesById = new Map<string, Entity>();
+const pipePolylinesById = new Map<string, { material: Color } | any>();
 
 const networkStore = useNetworkStore();
 const simulateStore = useSimulateStore();
@@ -46,6 +53,7 @@ const renderUpdateMs = ref(0);
 const entityCount = ref(0);
 const canvasArea = ref<HTMLElement>();
 let resizeObserver: ResizeObserver | null = null;
+const PRIMITIVE_PIPE_THRESHOLD = 200;
 
 onMounted(async () => {
   if (!cesiumContainer.value) return;
@@ -78,11 +86,14 @@ onMounted(async () => {
     }
   };
   viewer.scene.postRender.addEventListener(postRenderCb);
+  cameraChangedCb = () => updateNodeLod();
+  viewer.camera.changed.addEventListener(cameraChangedCb);
 
   if (canvasArea.value) {
     resizeObserver = new ResizeObserver(() => {
       viewer?.resize();
       viewer?.scene.requestRender();
+      updateNodeLod();
     });
     resizeObserver.observe(canvasArea.value);
   }
@@ -94,7 +105,15 @@ onBeforeUnmount(() => {
   if (viewer && postRenderCb) {
     viewer.scene.postRender.removeEventListener(postRenderCb);
   }
+  if (viewer && cameraChangedCb) {
+    viewer.camera.changed.removeEventListener(cameraChangedCb);
+  }
+  pipeCollection = null;
+  nodeEntities.length = 0;
+  pipeEntitiesById.clear();
+  pipePolylinesById.clear();
   postRenderCb = null;
+  cameraChangedCb = null;
   viewer?.destroy();
   viewer = null;
 });
@@ -112,10 +131,30 @@ watch(
 function renderNetwork() {
   if (!viewer) return;
   const { nodes, pipes } = networkStore;
+  viewer.entities.removeAll();
+  if (pipeCollection) {
+    viewer.scene.primitives.remove(pipeCollection);
+    pipeCollection = null;
+  }
+  nodeEntities.length = 0;
+  pipeEntitiesById.clear();
+  pipePolylinesById.clear();
+
+  const nodeById = new Map(nodes.map((n) => [n.id, n] as const));
+  const neighborsByNode = new Map<string, Set<string>>();
+  for (const pipe of pipes) {
+    if (!neighborsByNode.has(pipe.from)) neighborsByNode.set(pipe.from, new Set<string>());
+    if (!neighborsByNode.has(pipe.to)) neighborsByNode.set(pipe.to, new Set<string>());
+    neighborsByNode.get(pipe.from)!.add(pipe.to);
+    neighborsByNode.get(pipe.to)!.add(pipe.from);
+  }
 
   for (const node of nodes) {
     if (node.lon == null || node.lat == null) continue;
-    viewer.entities.add({
+    const neighbors = Array.from(neighborsByNode.get(node.id) ?? []).sort();
+    const neighborsText = neighbors.length > 0 ? neighbors.join(', ') : 'Aucun';
+    const entity = viewer.entities.add({
+      id: `node:${node.id}`,
       position: Cartesian3.fromDegrees(node.lon, node.lat, node.height_m),
       point: { pixelSize: 8, color: Color.CYAN, heightReference: HeightReference.CLAMP_TO_GROUND },
       label: {
@@ -126,41 +165,69 @@ function renderNetwork() {
         verticalOrigin: VerticalOrigin.BOTTOM,
         pixelOffset: new Cartesian3(0, -12, 0) as never,
       },
-      description: `<p>Noeud <b>${node.id}</b></p><p>Alt: ${node.height_m} m</p>`,
+      description: `<p>Noeud <b>${node.id}</b></p><p>Alt: ${node.height_m} m</p><p>Voisins: ${neighborsText}</p>`,
     });
+    nodeEntities.push(entity);
   }
 
-  for (const pipe of pipes) {
-    const fromNode = nodes.find((n) => n.id === pipe.from);
-    const toNode = nodes.find((n) => n.id === pipe.to);
-    if (
-      fromNode?.lon == null ||
-      fromNode?.lat == null ||
-      toNode?.lon == null ||
-      toNode?.lat == null
-    ) continue;
+  if (pipes.length > PRIMITIVE_PIPE_THRESHOLD) {
+    pipeCollection = viewer.scene.primitives.add(new PolylineCollection());
+    for (const pipe of pipes) {
+      const fromNode = nodeById.get(pipe.from);
+      const toNode = nodeById.get(pipe.to);
+      if (
+        fromNode?.lon == null ||
+        fromNode?.lat == null ||
+        toNode?.lon == null ||
+        toNode?.lat == null
+      ) continue;
 
-    viewer.entities.add({
-      polyline: {
+      const polyline = pipeCollection.add({
         positions: Cartesian3.fromDegreesArray([
           fromNode.lon, fromNode.lat,
           toNode.lon, toNode.lat,
         ]),
         width: Math.max(2, pipe.diameter_mm / 100),
-        material: new PolylineGlowMaterialProperty({
-          glowPower: 0.2,
-          color: Color.ORANGE,
-        }),
-        clampToGround: true,
-      },
-      description: `<p>Tuyau <b>${pipe.id}</b></p>
-        <p>${pipe.from} → ${pipe.to}</p>
-        <p>L: ${pipe.length_km} km | D: ${pipe.diameter_mm} mm</p>`,
-    });
+        material: Color.ORANGE,
+      });
+      pipePolylinesById.set(pipe.id, polyline);
+    }
+  } else {
+    for (const pipe of pipes) {
+      const fromNode = nodeById.get(pipe.from);
+      const toNode = nodeById.get(pipe.to);
+      if (
+        fromNode?.lon == null ||
+        fromNode?.lat == null ||
+        toNode?.lon == null ||
+        toNode?.lat == null
+      ) continue;
+
+      const entity = viewer.entities.add({
+        id: `pipe:${pipe.id}`,
+        polyline: {
+          positions: Cartesian3.fromDegreesArray([
+            fromNode.lon, fromNode.lat,
+            toNode.lon, toNode.lat,
+          ]),
+          width: Math.max(2, pipe.diameter_mm / 100),
+          material: new PolylineGlowMaterialProperty({
+            glowPower: 0.2,
+            color: Color.ORANGE,
+          }),
+          clampToGround: true,
+        },
+        description: `<p>Tuyau <b>${pipe.id}</b></p>
+          <p>${pipe.from} → ${pipe.to}</p>
+          <p>L: ${pipe.length_km} km | D: ${pipe.diameter_mm} mm</p>`,
+      });
+      pipeEntitiesById.set(pipe.id, entity);
+    }
   }
 
   viewer.zoomTo(viewer.entities);
   entityCount.value = viewer.entities.values.length;
+  updateNodeLod();
 }
 
 function updateColors() {
@@ -174,21 +241,32 @@ function updateColors() {
   if (Object.keys(flows).length === 0) return;
   const maxFlow = Math.max(...Object.values(flows).map(Math.abs), 1);
 
-  viewer.entities.values.forEach((entity) => {
-    if (!entity.polyline) return;
-    const desc = entity.description?.getValue(viewer!.clock.currentTime) ?? '';
-    const match = desc.match(/<b>(\w+)<\/b>/);
-    if (!match) return;
-    const pipeId = match[1];
+  for (const [pipeId, entity] of pipeEntitiesById.entries()) {
     const flow = flows[pipeId] ?? 0;
     const ratio = Math.abs(flow) / maxFlow;
     const color = Color.fromHsl(0.33 * (1 - ratio), 1.0, 0.5);
+    if (!entity.polyline) continue;
     entity.polyline.material = new PolylineGlowMaterialProperty({
       glowPower: 0.3,
       color,
     }) as never;
-  });
+  }
+
+  for (const [pipeId, polyline] of pipePolylinesById.entries()) {
+    const flow = flows[pipeId] ?? 0;
+    const ratio = Math.abs(flow) / maxFlow;
+    polyline.material = Color.fromHsl(0.33 * (1 - ratio), 1.0, 0.5);
+  }
   renderUpdateMs.value = performance.now() - startedAt;
+}
+
+function updateNodeLod() {
+  if (!viewer) return;
+  const height = viewer.camera.positionCartographic.height;
+  const stride = height > 8_000_000 ? 8 : height > 4_000_000 ? 4 : height > 2_000_000 ? 2 : 1;
+  nodeEntities.forEach((entity, index) => {
+    entity.show = index % stride === 0;
+  });
 }
 </script>
 

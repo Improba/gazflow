@@ -3,7 +3,7 @@ import { viteStaticCopy } from 'vite-plugin-static-copy';
 
 export default configure(() => {
   return {
-    boot: ['cesium'],
+    boot: ['pinia', 'cesium'],
 
     css: ['app.scss'],
 
@@ -35,6 +35,7 @@ export default configure(() => {
         '/api': {
           target: process.env.API_URL || 'http://localhost:3001',
           changeOrigin: true,
+          ws: true,
         },
       },
     },

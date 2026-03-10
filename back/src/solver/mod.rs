@@ -3,6 +3,8 @@
 //! Algorithme : Newton-Raphson nodal.
 //! Équations : Darcy-Weisbach pour la perte de charge.
 
+pub(crate) mod gas_properties;
+pub(crate) mod iterative;
 pub(crate) mod newton;
 mod steady_state;
 
