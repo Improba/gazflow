@@ -1,5 +1,7 @@
 # Équations physiques — GazFlow
 
+Voir aussi : `docs/science/limitations.md` pour les limites connues du modèle.
+
 ## 1. Écoulement de gaz en conduite
 
 ### 1.1 Équation de Darcy-Weisbach (forme gaz)
