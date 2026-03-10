@@ -45,6 +45,13 @@ fn env_usize_opt(name: &str) -> Option<usize> {
         .and_then(|v| v.parse::<usize>().ok())
 }
 
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
+}
+
 fn physical_init_iters(node_count: usize) -> usize {
     if let Some(v) = env_usize_opt("GAZFLOW_PHYSICAL_INIT_ITERS") {
         return v;
@@ -167,6 +174,7 @@ where
     for (pos, &node_idx) in free_indices.iter().enumerate() {
         free_pos[node_idx] = pos;
     }
+    let guard_jacobi_fallback = env_bool("GAZFLOW_GUARD_JACOBI_FALLBACK", n > 2000);
 
     if initial_pressures_bar.is_none() && !free_indices.is_empty() {
         if let Some(candidate) =
@@ -298,12 +306,25 @@ where
             })
         else {
             if !disable_jacobi {
-                apply_jacobi_fallback(
-                    &mut pressures_sq,
-                    &free_indices,
-                    &state.f_node,
-                    &state.j_diag,
-                );
+                if guard_jacobi_fallback {
+                    try_apply_jacobi_fallback_if_improves(
+                        &mut pressures_sq,
+                        &free_indices,
+                        &state.f_node,
+                        &state.j_diag,
+                        residual,
+                        &pipes,
+                        &demands_vec,
+                        scaling,
+                    );
+                } else {
+                    apply_jacobi_fallback(
+                        &mut pressures_sq,
+                        &free_indices,
+                        &state.f_node,
+                        &state.j_diag,
+                    );
+                }
             }
             continue;
         };
@@ -334,12 +355,25 @@ where
 
         if !accepted {
             if !disable_jacobi {
-                apply_jacobi_fallback(
-                    &mut pressures_sq,
-                    &free_indices,
-                    &state.f_node,
-                    &state.j_diag,
-                );
+                if guard_jacobi_fallback {
+                    try_apply_jacobi_fallback_if_improves(
+                        &mut pressures_sq,
+                        &free_indices,
+                        &state.f_node,
+                        &state.j_diag,
+                        residual,
+                        &pipes,
+                        &demands_vec,
+                        scaling,
+                    );
+                } else {
+                    apply_jacobi_fallback(
+                        &mut pressures_sq,
+                        &free_indices,
+                        &state.f_node,
+                        &state.j_diag,
+                    );
+                }
             }
         }
     }
@@ -683,6 +717,29 @@ mod tests {
                 "delta mismatch: sparse={a}, dense={b}"
             );
         }
+    }
+}
+
+fn try_apply_jacobi_fallback_if_improves(
+    pressures_sq: &mut Vec<f64>,
+    free_indices: &[usize],
+    f_node: &[f64],
+    j_diag: &[f64],
+    current_residual: f64,
+    pipes: &[IndexedPipe],
+    demands_vec: &[f64],
+    scaling: NondimScaling,
+) {
+    let mut candidate = pressures_sq.clone();
+    for &idx in free_indices {
+        if j_diag[idx] > 1e-20 {
+            let delta = JACOBI_RELAX * f_node[idx] / j_diag[idx];
+            candidate[idx] = (candidate[idx] + delta).max(MIN_PRESSURE_SQ);
+        }
+    }
+    let candidate_state = evaluate_state(pipes, demands_vec, &candidate, free_indices, scaling);
+    if candidate_state.residual < current_residual {
+        *pressures_sq = candidate;
     }
 }
 

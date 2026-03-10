@@ -112,20 +112,21 @@ Des solutions de référence seront comparées lorsque disponibles.
   - timeout global smoke (`GAZFLOW_LARGE_TEST_MAX_SECONDS`) + timeout continuation (`GAZFLOW_CONTINUATION_MAX_SECONDS`);
   - snapshot warm-start en continuation (`GAZFLOW_CONTINUATION_SNAPSHOT_EVERY`);
   - initialisation physique courte avant Newton pour très grands réseaux (activée par défaut au-delà de `2000` nœuds, rejetée automatiquement si elle n'améliore pas le résidu initial);
-  - cap GMRES par défaut réduit sur grands systèmes libres (`220` itérations pour `m > 1200`).
+  - cap GMRES par défaut réduit sur grands systèmes libres (`220` itérations pour `m > 1200`);
+  - fallback Jacobi guardé sur très grands réseaux (appliqué seulement si le résidu diminue).
 - Mesures récentes:
-  - `GasLib-4197` smoke par défaut: ~14-15s sur runs récents (résidu observé ~`2.83e5` avec paliers `0.05 -> 0.1 -> 0.1`, budget itérations `1,1,4`);
-  - `GasLib-582` smoke par défaut: ~25-33s selon run;
+  - `GasLib-4197` smoke par défaut: ~15s sur runs récents (résidu observé ~`2.52e5` avec paliers `0.05 -> 0.1 -> 0.1`, budget itérations `1,1,4`);
+  - `GasLib-582` smoke par défaut: ~30-40s selon run;
   - les deux restent robustes (non-convergence explicite acceptée en mode smoke).
 - Note objectif perf court-terme:
   - cible exploratoire `<5e5` sous `~15s` atteinte sur profil smoke par défaut actuel;
-  - meilleure configuration stable observée: résidu `~2.83e5` en `~14.9s` sur `GasLib-4197`.
+  - meilleure configuration stable observée: résidu `~2.52e5` en `~15.0s` sur `GasLib-4197`.
 - Tentatives complémentaires (rollback):
   - clamp dur des mises a jour de pression sur bornes nodales (`pressure_lower/upper`) teste puis retire;
   - effet observe sur `GasLib-4197`: degradation forte du residu (jusqu'a `~1.43e7`) et aucune convergence supplementaire utile;
   - initialisation "70 bar bornee par noeud" testee puis retiree;
   - effet observe sur `GasLib-4197`: runtime degrade (`~24s`) avec residu degrade (`~3.58e6`);
-  - baseline conservee puis amelioree: continuation `0.05 -> 0.1 -> 0.1` + budget `1,1,4` + init physique courte + cap GMRES.
+  - baseline conservee puis amelioree: continuation `0.05 -> 0.1 -> 0.1` + budget `1,1,4` + init physique courte + cap GMRES + fallback Jacobi guardé (très grands réseaux).
 - État global inchangé sur la qualification scientifique:
   - T9 reste bloqué sans solution de référence fournie;
   - décision finale Go/No-Go scientifique complète toujours en attente de la référence.

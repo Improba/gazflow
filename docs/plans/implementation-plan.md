@@ -366,8 +366,8 @@ cargo test test_solve_gaslib_582               # T4-7 🟨 : smoke large robuste
 cargo test test_solve_gaslib_4197              # T4-8 🟨 : smoke large robuste (converge ou non-convergence explicite), guardé par env
 # knobs continuation: GAZFLOW_CONTINUATION_AUTO_BRIDGES, GAZFLOW_CONTINUATION_MIN_GAP, GAZFLOW_CONTINUATION_MAX_SECONDS, GAZFLOW_CONTINUATION_SNAPSHOT_EVERY, GAZFLOW_CONTINUATION_ITER_SCHEDULE
 # knobs smoke large: GAZFLOW_LARGE_TEST_MAX_SECONDS
-# knobs solveur large: GAZFLOW_PHYSICAL_INIT_ITERS, GAZFLOW_GMRES_MAX_ITERS, GAZFLOW_GMRES_RESTART
-# profil 4197 par défaut: max_iter=6, scales=0.05,0.1,0.1, schedule iters=1,1,4, init_phys=2 (>2000 noeuds), gmres_cap=220 (~14-15s, residu ~2.83e5 sur machine de dev récente)
+# knobs solveur large: GAZFLOW_PHYSICAL_INIT_ITERS, GAZFLOW_GMRES_MAX_ITERS, GAZFLOW_GMRES_RESTART, GAZFLOW_GUARD_JACOBI_FALLBACK
+# profil 4197 par défaut: max_iter=6, scales=0.05,0.1,0.1, schedule iters=1,1,4, init_phys=2 (>2000 noeuds), gmres_cap=220, jacobi_guard=on (>2000 noeuds) (~15s, residu ~2.52e5 sur machine de dev récente)
 cargo bench -- scaling                         # T4-9 ✅ : courbe temps vs N nœuds (bench synthétique)
 cargo test test_ws_concurrent_with_single_rayon_thread_no_deadlock  # T4-10 ✅ : pas de blocage avec rayon=1
 ./scripts/profile.sh                           # T4-11 ✅ : génération flamegraph (outils disponibles)

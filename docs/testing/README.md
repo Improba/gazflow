@@ -132,10 +132,11 @@ Paramètres avancés (optionnels) pour ajuster les smoke tests large:
 - `GAZFLOW_DISABLE_JACOBI_FALLBACK` (debug: désactive fallback Jacobi dans Newton, ex: `1`)
 - `GAZFLOW_GMRES_MAX_ITERS` / `GAZFLOW_GMRES_RESTART` (tuning solveur itératif GMRES)
 - `GAZFLOW_PHYSICAL_INIT_ITERS` (nombre de sweeps d'initialisation physique avant Newton; `0` pour désactiver)
+- `GAZFLOW_GUARD_JACOBI_FALLBACK` (n'accepte le fallback Jacobi que s'il réduit le résidu; activé par défaut pour `>2000` nœuds)
 
 Valeurs par défaut:
 - `GasLib-582` : `max_iter=180`, `tol=2e-3`, `scales=0.1,0.3`, timeout global `120s`;
-- `GasLib-4197` : profil smoke très court `max_iter=6`, `tol=1e-2`, `scales=0.05,0.1,0.1`, timeout global `40s` (itérations réparties par défaut `1,1,4` entre paliers, initialisation physique courte par défaut `2` sweeps pour `>2000` nœuds, cap GMRES par défaut `220` itérations sur systèmes libres `>1200` inconnues, non-convergence explicite acceptée en mode smoke).
+- `GasLib-4197` : profil smoke très court `max_iter=6`, `tol=1e-2`, `scales=0.05,0.1,0.1`, timeout global `40s` (itérations réparties par défaut `1,1,4` entre paliers, initialisation physique courte par défaut `2` sweeps pour `>2000` nœuds, cap GMRES par défaut `220` itérations sur systèmes libres `>1200` inconnues, fallback Jacobi guardé par défaut sur `>2000` nœuds, non-convergence explicite acceptée en mode smoke).
 
 ## Validation pack (backend)
 
