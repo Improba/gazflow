@@ -131,6 +131,8 @@ struct NetworkResponse {
 #[derive(Serialize)]
 struct NodeDto {
     id: String,
+    x: f64,
+    y: f64,
     lon: Option<f64>,
     lat: Option<f64>,
     height_m: f64,
@@ -162,6 +164,8 @@ async fn get_network(State(state): State<SharedState>) -> Json<NetworkResponse> 
         .nodes()
         .map(|n| NodeDto {
             id: n.id.clone(),
+            x: n.x,
+            y: n.y,
             lon: n.lon,
             lat: n.lat,
             height_m: n.height_m,

@@ -4,6 +4,8 @@ import { api } from 'src/services/api';
 
 export interface NodeDto {
   id: string;
+  x: number;
+  y: number;
   lon: number | null;
   lat: number | null;
   height_m: number;

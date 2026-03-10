@@ -32,6 +32,7 @@ import {
   HeightReference,
   LabelStyle,
   VerticalOrigin,
+  UrlTemplateImageryProvider,
 } from 'cesium';
 import { useNetworkStore } from 'src/stores/network';
 import { useSimulateStore } from 'src/stores/simulate';
@@ -61,7 +62,7 @@ onMounted(async () => {
   viewer = new Viewer(cesiumContainer.value, {
     animation: false,
     timeline: false,
-    baseLayerPicker: true,
+    baseLayerPicker: false,
     geocoder: false,
     homeButton: false,
     sceneModePicker: false,
@@ -69,7 +70,30 @@ onMounted(async () => {
     fullscreenButton: false,
     infoBox: true,
     selectionIndicator: true,
+    imageryProvider: false,
+    skyBox: false,
+    contextOptions: {
+      webgl: {
+        alpha: true,
+      },
+    },
   });
+
+  viewer.scene.backgroundColor = Color.BLACK;
+  viewer.scene.globe.baseColor = Color.BLACK;
+  if (viewer.scene.sun) viewer.scene.sun.show = false;
+  if (viewer.scene.moon) viewer.scene.moon.show = false;
+  if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false;
+
+  try {
+    const osm = new UrlTemplateImageryProvider({
+      url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      credit: 'Map tiles by OpenStreetMap, under ODbL. Data by OpenStreetMap, under ODbL.',
+    });
+    viewer.imageryLayers.addImageryProvider(osm);
+  } catch (e) {
+    console.warn('Failed to load OSM imagery', e);
+  }
 
   await networkStore.fetchNetwork();
   renderNetwork();
@@ -130,100 +154,111 @@ watch(
 
 function renderNetwork() {
   if (!viewer) return;
-  const { nodes, pipes } = networkStore;
-  viewer.entities.removeAll();
-  if (pipeCollection) {
-    viewer.scene.primitives.remove(pipeCollection);
-    pipeCollection = null;
-  }
-  nodeEntities.length = 0;
-  pipeEntitiesById.clear();
-  pipePolylinesById.clear();
-
-  const nodeById = new Map(nodes.map((n) => [n.id, n] as const));
-  const neighborsByNode = new Map<string, Set<string>>();
-  for (const pipe of pipes) {
-    if (!neighborsByNode.has(pipe.from)) neighborsByNode.set(pipe.from, new Set<string>());
-    if (!neighborsByNode.has(pipe.to)) neighborsByNode.set(pipe.to, new Set<string>());
-    neighborsByNode.get(pipe.from)!.add(pipe.to);
-    neighborsByNode.get(pipe.to)!.add(pipe.from);
-  }
-
-  for (const node of nodes) {
-    if (node.lon == null || node.lat == null) continue;
-    const neighbors = Array.from(neighborsByNode.get(node.id) ?? []).sort();
-    const neighborsText = neighbors.length > 0 ? neighbors.join(', ') : 'Aucun';
-    const entity = viewer.entities.add({
-      id: `node:${node.id}`,
-      position: Cartesian3.fromDegrees(node.lon, node.lat, node.height_m),
-      point: { pixelSize: 8, color: Color.CYAN, heightReference: HeightReference.CLAMP_TO_GROUND },
-      label: {
-        text: node.id,
-        font: '12px sans-serif',
-        style: LabelStyle.FILL_AND_OUTLINE,
-        outlineWidth: 2,
-        verticalOrigin: VerticalOrigin.BOTTOM,
-        pixelOffset: new Cartesian3(0, -12, 0) as never,
-      },
-      description: `<p>Noeud <b>${node.id}</b></p><p>Alt: ${node.height_m} m</p><p>Voisins: ${neighborsText}</p>`,
-    });
-    nodeEntities.push(entity);
-  }
-
-  if (pipes.length > PRIMITIVE_PIPE_THRESHOLD) {
-    pipeCollection = viewer.scene.primitives.add(new PolylineCollection());
-    for (const pipe of pipes) {
-      const fromNode = nodeById.get(pipe.from);
-      const toNode = nodeById.get(pipe.to);
-      if (
-        fromNode?.lon == null ||
-        fromNode?.lat == null ||
-        toNode?.lon == null ||
-        toNode?.lat == null
-      ) continue;
-
-      const polyline = pipeCollection.add({
-        positions: Cartesian3.fromDegreesArray([
-          fromNode.lon, fromNode.lat,
-          toNode.lon, toNode.lat,
-        ]),
-        width: Math.max(2, pipe.diameter_mm / 100),
-        material: Color.ORANGE,
-      });
-      pipePolylinesById.set(pipe.id, polyline);
+    const { nodes, pipes } = networkStore;
+    viewer.entities.removeAll();
+    if (pipeCollection) {
+      viewer.scene.primitives.remove(pipeCollection);
+      pipeCollection = null;
     }
-  } else {
-    for (const pipe of pipes) {
-      const fromNode = nodeById.get(pipe.from);
-      const toNode = nodeById.get(pipe.to);
-      if (
-        fromNode?.lon == null ||
-        fromNode?.lat == null ||
-        toNode?.lon == null ||
-        toNode?.lat == null
-      ) continue;
+    nodeEntities.length = 0;
+    pipeEntitiesById.clear();
+    pipePolylinesById.clear();
 
+    const nodeById = new Map(nodes.map((n) => [n.id, n] as const));
+    const neighborsByNode = new Map<string, Set<string>>();
+    for (const pipe of pipes) {
+      if (!neighborsByNode.has(pipe.from)) neighborsByNode.set(pipe.from, new Set<string>());
+      if (!neighborsByNode.has(pipe.to)) neighborsByNode.set(pipe.to, new Set<string>());
+      neighborsByNode.get(pipe.from)!.add(pipe.to);
+      neighborsByNode.get(pipe.to)!.add(pipe.from);
+    }
+
+    // Projection par défaut si pas de GPS (GasLib-11)
+    // On centre sur l'Allemagne (50N, 10E) et on considère x,y en km
+    const REF_LAT = 50.0;
+    const REF_LON = 10.0;
+    const KM_PER_DEG_LAT = 111.0;
+    const KM_PER_DEG_LON = 111.0 * Math.cos((REF_LAT * Math.PI) / 180);
+
+    const getPos = (n: (typeof nodes)[0]) => {
+      if (n.lon != null && n.lat != null) {
+        return { lon: n.lon, lat: n.lat };
+      }
+      return {
+        lon: REF_LON + n.x / KM_PER_DEG_LON,
+        lat: REF_LAT + n.y / KM_PER_DEG_LAT,
+      };
+    };
+
+    for (const node of nodes) {
+      const pos = getPos(node);
+      const neighbors = Array.from(neighborsByNode.get(node.id) ?? []).sort();
+      const neighborsText = neighbors.length > 0 ? neighbors.join(', ') : 'Aucun';
       const entity = viewer.entities.add({
-        id: `pipe:${pipe.id}`,
-        polyline: {
-          positions: Cartesian3.fromDegreesArray([
-            fromNode.lon, fromNode.lat,
-            toNode.lon, toNode.lat,
-          ]),
-          width: Math.max(2, pipe.diameter_mm / 100),
-          material: new PolylineGlowMaterialProperty({
-            glowPower: 0.2,
-            color: Color.ORANGE,
-          }),
-          clampToGround: true,
+        id: `node:${node.id}`,
+        position: Cartesian3.fromDegrees(pos.lon, pos.lat, node.height_m),
+        point: {
+          pixelSize: 8,
+          color: Color.CYAN,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
         },
-        description: `<p>Tuyau <b>${pipe.id}</b></p>
+        label: {
+          text: node.id,
+          font: '12px sans-serif',
+          style: LabelStyle.FILL_AND_OUTLINE,
+          outlineWidth: 2,
+          verticalOrigin: VerticalOrigin.BOTTOM,
+          pixelOffset: new Cartesian3(0, -12, 0) as never,
+        },
+        description: `<p>Noeud <b>${node.id}</b></p><p>Alt: ${node.height_m} m</p><p>Voisins: ${neighborsText}</p>`,
+      });
+      nodeEntities.push(entity);
+    }
+
+    if (pipes.length > PRIMITIVE_PIPE_THRESHOLD) {
+      pipeCollection = viewer.scene.primitives.add(new PolylineCollection());
+      for (const pipe of pipes) {
+        const fromNode = nodeById.get(pipe.from);
+        const toNode = nodeById.get(pipe.to);
+        if (!fromNode || !toNode) continue;
+
+        const p1 = getPos(fromNode);
+        const p2 = getPos(toNode);
+
+        const polyline = pipeCollection.add({
+          positions: Cartesian3.fromDegreesArray([p1.lon, p1.lat, p2.lon, p2.lat]),
+          width: Math.max(2, pipe.diameter_mm / 100),
+          material: Color.ORANGE,
+        });
+        pipePolylinesById.set(pipe.id, polyline);
+      }
+    } else {
+      for (const pipe of pipes) {
+        const fromNode = nodeById.get(pipe.from);
+        const toNode = nodeById.get(pipe.to);
+        if (!fromNode || !toNode) continue;
+
+        const p1 = getPos(fromNode);
+        const p2 = getPos(toNode);
+
+        const entity = viewer.entities.add({
+          id: `pipe:${pipe.id}`,
+          polyline: {
+            positions: Cartesian3.fromDegreesArray([p1.lon, p1.lat, p2.lon, p2.lat]),
+            width: Math.max(2, pipe.diameter_mm / 100),
+            material: new PolylineGlowMaterialProperty({
+              glowPower: 0.2,
+              color: Color.ORANGE,
+            }),
+            clampToGround: true,
+          },
+          description: `<p>Tuyau <b>${pipe.id}</b></p>
           <p>${pipe.from} → ${pipe.to}</p>
           <p>L: ${pipe.length_km} km | D: ${pipe.diameter_mm} mm</p>`,
-      });
-      pipeEntitiesById.set(pipe.id, entity);
+        });
+        pipeEntitiesById.set(pipe.id, entity);
+      }
     }
-  }
 
   viewer.zoomTo(viewer.entities);
   entityCount.value = viewer.entities.values.length;

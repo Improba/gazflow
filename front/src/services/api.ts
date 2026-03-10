@@ -7,6 +7,8 @@ export interface NetworkResponse {
   edge_count: number;
   nodes: {
     id: string;
+    x: number;
+    y: number;
     lon: number | null;
     lat: number | null;
     height_m: number;

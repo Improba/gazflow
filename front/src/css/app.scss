@@ -28,9 +28,9 @@ body {
 .sidebar-panel {
   position: absolute;
   top: 60px;
-  right: 16px;
+  left: 16px;
   width: 360px;
-  max-height: calc(100vh - 80px);
+  max-height: calc(100vh - 230px);
   overflow-y: auto;
   z-index: 100;
   background: var(--scada-panel);
@@ -46,5 +46,9 @@ body {
   position: absolute;
   right: 16px;
   bottom: 16px;
-  z-index: 100;
+  z-index: 101;
+}
+
+.cesium-credit-logoContainer {
+  display: none !important;
 }

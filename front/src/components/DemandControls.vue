@@ -11,9 +11,9 @@
         <div
           v-for="node in adjustableNodes"
           :key="node.id"
-          class="q-mb-sm"
+          class="q-mb-md"
         >
-          <div class="row items-center justify-between text-caption q-mb-xs">
+          <div class="row items-center justify-between text-caption q-mb-none">
             <span>{{ node.id }}</span>
             <span>-{{ (sliderValues[node.id] ?? 0).toFixed(1) }} m³/s</span>
           </div>
@@ -23,6 +23,8 @@
             :max="20"
             :step="0.5"
             color="amber-5"
+            label
+            :label-value="`${(sliderValues[node.id] ?? 0).toFixed(1)}`"
             @update:model-value="(v) => onSliderChange(node.id, Number(v))"
           />
         </div>

@@ -2,6 +2,8 @@
 
 Simulateur d'écoulement de gaz naturel en réseau, inspiré de SIMONE.
 
+![GazFlow Screenshot](docs/assets/screenshot.png)
+
 ## Architecture
 
 - **back/** — Backend Rust : moteur de calcul (Darcy-Weisbach, Newton-Raphson) + API REST (Axum)
@@ -68,6 +70,7 @@ sont visibles sur l'hôte et versionnées par git.
 
 ## Documentation
 
+- [Quickstart](docs/quickstart.md)
 - [Architecture](docs/architecture/overview.md)
 - [Contrat d'export des résultats](docs/architecture/export-contract.md)
 - [Équations physiques](docs/science/equations.md)
