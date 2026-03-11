@@ -90,7 +90,13 @@ onMounted(async () => {
       url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
       credit: 'Map tiles by OpenStreetMap, under ODbL. Data by OpenStreetMap, under ODbL.',
     });
-    viewer.imageryLayers.addImageryProvider(osm);
+    const baseLayer = viewer.imageryLayers.addImageryProvider(osm);
+    // Palette sombre pour mettre en avant le réseau.
+    baseLayer.brightness = 0.28;
+    baseLayer.contrast = 1.15;
+    baseLayer.saturation = 0.12;
+    baseLayer.gamma = 0.85;
+    baseLayer.alpha = 0.85;
   } catch (e) {
     console.warn('Failed to load OSM imagery', e);
   }
