@@ -2,6 +2,14 @@
   <div class="viewer-root">
     <div ref="canvasArea" class="canvas-area">
       <div ref="cesiumContainer" class="canvas-element cesium-container" />
+      <div v-if="positioningWarningVisible" class="positioning-warning">
+        <q-icon name="warning_amber" color="warning" size="18px" />
+        <span>{{ positioningWarningTitle }}</span>
+        <q-icon name="help_outline" size="16px" />
+        <q-tooltip anchor="bottom left" self="top left" class="bg-grey-10 text-white">
+          <div class="positioning-warning-tooltip">{{ positioningWarningDetail }}</div>
+        </q-tooltip>
+      </div>
       <q-btn
         dense
         round
@@ -27,6 +35,7 @@ import {
   Entity,
   Cartesian3,
   Color,
+  Material,
   PolylineCollection,
   PolylineGlowMaterialProperty,
   HeightReference,
@@ -52,9 +61,18 @@ const debugOverlayEnabled = ref(false);
 const fps = ref(0);
 const renderUpdateMs = ref(0);
 const entityCount = ref(0);
+const positioningWarningVisible = ref(false);
+const positioningWarningTitle = ref('Positionnement cartographique approximatif');
+const positioningWarningDetail = ref('');
 const canvasArea = ref<HTMLElement>();
 let resizeObserver: ResizeObserver | null = null;
 const PRIMITIVE_PIPE_THRESHOLD = 200;
+
+function createPrimitivePipeMaterial(color: Color) {
+  return Material.fromType('Color', {
+    color: color.clone(),
+  });
+}
 
 onMounted(async () => {
   if (!cesiumContainer.value) return;
@@ -170,6 +188,30 @@ watch(
 function renderNetwork() {
   if (!viewer) return;
     const { nodes, pipes } = networkStore;
+    const gpsExactCount = nodes.reduce(
+      (count, node) => (node.lon != null && node.lat != null ? count + 1 : count),
+      0,
+    );
+    const partialGpsCount = nodes.reduce(
+      (count, node) =>
+        node.lon != null && node.lat != null ? count : node.lon != null || node.lat != null ? count + 1 : count,
+      0,
+    );
+    const approxCount = nodes.length - gpsExactCount;
+    positioningWarningVisible.value = approxCount > 0;
+    positioningWarningDetail.value =
+      approxCount > 0
+        ? [
+            `${approxCount}/${nodes.length} noeud(s) sont places via une projection locale depuis x/y.`,
+            `${gpsExactCount}/${nodes.length} noeud(s) ont des coordonnees GPS exactes (lon/lat).`,
+            partialGpsCount > 0
+              ? `${partialGpsCount} noeud(s) ont une coordonnee GPS partielle (lon ou lat manquant).`
+              : null,
+            'Projection utilisee: repere local centre a 50N, 10E (approximation).',
+          ]
+            .filter((line): line is string => line != null)
+            .join('\n')
+        : '';
     viewer.entities.removeAll();
     if (pipeCollection) {
       viewer.scene.primitives.remove(pipeCollection);
@@ -243,7 +285,7 @@ function renderNetwork() {
         const polyline = pipeCollection.add({
           positions: Cartesian3.fromDegreesArray([p1.lon, p1.lat, p2.lon, p2.lat]),
           width: Math.max(2, pipe.diameter_mm / 100),
-          material: Color.ORANGE,
+          material: createPrimitivePipeMaterial(Color.ORANGE),
         });
         pipePolylinesById.set(pipe.id, polyline);
       }
@@ -305,7 +347,7 @@ function updateColors() {
   for (const [pipeId, polyline] of pipePolylinesById.entries()) {
     const flow = flows[pipeId] ?? 0;
     const ratio = Math.abs(flow) / maxFlow;
-    polyline.material = Color.fromHsl(0.33 * (1 - ratio), 1.0, 0.5);
+    polyline.material = createPrimitivePipeMaterial(Color.fromHsl(0.33 * (1 - ratio), 1.0, 0.5));
   }
   renderUpdateMs.value = performance.now() - startedAt;
 }
@@ -340,6 +382,31 @@ function updateNodeLod() {
   position: absolute;
   inset: 0;
   overflow: hidden;
+}
+
+.positioning-warning {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: rgba(28, 24, 12, 0.9);
+  border: 1px solid rgba(245, 196, 75, 0.55);
+  color: #f3dfa7;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: help;
+}
+
+.positioning-warning-tooltip {
+  max-width: 360px;
+  white-space: pre-line;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .perf-toggle {
