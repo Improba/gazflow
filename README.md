@@ -4,6 +4,24 @@ Simulateur d'écoulement de gaz naturel en réseau, inspiré de SIMONE.
 
 ![GazFlow Screenshot](docs/assets/screenshot.png)
 
+## Ce que fait GazFlow (vision métier)
+
+GazFlow simule l'écoulement du gaz dans un réseau de transport à partir d'une topologie
+GasLib et d'un scénario de demande. L'outil calcule un point de fonctionnement
+hydraulique en régime permanent (pressions nodales et débits par conduite), puis le
+restitue en lecture opérationnelle : carte 3D, suivi de convergence et exports exploitables.
+
+### Pour quoi faire
+
+- Étudier le comportement hydraulique d'un réseau selon différents niveaux de soutirage/injection
+- Visualiser rapidement les zones de pression forte/faible et les conduites les plus sollicitées
+- Comparer des scénarios et documenter les résultats (JSON/CSV/ZIP)
+
+### Ce que l'outil n'est pas
+
+GazFlow est un prototype de simulation et de visualisation inspiré des outils industriels.
+Il ne remplace pas un simulateur certifié d'exploitation réseau.
+
 ## Architecture
 
 - **back/** — Backend Rust : moteur de calcul (Darcy-Weisbach, Newton-Raphson) + API REST (Axum)

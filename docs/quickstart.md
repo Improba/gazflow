@@ -2,8 +2,6 @@
 
 Demarrage le plus rapide pour lancer une simulation GazFlow en local.
 
-![GazFlow Screenshot](assets/screenshot.png)
-
 ## Prerequis
 
 - Docker
