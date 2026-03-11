@@ -2,7 +2,26 @@
 
 Simulateur d'écoulement de gaz naturel en réseau, inspiré de SIMONE.
 
-![GazFlow Screenshot](docs/assets/screenshot.png)
+## Aperçu visuel
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/assets/overview-3d-network.png" alt="Vue 3D du réseau de transport dans GazFlow" />
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/assets/scenario-control-panel.png" alt="Panneau de contrôle de simulation GazFlow" />
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/assets/simulation-results-convergence.png" alt="Résultats hydrauliques et convergence dans GazFlow" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><em>Carte 3D du réseau</em></td>
+    <td align="center"><em>Pilotage des scénarios</em></td>
+    <td align="center"><em>Lecture des résultats</em></td>
+  </tr>
+</table>
 
 ## Ce que fait GazFlow (vision métier)
 
