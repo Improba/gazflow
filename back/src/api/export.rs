@@ -14,6 +14,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use zip::write::SimpleFileOptions;
 
+use crate::graph::GasNetwork;
 use crate::solver::SolverResult;
 
 #[derive(Debug, Clone)]
@@ -27,6 +28,9 @@ pub(super) struct ExportRecord {
     pub solver_method: String,
     pub result: SolverResult,
     pub elapsed_ms: u64,
+    pub node_count: usize,
+    pub pipe_count: usize,
+    pub pipe_meta: HashMap<String, (String, String)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,24 +202,34 @@ pub(super) fn store_export_record(state: &super::SharedState, record: ExportReco
 
 pub(super) fn new_export_record(
     simulation_id: String,
+    network_id: String,
+    network: &GasNetwork,
     demands: HashMap<String, f64>,
     result: SolverResult,
     elapsed_ms: u64,
 ) -> ExportRecord {
+    let mut pipe_meta = HashMap::new();
+    for pipe in network.pipes() {
+        pipe_meta.insert(pipe.id.clone(), (pipe.from.clone(), pipe.to.clone()));
+    }
+
     ExportRecord {
         simulation_id,
         created_at: now_iso8601_approx(),
         status: "converged".to_string(),
-        network_id: "GasLib-11".to_string(),
+        network_id,
         scenario_id: "default".to_string(),
         demands,
         solver_method: "newton_hybrid_dense".to_string(),
         result,
         elapsed_ms,
+        node_count: network.node_count(),
+        pipe_count: network.edge_count(),
+        pipe_meta,
     }
 }
 
-fn build_json_payload(state: &super::SharedState, record: &ExportRecord) -> ExportPayload {
+fn build_json_payload(_state: &super::SharedState, record: &ExportRecord) -> ExportPayload {
     let mut pressures: Vec<_> = record
         .result
         .pressures
@@ -227,17 +241,13 @@ fn build_json_payload(state: &super::SharedState, record: &ExportRecord) -> Expo
         .collect();
     pressures.sort_by(|a, b| a.node_id.cmp(&b.node_id));
 
-    let mut pipe_meta = HashMap::new();
-    for pipe in state.network.pipes() {
-        pipe_meta.insert(pipe.id.clone(), (pipe.from.clone(), pipe.to.clone()));
-    }
-
     let mut flows: Vec<_> = record
         .result
         .flows
         .iter()
         .map(|(pipe_id, flow)| {
-            let (from, to) = pipe_meta
+            let (from, to) = record
+                .pipe_meta
                 .get(pipe_id)
                 .cloned()
                 .unwrap_or_else(|| (String::new(), String::new()));
@@ -285,8 +295,8 @@ fn build_json_payload(state: &super::SharedState, record: &ExportRecord) -> Expo
         },
         results: ResultsSection { pressures, flows },
         stats: StatsSection {
-            node_count: state.network.node_count(),
-            pipe_count: state.network.edge_count(),
+            node_count: record.node_count,
+            pipe_count: record.pipe_count,
             min_pressure: if min_pressure.is_finite() {
                 min_pressure
             } else {
@@ -302,7 +312,7 @@ fn build_json_payload(state: &super::SharedState, record: &ExportRecord) -> Expo
     }
 }
 
-fn build_csv(state: &super::SharedState, record: &ExportRecord) -> String {
+fn build_csv(_state: &super::SharedState, record: &ExportRecord) -> String {
     let mut lines = Vec::new();
     lines.push("kind,id,from,to,value,abs_value,unit,direction".to_string());
 
@@ -315,15 +325,11 @@ fn build_csv(state: &super::SharedState, record: &ExportRecord) -> String {
         ));
     }
 
-    let mut pipe_meta = HashMap::new();
-    for pipe in state.network.pipes() {
-        pipe_meta.insert(pipe.id.clone(), (pipe.from.clone(), pipe.to.clone()));
-    }
-
     let mut flow_rows: Vec<_> = record.result.flows.iter().collect();
     flow_rows.sort_by(|(a, _), (b, _)| a.cmp(b));
     for (pipe_id, flow) in flow_rows {
-        let (from, to) = pipe_meta
+        let (from, to) = record
+            .pipe_meta
             .get(pipe_id)
             .cloned()
             .unwrap_or_else(|| (String::new(), String::new()));
@@ -438,9 +444,13 @@ mod tests {
         });
 
         Arc::new(super::super::AppState {
-            network: Arc::new(network),
-            default_demands: Arc::new(HashMap::new()),
+            network: Arc::new(RwLock::new(Arc::new(network))),
+            default_demands: Arc::new(RwLock::new(Arc::new(HashMap::new()))),
+            active_dataset: Arc::new(RwLock::new("custom".to_string())),
+            available_datasets: Arc::new(vec!["custom".to_string()]),
+            data_dir: Arc::new(std::path::PathBuf::from("dat")),
             simulation_slots: Arc::new(Semaphore::new(1)),
+            simulation_capacity: 1,
             rayon_pool: Arc::new(
                 ThreadPoolBuilder::new()
                     .num_threads(1)
@@ -461,6 +471,11 @@ mod tests {
         flows.insert("P1".to_string(), 5.5);
         let record = new_export_record(
             "sim-test".to_string(),
+            "custom".to_string(),
+            &state
+                .network
+                .read()
+                .expect("network lock should not be poisoned"),
             HashMap::new(),
             SolverResult {
                 pressures,
@@ -488,6 +503,11 @@ mod tests {
         flows.insert("P1".to_string(), 1.0);
         let record = new_export_record(
             "sim-test".to_string(),
+            "custom".to_string(),
+            &state
+                .network
+                .read()
+                .expect("network lock should not be poisoned"),
             HashMap::new(),
             SolverResult {
                 pressures,

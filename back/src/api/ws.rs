@@ -148,7 +148,25 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                 }
 
                                 let run_id = run_id.unwrap_or_else(default_run_id);
-                                let demands = demands.unwrap_or_else(|| (*state.default_demands).clone());
+                                let (network, network_id, default_demands) = {
+                                    let network = state
+                                        .network
+                                        .read()
+                                        .expect("network lock should not be poisoned")
+                                        .clone();
+                                    let network_id = state
+                                        .active_dataset
+                                        .read()
+                                        .expect("active dataset lock should not be poisoned")
+                                        .clone();
+                                    let default_demands = state
+                                        .default_demands
+                                        .read()
+                                        .expect("default demands lock should not be poisoned")
+                                        .clone();
+                                    (network, network_id, default_demands)
+                                };
+                                let demands = demands.unwrap_or_else(|| (*default_demands).clone());
                                 let options = options.unwrap_or_default();
                                 let permit = match state.simulation_slots.clone().try_acquire_owned() {
                                     Ok(permit) => permit,
@@ -180,6 +198,8 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                     let _permit = permit;
                                     run_solver_stream(
                                         state_for_solver,
+                                        network,
+                                        network_id,
                                         demands,
                                         options,
                                         run_id,
@@ -247,6 +267,8 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
 
 fn run_solver_stream(
     state: super::SharedState,
+    network: Arc<crate::graph::GasNetwork>,
+    network_id: String,
     demands: HashMap<String, f64>,
     options: StartOptions,
     run_id: String,
@@ -260,7 +282,7 @@ fn run_solver_stream(
 
     let result = state.rayon_pool.install(|| {
         solver::solve_steady_state_with_progress(
-            &state.network,
+            &network,
             &demands,
             options.initial_pressures.as_ref(),
             options.max_iter,
@@ -311,6 +333,8 @@ fn run_solver_stream(
                 &state,
                 super::export::new_export_record(
                     run_id.clone(),
+                    network_id,
+                    &network,
                     demands.clone(),
                     final_result.clone(),
                     started.elapsed().as_millis() as u64,

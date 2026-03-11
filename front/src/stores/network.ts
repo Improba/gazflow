@@ -24,6 +24,9 @@ export const useNetworkStore = defineStore('network', () => {
   const nodes = ref<NodeDto[]>([]);
   const pipes = ref<PipeDto[]>([]);
   const loading = ref(false);
+  const switching = ref(false);
+  const availableNetworks = ref<string[]>([]);
+  const activeNetwork = ref<string | null>(null);
 
   async function fetchNetwork() {
     loading.value = true;
@@ -31,10 +34,40 @@ export const useNetworkStore = defineStore('network', () => {
       const data = await api.getNetwork();
       nodes.value = data.nodes;
       pipes.value = data.pipes;
+      if (data.active_dataset) {
+        activeNetwork.value = data.active_dataset;
+      }
     } finally {
       loading.value = false;
     }
   }
 
-  return { nodes, pipes, loading, fetchNetwork };
+  async function fetchAvailableNetworks() {
+    const data = await api.getNetworks();
+    availableNetworks.value = data.available;
+    activeNetwork.value = data.active;
+  }
+
+  async function selectNetwork(datasetId: string) {
+    switching.value = true;
+    try {
+      const data = await api.selectNetwork(datasetId);
+      activeNetwork.value = data.active;
+      await fetchNetwork();
+    } finally {
+      switching.value = false;
+    }
+  }
+
+  return {
+    nodes,
+    pipes,
+    loading,
+    switching,
+    availableNetworks,
+    activeNetwork,
+    fetchNetwork,
+    fetchAvailableNetworks,
+    selectNetwork,
+  };
 });

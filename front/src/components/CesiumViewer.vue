@@ -101,7 +101,9 @@ onMounted(async () => {
     console.warn('Failed to load OSM imagery', e);
   }
 
-  await networkStore.fetchNetwork();
+  if (networkStore.nodes.length === 0 && networkStore.pipes.length === 0) {
+    await networkStore.fetchNetwork();
+  }
   renderNetwork();
 
   let frames = 0;
@@ -156,6 +158,13 @@ watch(
     }
   },
   { deep: true },
+);
+
+watch(
+  () => [networkStore.nodes, networkStore.pipes],
+  () => {
+    renderNetwork();
+  },
 );
 
 function renderNetwork() {

@@ -1,6 +1,7 @@
 //! API REST exposée via Axum.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
 
+use crate::gaslib;
 use crate::graph::GasNetwork;
 use crate::solver;
 
@@ -18,9 +20,13 @@ mod ws;
 
 #[derive(Clone)]
 struct AppState {
-    network: Arc<GasNetwork>,
-    default_demands: Arc<HashMap<String, f64>>,
+    network: Arc<RwLock<Arc<GasNetwork>>>,
+    default_demands: Arc<RwLock<Arc<HashMap<String, f64>>>>,
+    active_dataset: Arc<RwLock<String>>,
+    available_datasets: Arc<Vec<String>>,
+    data_dir: Arc<PathBuf>,
     simulation_slots: Arc<Semaphore>,
+    simulation_capacity: usize,
     rayon_pool: Arc<ThreadPool>,
     exports: Arc<RwLock<HashMap<String, export::ExportRecord>>>,
 }
@@ -29,10 +35,48 @@ type SharedState = Arc<AppState>;
 type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ApiError>)>;
 
 pub fn create_router(network: GasNetwork, default_demands: HashMap<String, f64>) -> Router {
-    create_router_with_limits(
+    create_router_with_datasets(
         network,
         default_demands,
+        "custom".to_string(),
+        vec!["custom".to_string()],
+        PathBuf::from("dat"),
+    )
+}
+
+pub fn create_router_with_datasets(
+    network: GasNetwork,
+    default_demands: HashMap<String, f64>,
+    active_dataset: String,
+    available_datasets: Vec<String>,
+    data_dir: PathBuf,
+) -> Router {
+    create_router_with_limits_and_datasets(
+        network,
+        default_demands,
+        active_dataset,
+        available_datasets,
+        data_dir,
         max_concurrent_simulations_from_env(),
+    )
+}
+
+pub fn create_router_with_limits_and_datasets(
+    network: GasNetwork,
+    default_demands: HashMap<String, f64>,
+    active_dataset: String,
+    available_datasets: Vec<String>,
+    data_dir: PathBuf,
+    max_concurrent_simulations: usize,
+) -> Router {
+    create_router_with_runtime_limits_and_datasets(
+        network,
+        default_demands,
+        active_dataset,
+        available_datasets,
+        data_dir,
+        max_concurrent_simulations,
+        rayon_threads_from_env(max_concurrent_simulations),
     )
 }
 
@@ -41,17 +85,39 @@ pub fn create_router_with_limits(
     default_demands: HashMap<String, f64>,
     max_concurrent_simulations: usize,
 ) -> Router {
-    create_router_with_runtime_limits(
+    create_router_with_limits_and_datasets(
         network,
         default_demands,
+        "custom".to_string(),
+        vec!["custom".to_string()],
+        PathBuf::from("dat"),
         max_concurrent_simulations,
-        rayon_threads_from_env(max_concurrent_simulations),
     )
 }
 
 pub fn create_router_with_runtime_limits(
     network: GasNetwork,
     default_demands: HashMap<String, f64>,
+    max_concurrent_simulations: usize,
+    rayon_threads: usize,
+) -> Router {
+    create_router_with_runtime_limits_and_datasets(
+        network,
+        default_demands,
+        "custom".to_string(),
+        vec!["custom".to_string()],
+        PathBuf::from("dat"),
+        max_concurrent_simulations,
+        rayon_threads,
+    )
+}
+
+pub fn create_router_with_runtime_limits_and_datasets(
+    network: GasNetwork,
+    default_demands: HashMap<String, f64>,
+    active_dataset: String,
+    available_datasets: Vec<String>,
+    data_dir: PathBuf,
     max_concurrent_simulations: usize,
     rayon_threads: usize,
 ) -> Router {
@@ -70,16 +136,21 @@ pub fn create_router_with_runtime_limits(
     );
 
     let shared: SharedState = Arc::new(AppState {
-        network: Arc::new(network),
-        default_demands: Arc::new(default_demands),
+        network: Arc::new(RwLock::new(Arc::new(network))),
+        default_demands: Arc::new(RwLock::new(Arc::new(default_demands))),
+        active_dataset: Arc::new(RwLock::new(active_dataset)),
+        available_datasets: Arc::new(available_datasets),
+        data_dir: Arc::new(data_dir),
         simulation_slots: Arc::new(Semaphore::new(simulation_capacity)),
+        simulation_capacity,
         rayon_pool: Arc::new(rayon_pool),
         exports: Arc::new(RwLock::new(HashMap::new())),
     });
 
     Router::new()
         .route("/api/health", get(health))
-        .route("/api/network", get(get_network))
+        .route("/api/networks", get(list_networks))
+        .route("/api/network", get(get_network).post(select_network))
         .route("/api/export/{simulation_id}", get(export::get_export))
         .route("/api/ws/sim", get(ws::ws_simulation_handler))
         .route(
@@ -122,10 +193,17 @@ async fn health() -> &'static str {
 
 #[derive(Serialize)]
 struct NetworkResponse {
+    active_dataset: String,
     node_count: usize,
     edge_count: usize,
     nodes: Vec<NodeDto>,
     pipes: Vec<PipeDto>,
+}
+
+#[derive(Serialize)]
+struct NetworksResponse {
+    available: Vec<String>,
+    active: String,
 }
 
 #[derive(Serialize)]
@@ -153,14 +231,34 @@ struct SimulateRequest {
     demands: HashMap<String, f64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SelectNetworkRequest {
+    dataset_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SelectNetworkResponse {
+    active: String,
+    node_count: usize,
+    edge_count: usize,
+}
+
 #[derive(Debug, Serialize)]
 struct ApiError {
     error: String,
 }
 
+async fn list_networks(State(state): State<SharedState>) -> Json<NetworksResponse> {
+    Json(NetworksResponse {
+        available: state.available_datasets.as_ref().clone(),
+        active: active_dataset_id(&state),
+    })
+}
+
 async fn get_network(State(state): State<SharedState>) -> Json<NetworkResponse> {
-    let nodes: Vec<NodeDto> = state
-        .network
+    let network = active_network(&state);
+    let active_dataset = active_dataset_id(&state);
+    let nodes: Vec<NodeDto> = network
         .nodes()
         .map(|n| NodeDto {
             id: n.id.clone(),
@@ -173,8 +271,7 @@ async fn get_network(State(state): State<SharedState>) -> Json<NetworkResponse> 
         })
         .collect();
 
-    let pipes: Vec<PipeDto> = state
-        .network
+    let pipes: Vec<PipeDto> = network
         .pipes()
         .map(|p| PipeDto {
             id: p.id.clone(),
@@ -186,17 +283,79 @@ async fn get_network(State(state): State<SharedState>) -> Json<NetworkResponse> 
         .collect();
 
     Json(NetworkResponse {
-        node_count: state.network.node_count(),
-        edge_count: state.network.edge_count(),
+        active_dataset,
+        node_count: network.node_count(),
+        edge_count: network.edge_count(),
         nodes,
         pipes,
     })
 }
 
+async fn select_network(
+    State(state): State<SharedState>,
+    Json(payload): Json<SelectNetworkRequest>,
+) -> Result<Json<SelectNetworkResponse>, (StatusCode, Json<ApiError>)> {
+    if !state.available_datasets.iter().any(|id| id == &payload.dataset_id) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("unknown dataset id: {}", payload.dataset_id),
+            }),
+        ));
+    }
+
+    if state.simulation_slots.available_permits() != state.simulation_capacity {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "cannot switch dataset while simulations are running".to_string(),
+            }),
+        ));
+    }
+
+    let (network, default_demands) = load_dataset_from_disk(&state.data_dir, &payload.dataset_id)
+        .map_err(|err| {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiError { error: err }),
+            )
+        })?;
+    let node_count = network.node_count();
+    let edge_count = network.edge_count();
+
+    {
+        let mut guard = state
+            .network
+            .write()
+            .expect("network lock should not be poisoned");
+        *guard = Arc::new(network);
+    }
+    {
+        let mut guard = state
+            .default_demands
+            .write()
+            .expect("default demands lock should not be poisoned");
+        *guard = Arc::new(default_demands);
+    }
+    {
+        let mut guard = state
+            .active_dataset
+            .write()
+            .expect("active dataset lock should not be poisoned");
+        *guard = payload.dataset_id.clone();
+    }
+
+    Ok(Json(SelectNetworkResponse {
+        active: payload.dataset_id,
+        node_count,
+        edge_count,
+    }))
+}
+
 async fn run_simulation_default(
     State(state): State<SharedState>,
 ) -> ApiResult<solver::SolverResult> {
-    let demands = (*state.default_demands).clone();
+    let demands = (*active_default_demands(&state)).clone();
     run_simulation_with_demands(&state, demands).await
 }
 
@@ -212,10 +371,26 @@ async fn run_simulation_with_demands(
     demands: HashMap<String, f64>,
 ) -> ApiResult<solver::SolverResult> {
     let demands_for_export = demands.clone();
-    let network = state.network.clone();
+    let network = active_network(state);
+    let network_for_solve = network.clone();
+    let network_id = active_dataset_id(state);
+    let permit = state
+        .simulation_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: format!("simulation capacity semaphore closed: {err}"),
+                }),
+            )
+        })?;
     let pool = state.rayon_pool.clone();
     let result = tokio::task::spawn_blocking(move || {
-        pool.install(|| solver::solve_steady_state(&network, &demands, 1000, 5e-4))
+        let _permit = permit;
+        pool.install(|| solver::solve_steady_state(&network_for_solve, &demands, 1000, 5e-4))
     })
     .await
     .map_err(|err| {
@@ -244,10 +419,68 @@ async fn run_simulation_with_demands(
     );
     export::store_export_record(
         state,
-        export::new_export_record(export_id, demands_for_export, result.clone(), 0),
+        export::new_export_record(
+            export_id,
+            network_id,
+            &network,
+            demands_for_export,
+            result.clone(),
+            0,
+        ),
     );
 
     Ok(Json(result))
+}
+
+fn active_network(state: &SharedState) -> Arc<GasNetwork> {
+    state
+        .network
+        .read()
+        .expect("network lock should not be poisoned")
+        .clone()
+}
+
+fn active_default_demands(state: &SharedState) -> Arc<HashMap<String, f64>> {
+    state
+        .default_demands
+        .read()
+        .expect("default demands lock should not be poisoned")
+        .clone()
+}
+
+fn active_dataset_id(state: &SharedState) -> String {
+    state
+        .active_dataset
+        .read()
+        .expect("active dataset lock should not be poisoned")
+        .clone()
+}
+
+fn load_dataset_from_disk(
+    data_dir: &Path,
+    dataset_id: &str,
+) -> Result<(GasNetwork, HashMap<String, f64>), String> {
+    let network_path = data_dir.join(format!("{dataset_id}.net"));
+    let network = gaslib::load_network(&network_path)
+        .map_err(|err| format!("failed to load network {:?}: {err:#}", network_path))?;
+
+    let scenario_path = data_dir.join(format!("{dataset_id}.scn"));
+    let default_demands = if scenario_path.exists() {
+        match gaslib::load_scenario_demands(&scenario_path) {
+            Ok(parsed) => {
+                let scenario: gaslib::ScenarioDemands = parsed;
+                scenario.demands
+            }
+            Err(err) => {
+                tracing::warn!("Impossible de charger {:?}: {err:#}", scenario_path);
+                HashMap::new()
+            }
+        }
+    } else {
+        HashMap::new()
+    };
+
+    Ok((network, default_demands))
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ import axios from 'axios';
 const client = axios.create({ baseURL: '/api' });
 
 export interface NetworkResponse {
+  active_dataset?: string;
   node_count: number;
   edge_count: number;
   nodes: {
@@ -17,6 +18,17 @@ export interface NetworkResponse {
   pipes: { id: string; from: string; to: string; length_km: number; diameter_mm: number }[];
 }
 
+export interface NetworksResponse {
+  available: string[];
+  active: string;
+}
+
+export interface SelectNetworkResponse {
+  active: string;
+  node_count: number;
+  edge_count: number;
+}
+
 export interface SimulationResult {
   pressures: Record<string, number>;
   flows: Record<string, number>;
@@ -27,6 +39,18 @@ export interface SimulationResult {
 export const api = {
   async getNetwork(): Promise<NetworkResponse> {
     const { data } = await client.get<NetworkResponse>('/network');
+    return data;
+  },
+
+  async getNetworks(): Promise<NetworksResponse> {
+    const { data } = await client.get<NetworksResponse>('/networks');
+    return data;
+  },
+
+  async selectNetwork(datasetId: string): Promise<SelectNetworkResponse> {
+    const { data } = await client.post<SelectNetworkResponse>('/network', {
+      dataset_id: datasetId,
+    });
     return data;
   },
 

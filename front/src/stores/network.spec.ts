@@ -3,11 +3,15 @@ import { createPinia, setActivePinia } from 'pinia';
 
 const apiSpies = vi.hoisted(() => ({
   getNetwork: vi.fn(),
+  getNetworks: vi.fn(),
+  selectNetwork: vi.fn(),
 }));
 
 vi.mock('src/services/api', () => ({
   api: {
     getNetwork: apiSpies.getNetwork,
+    getNetworks: apiSpies.getNetworks,
+    selectNetwork: apiSpies.selectNetwork,
   },
 }));
 
@@ -17,6 +21,8 @@ describe('useNetworkStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     apiSpies.getNetwork.mockReset();
+    apiSpies.getNetworks.mockReset();
+    apiSpies.selectNetwork.mockReset();
   });
 
   it('loads network data into the store', async () => {
@@ -46,5 +52,34 @@ describe('useNetworkStore', () => {
 
     await expect(store.fetchNetwork()).rejects.toThrow('network failed');
     expect(store.loading).toBe(false);
+  });
+
+  it('loads available datasets and switches active network', async () => {
+    apiSpies.getNetworks.mockResolvedValue({
+      available: ['GasLib-11', 'GasLib-24'],
+      active: 'GasLib-11',
+    });
+    apiSpies.selectNetwork.mockResolvedValue({
+      active: 'GasLib-24',
+      node_count: 2,
+      edge_count: 1,
+    });
+    apiSpies.getNetwork.mockResolvedValue({
+      active_dataset: 'GasLib-24',
+      node_count: 2,
+      edge_count: 1,
+      nodes: [],
+      pipes: [],
+    });
+
+    const store = useNetworkStore();
+    await store.fetchAvailableNetworks();
+    expect(store.availableNetworks).toEqual(['GasLib-11', 'GasLib-24']);
+    expect(store.activeNetwork).toBe('GasLib-11');
+
+    await store.selectNetwork('GasLib-24');
+    expect(apiSpies.selectNetwork).toHaveBeenCalledWith('GasLib-24');
+    expect(store.activeNetwork).toBe('GasLib-24');
+    expect(store.switching).toBe(false);
   });
 });

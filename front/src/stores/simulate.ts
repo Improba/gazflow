@@ -177,6 +177,12 @@ export const useSimulateStore = defineStore('simulate', () => {
     logs.value = [`[${new Date().toLocaleTimeString()}] ${entry}`, ...logs.value].slice(0, 200);
   }
 
+  function resetSimulation() {
+    if (loading.value) return;
+    resetRuntimeState();
+    currentRunId.value = null;
+  }
+
   async function exportResult(format: 'json' | 'csv' | 'zip') {
     if (!currentRunId.value || status.value !== 'converged') {
       return;
@@ -217,6 +223,7 @@ export const useSimulateStore = defineStore('simulate', () => {
     liveFlows,
     runSimulation,
     cancelSimulation,
+    resetSimulation,
     exportResult,
   };
 });
