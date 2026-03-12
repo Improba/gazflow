@@ -464,6 +464,24 @@ fn validate_solution_physics(
     let strict = env_bool("GAZFLOW_STRICT_PHYSICS_CHECKS", false);
     let pressure_tol_bar =
         env_f64("GAZFLOW_PRESSURE_BOUNDS_TOL_BAR", DEFAULT_PRESSURE_BOUNDS_TOL_BAR).max(0.0);
+    validate_solution_physics_with_options(
+        network,
+        demands,
+        result,
+        residual_tolerance,
+        strict,
+        pressure_tol_bar,
+    )
+}
+
+fn validate_solution_physics_with_options(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    result: &SolverResult,
+    residual_tolerance: f64,
+    strict: bool,
+    pressure_tol_bar: f64,
+) -> Result<()> {
     let mass_tol = (residual_tolerance * 10.0).max(MIN_MASS_BALANCE_TOL);
 
     let mut node_balance: HashMap<String, f64> = network
@@ -1705,6 +1723,47 @@ mod tests {
         assert!(
             high.pressures["sink"] < low.pressures["sink"],
             "higher roughness should increase pressure drop"
+        );
+    }
+
+    #[test]
+    fn test_validate_solution_physics_strict_pressure_bound_violation() {
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "N1".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: None,
+            lat: None,
+            height_m: 0.0,
+            pressure_lower_bar: Some(40.0),
+            pressure_upper_bar: Some(60.0),
+            pressure_fixed_bar: Some(70.0),
+        });
+
+        let mut pressures = HashMap::new();
+        pressures.insert("N1".to_string(), 70.0);
+        let result = SolverResult {
+            pressures,
+            flows: HashMap::new(),
+            iterations: 0,
+            residual: 0.0,
+        };
+        let demands = HashMap::new();
+
+        let err = validate_solution_physics_with_options(
+            &net,
+            &demands,
+            &result,
+            1e-6,
+            true,
+            0.0,
+        )
+        .expect_err("strict physics checks should reject pressure bound violations");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("physics validation failed") && msg.contains("pressure bound violation"),
+            "unexpected strict validation error message: {msg}"
         );
     }
 }
