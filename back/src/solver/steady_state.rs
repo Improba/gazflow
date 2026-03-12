@@ -34,6 +34,8 @@ pub struct SolverProgress {
 }
 
 const MIN_PIPE_RESISTANCE: f64 = 1e-16;
+const DEFAULT_PRESSURE_BOUNDS_TOL_BAR: f64 = 0.05;
+const MIN_MASS_BALANCE_TOL: f64 = 1e-6;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NondimScaling {
@@ -230,7 +232,7 @@ where
         );
     }
 
-    super::newton::solve_steady_state_newton_hybrid(
+    let result = super::newton::solve_steady_state_newton_hybrid(
         network,
         demands,
         initial_pressures_bar,
@@ -238,7 +240,9 @@ where
         tolerance,
         snapshot_every,
         on_progress,
-    )
+    )?;
+    validate_solution_physics(network, demands, &result, tolerance)?;
+    Ok(result)
 }
 
 /// Résout le réseau en régime permanent via Newton-Raphson diagonal (Jacobi).
@@ -427,12 +431,128 @@ pub fn solve_steady_state_jacobi(
         );
     }
 
-    Ok(SolverResult {
+    let result = SolverResult {
         pressures: result_pressures,
         flows: result_flows,
         iterations,
         residual,
-    })
+    };
+    validate_solution_physics(network, demands, &result, tolerance)?;
+    Ok(result)
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
+}
+
+fn env_f64(name: &str, default: f64) -> f64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(default)
+}
+
+fn validate_solution_physics(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    result: &SolverResult,
+    residual_tolerance: f64,
+) -> Result<()> {
+    let strict = env_bool("GAZFLOW_STRICT_PHYSICS_CHECKS", false);
+    let pressure_tol_bar =
+        env_f64("GAZFLOW_PRESSURE_BOUNDS_TOL_BAR", DEFAULT_PRESSURE_BOUNDS_TOL_BAR).max(0.0);
+    let mass_tol = (residual_tolerance * 10.0).max(MIN_MASS_BALANCE_TOL);
+
+    let mut node_balance: HashMap<String, f64> = network
+        .nodes()
+        .map(|n| (n.id.clone(), demands.get(&n.id).copied().unwrap_or(0.0)))
+        .collect();
+
+    for pipe in network.pipes() {
+        let q = result.flows.get(&pipe.id).copied().unwrap_or(0.0);
+        if let Some(v) = node_balance.get_mut(&pipe.from) {
+            *v -= q;
+        }
+        if let Some(v) = node_balance.get_mut(&pipe.to) {
+            *v += q;
+        }
+    }
+
+    let mut max_free_imbalance = 0.0_f64;
+    let mut worst_free_node: Option<&str> = None;
+    let mut fixed_balance_sum = 0.0_f64;
+    let mut total_demand = 0.0_f64;
+    let mut pressure_violations = Vec::<String>::new();
+
+    for node in network.nodes() {
+        let solved_pressure = result.pressures.get(&node.id).copied().unwrap_or(0.0);
+        if let Some(lower) = node.pressure_lower_bar {
+            if solved_pressure + pressure_tol_bar < lower {
+                pressure_violations.push(format!(
+                    "{}: {solved_pressure:.3} bar < lower {lower:.3} bar",
+                    node.id
+                ));
+            }
+        }
+        if let Some(upper) = node.pressure_upper_bar {
+            if solved_pressure - pressure_tol_bar > upper {
+                pressure_violations.push(format!(
+                    "{}: {solved_pressure:.3} bar > upper {upper:.3} bar",
+                    node.id
+                ));
+            }
+        }
+
+        let bal = node_balance.get(&node.id).copied().unwrap_or(0.0);
+        total_demand += demands.get(&node.id).copied().unwrap_or(0.0);
+        if node.pressure_fixed_bar.is_some() {
+            fixed_balance_sum += bal;
+        } else if bal.abs() > max_free_imbalance {
+            max_free_imbalance = bal.abs();
+            worst_free_node = Some(node.id.as_str());
+        }
+    }
+
+    // Bilan global: la somme des déséquilibres des nœuds slack doit compenser
+    // la demande totale imposée au réseau.
+    let global_balance_mismatch = (fixed_balance_sum - total_demand).abs();
+
+    let mut issues = Vec::<String>::new();
+    if max_free_imbalance > mass_tol {
+        let worst = worst_free_node.unwrap_or("unknown");
+        issues.push(format!(
+            "free-node mass imbalance too high: max={max_free_imbalance:.3e} at node={worst} (tol={mass_tol:.3e})"
+        ));
+    }
+    if global_balance_mismatch > mass_tol {
+        issues.push(format!(
+            "global mass balance mismatch too high: mismatch={global_balance_mismatch:.3e}, fixed_sum={fixed_balance_sum:.3e}, total_demand={total_demand:.3e}, tol={mass_tol:.3e}"
+        ));
+    }
+    if !pressure_violations.is_empty() {
+        let first = pressure_violations
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "unknown pressure violation".to_string());
+        issues.push(format!(
+            "pressure bound violation(s): count={}, first={first}, tol={pressure_tol_bar:.3} bar",
+            pressure_violations.len()
+        ));
+    }
+
+    if issues.is_empty() {
+        return Ok(());
+    }
+
+    let joined = issues.join(" | ");
+    if strict {
+        bail!("physics validation failed: {joined}");
+    }
+    tracing::warn!("physics validation warning: {joined}");
+    Ok(())
 }
 
 #[cfg(test)]
