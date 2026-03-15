@@ -37,6 +37,10 @@ GazFlow simulates gas flow in a transport network from a GasLib topology and a d
 
 GazFlow is a simulation and visualisation prototype inspired by industrial tools. It does not replace a certified network operation simulator.
 
+### Perspective
+
+Today the simulator takes **fixed** injection and withdrawal flows per node and computes the resulting pressures and pipe flows. A natural extension would be to take **entry/exit capacities** into account (min/max flow per point), so as to simulate the effects of **purchases and sales**: e.g. limit injections and withdrawals to contractual or physical capacities, and either check that a given scenario stays within those bounds or optimise flows within them.
+
 ## Architecture
 
 - **back/** — Rust backend: computation engine (Darcy-Weisbach, Newton-Raphson) + REST API (Axum)
