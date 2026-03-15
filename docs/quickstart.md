@@ -1,39 +1,38 @@
 # Quickstart
 
-Demarrage le plus rapide pour lancer une simulation GazFlow en local.
+Fastest way to run a GazFlow simulation locally.
 
-## Prerequis
+## Prerequisites
 
 - Docker
 - Docker Compose
 
-## 1) Recuperer un dataset
+## 1) Fetch a dataset
 
 ```bash
 ./scripts/fetch_gaslib.sh GasLib-11
 ```
 
-## 2) Lancer l'environnement
+## 2) Start the environment
 
 ```bash
 ./scripts/dev.sh
 ```
 
-## 3) Ouvrir l'application
+## 3) Open the application
 
 - Frontend: `http://localhost:9000`
 - Backend API: `http://localhost:3001`
 
-## 4) Demarrer une simulation
+## 4) Run a simulation
 
-1. Ouvrir la page carte.
-2. Dans le panneau **Simulation**, cliquer **Lancer**.
-3. Suivre la progression (iterations, residu, logs) en live.
-4. Exporter en JSON/CSV/ZIP une fois convergee.
+1. Open the map page.
+2. In the **Simulation** panel, click **Start**.
+3. Follow progress (iterations, residual, logs) in real time.
+4. Export to JSON/CSV/ZIP once converged.
 
-## Arret
+## Stop
 
 ```bash
 ./scripts/stop.sh
 ```
-

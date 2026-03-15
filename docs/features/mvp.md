@@ -1,33 +1,33 @@
-# Fonctionnalités MVP — GazFlow
+# MVP features — GazFlow
 
-## Inclus dans le MVP
+## Included in the MVP
 
-1. **Chargement de réseau GasLib**
-   - Parsing XML des fichiers .net (topologie, dimensions, coordonnées)
-   - Support de GasLib-11 (11 nœuds)
-   - Extension progressive vers GasLib-24 et GasLib-40
+1. **GasLib network loading**
+   - XML parsing of .net files (topology, dimensions, coordinates)
+   - Support for GasLib-11 (11 nodes)
+   - Progressive extension to GasLib-24 and GasLib-40
 
-2. **Simulation en régime permanent**
-   - Équations de Darcy-Weisbach
-   - Solveur Newton-Raphson (ou Picard)
-   - Résultats : pression à chaque nœud, débit dans chaque tuyau
+2. **Steady-state simulation**
+   - Darcy-Weisbach equations
+   - Newton-Raphson (or Picard) solver
+   - Results: pressure at each node, flow in each pipe
 
-3. **Visualisation géospatiale**
-   - Globe CesiumJS avec fond de carte
-   - Nœuds positionnés par GPS (WGS84)
-   - Tuyaux tracés entre nœuds
-   - Coloration dynamique selon le débit
-   - Panel latéral avec les résultats numériques
+3. **Geospatial visualisation**
+   - CesiumJS globe with base map
+   - Nodes positioned by GPS (WGS84)
+   - Pipes drawn between nodes
+   - Dynamic colouring by flow
+   - Side panel with numerical results
 
-4. **API REST**
-   - `GET /api/network` — topologie du réseau
-   - `GET /api/simulate` — résultats de la simulation
+4. **REST API**
+   - `GET /api/network` — network topology
+   - `GET /api/simulate` — simulation results
 
-## Hors MVP (Phase 4+)
+## Beyond MVP (Phase 4+)
 
-- Régime transitoire (simulation dans le temps)
-- Stations de compression et vannes de régulation
-- Édition graphique du réseau
-- Parallélisation GPU (wgpu)
-- Import/export de scénarios
-- Multi-utilisateurs / sessions
+- Transient regime (time-domain simulation)
+- Compressor stations and control valves
+- Graphical network editing
+- GPU parallelisation (wgpu)
+- Scenario import/export
+- Multi-user / sessions

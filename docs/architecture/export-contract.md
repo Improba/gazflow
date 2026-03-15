@@ -1,59 +1,58 @@
-# Contrat d'export des résultats — GazFlow (v1)
+# Results export contract — GazFlow (v1)
 
-## Objectif
+## Objective
 
-Définir un contrat d'export **stable, versionné et testable** pour les résultats de simulation,
-afin de garantir :
+Define a **stable, versioned and testable** export contract for simulation results, to ensure:
 
-- interopérabilité (outils data, scripts, Excel, BI),
-- traçabilité (métadonnées et unités explicites),
-- fluidité UX (export sans bloquer la carte/live updates).
+- interoperability (data tools, scripts, Excel, BI),
+- traceability (explicit metadata and units),
+- smooth UX (export without blocking the map/live updates).
 
-## Principes
+## Principles
 
-- **Versionné** : chaque export embarque `schema_version`.
-- **Déterministe** : ordre trié des nœuds/tuyaux pour des diff reproductibles.
-- **Auto-descriptif** : unités et contexte de simulation inclus.
-- **Backward-compatible** : ajout de champs permis, suppression/renommage interdit dans une même version majeure.
+- **Versioned:** each export includes `schema_version`.
+- **Deterministic:** sorted order of nodes/pipes for reproducible diffs.
+- **Self-describing:** units and simulation context included.
+- **Backward-compatible:** adding fields allowed; removal/rename forbidden within the same major version.
 
 ---
 
-## Endpoints d'export (cible MVP+)
+## Export endpoints (MVP+ target)
 
-### 1) JSON complet
+### 1) Full JSON
 
 `GET /api/export/{simulation_id}?format=json`
 
 - Content-Type: `application/json`
-- Response: payload complet versionné (voir schéma ci-dessous)
-- Usage: partage, archivage, post-traitement Python/R
+- Response: full versioned payload (see schema below)
+- Use: sharing, archiving, Python/R post-processing
 
-### 2) CSV plat
+### 2) Flat CSV
 
 `GET /api/export/{simulation_id}?format=csv`
 
 - Content-Type: `text/csv; charset=utf-8`
-- Response: table unique avec colonne `kind` (`pressure` | `flow`)
-- Usage: ouverture directe tableur / ETL simple
+- Response: single table with `kind` column (`pressure` | `flow`)
+- Use: direct spreadsheet opening / simple ETL
 
-### 3) Bundle complet (optionnel)
+### 3) Full bundle (optional)
 
 `GET /api/export/{simulation_id}?format=zip&include_logs=true`
 
 - Content-Type: `application/zip`
-- Contenu recommandé :
-  - `result.json` (format JSON v1),
-  - `result.csv` (format CSV v1),
-  - `logs.ndjson` (si `include_logs=true`),
-  - `context.json` (infos run/frontend).
+- Recommended contents:
+  - `result.json` (JSON v1 format),
+  - `result.csv` (CSV v1 format),
+  - `logs.ndjson` (if `include_logs=true`),
+  - `context.json` (run/frontend info).
 
-> Si `simulation_id` est inconnu: `404` avec payload d'erreur standard.
+> If `simulation_id` is unknown: `404` with standard error payload.
 
 ---
 
-## Schéma JSON v1
+## JSON schema v1
 
-### Champs obligatoires
+### Required fields
 
 - `schema_version`: `"gazflow-export/v1"`
 - `simulation`
@@ -61,7 +60,7 @@ afin de garantir :
 - `results`
 - `stats`
 
-### Exemple de payload
+### Example payload
 
 ```json
 {
@@ -106,18 +105,18 @@ afin de garantir :
 }
 ```
 
-### Règles de sérialisation
+### Serialisation rules
 
-- `pressures` trié par `node_id` (ordre lexicographique).
-- `flows` trié par `pipe_id` (ordre lexicographique).
-- nombres exportés en `f64` (pas de format local avec virgule).
-- dates au format ISO-8601 UTC.
+- `pressures` sorted by `node_id` (lexicographic order).
+- `flows` sorted by `pipe_id` (lexicographic order).
+- Numbers exported as `f64` (no locale format with comma).
+- Dates in ISO-8601 UTC format.
 
 ---
 
-## Contrat CSV v1
+## CSV contract v1
 
-Colonnes obligatoires:
+Required columns:
 
 - `kind`
 - `id`
@@ -128,12 +127,12 @@ Colonnes obligatoires:
 - `unit`
 - `direction`
 
-Sémantique:
+Semantics:
 
-- `kind=pressure`: `id=node_id`, `from/to/direction` vides, `value=pression`.
-- `kind=flow`: `id=pipe_id`, `from/to` renseignés, `value=débit signé`.
+- `kind=pressure`: `id=node_id`, `from`/`to`/`direction` empty, `value=pressure`.
+- `kind=flow`: `id=pipe_id`, `from`/`to` set, `value=signed flow`.
 
-Exemple:
+Example:
 
 ```csv
 kind,id,from,to,value,abs_value,unit,direction
@@ -145,15 +144,15 @@ flow,JA,J,A,5.2,5.2,m3/s,forward
 
 ---
 
-## Contrat d'erreur
+## Error contract
 
-Format d'erreur recommandé (JSON):
+Recommended error format (JSON):
 
 ```json
 {
   "error": {
     "code": "EXPORT_NOT_FOUND",
-    "message": "simulation_id inconnu",
+    "message": "unknown simulation_id",
     "details": {
       "simulation_id": "sim_xxx"
     }
@@ -161,7 +160,7 @@ Format d'erreur recommandé (JSON):
 }
 ```
 
-Codes minimaux:
+Minimum codes:
 
 - `EXPORT_NOT_FOUND` (`404`)
 - `EXPORT_FORMAT_UNSUPPORTED` (`400`)
@@ -170,35 +169,35 @@ Codes minimaux:
 
 ---
 
-## Exigences fluidité (UI + API)
+## Fluidity requirements (UI + API)
 
-- Export depuis un résultat déjà convergé: **pas de recalcul solveur**.
-- L'export ne doit pas bloquer le thread UI : déclenchement asynchrone côté front.
-- En charge normale, démarrage du téléchargement cible `< 300 ms` après clic.
-- Pendant un export, la navigation Cesium reste fluide (pas de freeze perceptible > 100 ms).
+- Export from an already converged result: **no solver recomputation**.
+- Export must not block the UI thread: trigger asynchronously on the front.
+- Under normal load, download start target `< 300 ms` after click.
+- During export, Cesium navigation stays smooth (no perceptible freeze > 100 ms).
 
-Recommandations implémentation:
+Implementation recommendations:
 
-- backend: sérialisation en streaming quand taille importante;
-- frontend: état `exporting` local (spinner bouton), sans bloquer les autres interactions;
-- conserver l'état live (`running/converged/error`) visible pendant l'export.
+- backend: streaming serialisation when size is large;
+- frontend: local `exporting` state (button spinner), without blocking other interactions;
+- keep live state (`running`/`converged`/`error`) visible during export.
 
 ---
 
-## Plan de tests de conformité
+## Conformance test plan
 
-- `test_export_result_json_schema`: présence des champs obligatoires et unités.
-- `test_export_result_csv_headers`: colonnes exactes et ordre stable.
-- `test_export_order_is_deterministic`: tri lexical stable.
-- `test_export_unknown_id_returns_404`: contrat d'erreur respecté.
-- E2E front: clic export JSON/CSV en simulation convergée + UI toujours interactive.
+- `test_export_result_json_schema`: presence of required fields and units.
+- `test_export_result_csv_headers`: exact columns and stable order.
+- `test_export_order_is_deterministic`: stable lexical sort.
+- `test_export_unknown_id_returns_404`: error contract respected.
+- E2E front: click export JSON/CSV on converged simulation + UI remains interactive.
 
 ---
 
 ## Versioning
 
-- Version actuelle: `gazflow-export/v1`.
-- Changement **breaking** (renommage/suppression de champ) => `v2`.
-- Changement **non-breaking** (ajout de champ facultatif) => même version majeure.
+- Current version: `gazflow-export/v1`.
+- **Breaking** change (field rename/removal) => `v2`.
+- **Non-breaking** change (optional field addition) => same major version.
 
-En cas d'évolution, documenter la migration dans ce fichier avec exemples avant/après.
+On evolution, document migration in this file with before/after examples.

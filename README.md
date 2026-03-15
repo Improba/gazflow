@@ -1,115 +1,110 @@
 # GazFlow
 
-Simulateur d'écoulement de gaz naturel en réseau, inspiré de SIMONE.
+Natural gas network flow simulator, inspired by SIMONE.
 
-## Aperçu visuel
+## Visual overview
 
 <table>
   <tr>
     <td align="center" width="33%">
-      <img src="docs/assets/overview-3d-network.png" alt="Vue 3D du réseau de transport dans GazFlow" />
+      <img src="docs/assets/overview-3d-network.png" alt="3D view of the transport network in GazFlow" />
     </td>
     <td align="center" width="33%">
-      <img src="docs/assets/scenario-control-panel.png" alt="Panneau de contrôle de simulation GazFlow" />
+      <img src="docs/assets/scenario-control-panel.png" alt="GazFlow simulation control panel" />
     </td>
     <td align="center" width="33%">
-      <img src="docs/assets/simulation-results-convergence.png" alt="Résultats hydrauliques et convergence dans GazFlow" />
+      <img src="docs/assets/simulation-results-convergence.png" alt="Hydraulic results and convergence in GazFlow" />
     </td>
   </tr>
   <tr>
-    <td align="center"><em>Carte 3D du réseau</em></td>
-    <td align="center"><em>Pilotage des scénarios</em></td>
-    <td align="center"><em>Lecture des résultats</em></td>
+    <td align="center"><em>3D network map</em></td>
+    <td align="center"><em>Scenario control</em></td>
+    <td align="center"><em>Reading results</em></td>
   </tr>
 </table>
 
-## Ce que fait GazFlow (vision métier)
+## What GazFlow does (business vision)
 
-GazFlow simule l'écoulement du gaz dans un réseau de transport à partir d'une topologie
-GasLib et d'un scénario de demande. L'outil calcule un point de fonctionnement
-hydraulique en régime permanent (pressions nodales et débits par conduite), puis le
-restitue en lecture opérationnelle : carte 3D, suivi de convergence et exports exploitables.
+GazFlow simulates gas flow in a transport network from a GasLib topology and a demand scenario. The tool computes a steady-state hydraulic operating point (nodal pressures and pipe flows), then presents it for operational reading: 3D map, convergence monitoring, and usable exports.
 
-### Pour quoi faire
+### Use cases
 
-- Étudier le comportement hydraulique d'un réseau selon différents niveaux de soutirage/injection
-- Visualiser rapidement les zones de pression forte/faible et les conduites les plus sollicitées
-- Comparer des scénarios et documenter les résultats (JSON/CSV/ZIP)
+- Study the hydraulic behaviour of a network under different withdrawal/injection levels
+- Quickly visualise high/low pressure zones and the most loaded pipes
+- Compare scenarios and document results (JSON/CSV/ZIP)
 
-### Ce que l'outil n'est pas
+### What the tool is not
 
-GazFlow est un prototype de simulation et de visualisation inspiré des outils industriels.
-Il ne remplace pas un simulateur certifié d'exploitation réseau.
+GazFlow is a simulation and visualisation prototype inspired by industrial tools. It does not replace a certified network operation simulator.
 
 ## Architecture
 
-- **back/** — Backend Rust : moteur de calcul (Darcy-Weisbach, Newton-Raphson) + API REST (Axum)
-- **front/** — Frontend Vue 3 / QuasarJS / CesiumJS : visualisation géospatiale 3D
-- **docker/** — Dockerfiles pour les services back et front
+- **back/** — Rust backend: computation engine (Darcy-Weisbach, Newton-Raphson) + REST API (Axum)
+- **front/** — Vue 3 / QuasarJS / CesiumJS frontend: 3D geospatial visualisation
+- **docker/** — Dockerfiles for back and front services
 - **docs/** — Documentation (architecture, science, plans)
 
-## Prérequis
+## Prerequisites
 
 - Docker & Docker Compose
 
-C'est tout. Les toolchains Rust et Node vivent dans les conteneurs.
+That’s it. Rust and Node toolchains live inside the containers.
 
 ## Quickstart
 
 ```bash
-# 1. Télécharger les données GasLib
+# 1. Download GasLib data
 ./scripts/fetch_gaslib.sh GasLib-11
 
-# 2. Lancer l'environnement de développement
+# 2. Start the development environment
 ./scripts/dev.sh
 ```
 
-- Backend (API Rust) : `http://localhost:3001`
-- Frontend (Quasar/CesiumJS) : `http://localhost:9000`
+- Backend (Rust API): `http://localhost:3001`
+- Frontend (Quasar/CesiumJS): `http://localhost:9000`
 
 ## Scripts
 
 | Script | Description |
 |--------|-------------|
-| `./scripts/dev.sh` | Lance back + front via Docker Compose |
-| `./scripts/stop.sh` | Arrête tous les conteneurs |
-| `./scripts/back-shell.sh` | Shell dans le conteneur back (`cargo add`, etc.) |
-| `./scripts/front-shell.sh` | Shell dans le conteneur front (`npm install`, etc.) |
-| `./scripts/back-test.sh` | Lance `cargo test` dans le conteneur |
-| `./scripts/front-test.sh` | Lance `npm test` dans le conteneur |
-| `./scripts/ci.sh` | CI complète (build + tests back & front) |
-| `./scripts/fetch_gaslib.sh` | Télécharge les données GasLib |
+| `./scripts/dev.sh` | Starts back + front via Docker Compose |
+| `./scripts/stop.sh` | Stops all containers |
+| `./scripts/back-shell.sh` | Shell in the back container (`cargo add`, etc.) |
+| `./scripts/front-shell.sh` | Shell in the front container (`npm install`, etc.) |
+| `./scripts/back-test.sh` | Runs `cargo test` in the container |
+| `./scripts/front-test.sh` | Runs `npm test` in the container |
+| `./scripts/ci.sh` | Full CI (build + back & front tests) |
+| `./scripts/fetch_gaslib.sh` | Downloads GasLib data |
 
-## Ajouter une dépendance
+## Adding a dependency
 
-Toujours passer par le conteneur :
+Always use the container:
 
 ```bash
 # Rust
 ./scripts/back-shell.sh
-cargo add ma-crate
+cargo add my-crate
 
 # Node
 ./scripts/front-shell.sh
-npm install mon-package
+npm install my-package
 ```
 
-Les fichiers `Cargo.toml` et `package.json` sont sur le volume partagé : les modifications
-sont visibles sur l'hôte et versionnées par git.
+The `Cargo.toml` and `package.json` files are on the shared volume: changes are visible on the host and versioned by git.
 
 ## Tests
 
 ```bash
-./scripts/back-test.sh     # Tests Rust
-./scripts/front-test.sh    # Tests frontend
-./scripts/ci.sh            # CI complète
+./scripts/back-test.sh     # Rust tests
+./scripts/front-test.sh    # Frontend tests
+./scripts/ci.sh            # Full CI
 ```
 
 ## Documentation
 
 - [Quickstart](docs/quickstart.md)
 - [Architecture](docs/architecture/overview.md)
-- [Contrat d'export des résultats](docs/architecture/export-contract.md)
-- [Équations physiques](docs/science/equations.md)
-- [Plan d'implémentation (partagé)](docs/plans/implementation-plan.md)
-- [Fonctionnalités MVP](docs/features/mvp.md)
+- [Results export contract](docs/architecture/export-contract.md)
+- [Physical equations](docs/science/equations.md)
+- [Implementation plan (shared)](docs/plans/implementation-plan.md)
+- [MVP features](docs/features/mvp.md)

@@ -1,6 +1,5 @@
-# Protocole de validation scientifique (alias)
+# Scientific validation protocol (alias)
 
-Source de vérité: `docs/plans/implementation-plan.md`, section
-`Protocole de validation scientifique détaillé (v1)`.
+Source of truth: `docs/plans/implementation-plan.md`, section "Detailed scientific validation protocol (v1)".
 
-Ce fichier est conservé pour compatibilité des liens externes.
+This file is kept for external link compatibility.
