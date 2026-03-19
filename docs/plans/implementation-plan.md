@@ -408,6 +408,33 @@ cd front && npx playwright test                # T5-4: E2E export scenario + map
 
 ---
 
+## Quality review (post-MVP)
+
+A full codebase quality review was performed covering all 17 backend Rust files and 16 frontend Vue/TypeScript files.
+
+### Issues found and fixed
+
+| File | Issue | Fix |
+|------|-------|-----|
+| `api/export.rs` | CSV export did not escape identifiers containing commas, quotes or newlines | Added `csv_escape()` (RFC 4180 compliant) |
+| `solver/newton.rs` | Dead conditional branch: `m > 600` yielded same value as `else` | Removed redundant branch |
+| `SimulationPanel.vue` | `onMounted` API calls (`fetchAvailableNetworks`, `fetchNetwork`) could throw unhandled rejections if backend is not ready | Wrapped in `try/catch` |
+
+### Observations (not fixed, by design or low priority)
+
+| Element | Detail | Severity |
+|---------|--------|----------|
+| `timeout_ms == 0` | In WS protocol, means "cancel immediately" (not "no timeout") — intentional, covered by tests | Info |
+| Dead code | `pipe_resistance`, `effective_pipe_resistance` marked `#[allow(dead_code)]` | Low |
+| Store teardown | `SimulationWsClient` and `snapshotTimer` in simulate store are never explicitly cleaned up | Low |
+
+### Test results
+
+- 62 unit tests + 4 integration tests backend: all pass
+- 11 frontend tests (4 spec files): all pass
+
+---
+
 ## Risks and mitigations
 
 | Risk | Impact | Mitigation |

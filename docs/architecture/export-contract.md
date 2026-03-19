@@ -132,6 +132,11 @@ Semantics:
 - `kind=pressure`: `id=node_id`, `from`/`to`/`direction` empty, `value=pressure`.
 - `kind=flow`: `id=pipe_id`, `from`/`to` set, `value=signed flow`.
 
+Escaping rules:
+
+- Fields containing `,`, `"` or newlines are enclosed in double-quotes.
+- Embedded double-quotes are doubled (`""`).
+
 Example:
 
 ```csv
