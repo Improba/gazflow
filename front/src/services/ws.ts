@@ -1,9 +1,13 @@
+import type { SimulationResult } from 'src/services/api';
+
 export interface WsStartOptions {
   max_iter?: number;
   tolerance?: number;
   snapshot_every?: number;
   timeout_ms?: number;
   initial_pressures?: Record<string, number>;
+  capacity_bounds?: Record<string, { min: number; max: number }>;
+  mode?: 'check' | 'optimize';
 }
 
 export interface WsSimulationResult {
@@ -47,7 +51,7 @@ export type WsServerMessage =
       type: 'converged';
       run_id: string;
       seq: number;
-      result: WsSimulationResult;
+      result: SimulationResult;
       total_ms: number;
     }
   | {

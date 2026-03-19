@@ -29,11 +29,26 @@ export interface SelectNetworkResponse {
   edge_count: number;
 }
 
+export interface CapacityViolation {
+  element_id: string;
+  element_type: 'node' | 'pipe';
+  bound_type: 'min' | 'max';
+  limit: number;
+  actual: number;
+  margin: number;
+}
+
 export interface SimulationResult {
   pressures: Record<string, number>;
   flows: Record<string, number>;
   iterations: number;
   residual: number;
+  capacity_violations?: CapacityViolation[];
+  adjusted_demands?: Record<string, number>;
+  active_bounds?: string[];
+  objective_value?: number;
+  outer_iterations?: number;
+  infeasibility_diagnostic?: string | null;
 }
 
 export const api = {

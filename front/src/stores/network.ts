@@ -10,6 +10,8 @@ export interface NodeDto {
   lat: number | null;
   height_m: number;
   pressure_fixed_bar: number | null;
+  flow_min_m3s: number | null;
+  flow_max_m3s: number | null;
 }
 
 export interface PipeDto {

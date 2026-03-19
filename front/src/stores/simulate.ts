@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { api, type SimulationResult } from 'src/services/api';
+import { api, type SimulationResult, type CapacityViolation } from 'src/services/api';
 import {
   SimulationWsClient,
   type WsServerMessage,
@@ -24,6 +24,10 @@ export const useSimulateStore = defineStore('simulate', () => {
 
   const livePressures = ref<Record<string, number>>({});
   const liveFlows = ref<Record<string, number>>({});
+
+  const capacityViolations = ref<CapacityViolation[]>([]);
+  const adjustedDemands = ref<Record<string, number>>({});
+  const activeBounds = ref<string[]>([]);
 
   let wsClient: SimulationWsClient | null = null;
   let lastSnapshotAt = 0;
@@ -112,6 +116,9 @@ export const useSimulateStore = defineStore('simulate', () => {
         liveFlows.value = { ...msg.result.flows };
         iteration.value = msg.result.iterations;
         residual.value = msg.result.residual;
+        capacityViolations.value = msg.result.capacity_violations ?? [];
+        adjustedDemands.value = msg.result.adjusted_demands ?? {};
+        activeBounds.value = msg.result.active_bounds ?? [];
         status.value = 'converged';
         loading.value = false;
         addLog(`converged in ${msg.total_ms}ms`);
@@ -146,6 +153,9 @@ export const useSimulateStore = defineStore('simulate', () => {
     result.value = null;
     livePressures.value = {};
     liveFlows.value = {};
+    capacityViolations.value = [];
+    adjustedDemands.value = {};
+    activeBounds.value = [];
   }
 
   function queueSnapshot(msg: Extract<WsServerMessage, { type: 'snapshot' }>) {
@@ -221,6 +231,9 @@ export const useSimulateStore = defineStore('simulate', () => {
     exporting,
     livePressures,
     liveFlows,
+    capacityViolations,
+    adjustedDemands,
+    activeBounds,
     runSimulation,
     cancelSimulation,
     resetSimulation,
