@@ -202,12 +202,29 @@ pub struct ConstrainedProgress {
 }
 
 /// Clamp demands to capacity bounds (interior).
-fn clamp_demands(demands: &HashMap<String, f64>, bounds: &CapacityBounds) -> HashMap<String, f64> {
+/// Only clamps free (non-slack) nodes; slack node demands are irrelevant to the solver.
+fn clamp_demands(
+    demands: &HashMap<String, f64>,
+    bounds: &CapacityBounds,
+    network: &GasNetwork,
+) -> HashMap<String, f64> {
     let eps = 1e-6;
+    let slack_ids: std::collections::HashSet<String> = network
+        .nodes()
+        .filter(|n| n.pressure_fixed_bar.is_some())
+        .map(|n| n.id.clone())
+        .collect();
     let mut clamped = demands.clone();
     for (node_id, &(min, max)) in &bounds.node_bounds {
+        if slack_ids.contains(node_id) {
+            continue;
+        }
         if let Some(d) = clamped.get_mut(node_id) {
-            *d = d.clamp(min + eps, max - eps);
+            if max - min < 2.0 * eps {
+                *d = (min + max) / 2.0;
+            } else {
+                *d = d.clamp(min + eps, max - eps);
+            }
         }
     }
     clamped
@@ -292,13 +309,18 @@ fn proportional_demand_reduction(
         return excess.abs();
     }
 
+    let eps = 1e-6;
     let mut max_delta = 0.0_f64;
     for fid in free_ids {
         if let (Some(d), Some(&(min, max))) = (demands.get_mut(fid), bounds.node_bounds.get(fid)) {
             let weight = d.abs() / total_adjustable;
             let adjustment = relaxation * excess * weight;
             let old = *d;
-            *d = (*d + adjustment).clamp(min + 1e-6, max - 1e-6);
+            if max - min < 2.0 * eps {
+                *d = (min + max) / 2.0;
+            } else {
+                *d = (*d + adjustment).clamp(min + eps, max - eps);
+            }
             max_delta = max_delta.max((*d - old).abs());
         }
     }
@@ -350,7 +372,7 @@ where
     let free_ids = free_bounded_node_ids(network, bounds);
     let slack_ids = slack_bounded_node_ids(network, bounds);
 
-    let mut demands = clamp_demands(target_demands, bounds);
+    let mut demands = clamp_demands(target_demands, bounds, network);
     let mut warm_pressures: Option<HashMap<String, f64>> = initial_pressures_bar.cloned();
     let mut best_result: Option<SolverResult> = None;
     let mut prev_slack_excess = f64::MAX;

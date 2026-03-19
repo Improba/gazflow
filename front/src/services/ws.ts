@@ -6,6 +6,9 @@ export interface WsStartOptions {
   snapshot_every?: number;
   timeout_ms?: number;
   initial_pressures?: Record<string, number>;
+}
+
+export interface WsCapacityOptions {
   capacity_bounds?: Record<string, { min: number; max: number }>;
   mode?: 'check' | 'optimize';
 }
@@ -23,6 +26,8 @@ type WsClientMessage =
       run_id?: string;
       demands?: Record<string, number>;
       options?: WsStartOptions;
+      capacity_bounds?: Record<string, { min: number; max: number }>;
+      mode?: 'check' | 'optimize';
     }
   | {
       type: 'cancel_simulation';
@@ -107,12 +112,16 @@ export class SimulationWsClient {
     runId?: string;
     demands?: Record<string, number>;
     options?: WsStartOptions;
+    capacityBounds?: Record<string, { min: number; max: number }>;
+    mode?: 'check' | 'optimize';
   }): void {
     this.send({
       type: 'start_simulation',
       run_id: payload.runId,
       demands: payload.demands,
       options: payload.options,
+      capacity_bounds: payload.capacityBounds,
+      mode: payload.mode,
     });
   }
 

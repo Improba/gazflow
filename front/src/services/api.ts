@@ -14,6 +14,8 @@ export interface NetworkResponse {
     lat: number | null;
     height_m: number;
     pressure_fixed_bar: number | null;
+    flow_min_m3s: number | null;
+    flow_max_m3s: number | null;
   }[];
   pipes: { id: string; from: string; to: string; length_km: number; diameter_mm: number }[];
 }

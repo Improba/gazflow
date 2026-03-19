@@ -5,6 +5,7 @@ import {
   SimulationWsClient,
   type WsServerMessage,
   type WsStartOptions,
+  type WsCapacityOptions,
 } from 'src/services/ws';
 
 type SimulationStatus = 'idle' | 'running' | 'converged' | 'cancelled' | 'error';
@@ -59,7 +60,7 @@ export const useSimulateStore = defineStore('simulate', () => {
 
   async function runSimulation(
     demands?: Record<string, number>,
-    options?: WsStartOptions,
+    options?: WsStartOptions & WsCapacityOptions,
   ) {
     await ensureConnectedWs();
     const warmStartPressures =
@@ -70,6 +71,8 @@ export const useSimulateStore = defineStore('simulate', () => {
     loading.value = true;
     status.value = 'running';
 
+    const { capacity_bounds, mode, ...solverOpts } = options ?? {};
+
     wsClient!.startSimulation({
       runId: currentRunId.value,
       demands,
@@ -79,8 +82,10 @@ export const useSimulateStore = defineStore('simulate', () => {
         max_iter: 1000,
         tolerance: 5e-4,
         initial_pressures: warmStartPressures,
-        ...(options ?? {}),
+        ...solverOpts,
       },
+      capacityBounds: capacity_bounds,
+      mode,
     });
   }
 
