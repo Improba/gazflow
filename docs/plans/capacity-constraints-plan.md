@@ -21,78 +21,111 @@ Les bornes de capacité s'appliquent différemment selon le type de nœud :
 
 | Type de nœud | Pression | Débit | Bornes de capacité | Rôle dans l'optimisation |
 |---|---|---|---|---|
-| **Slack** (sources, `pressure_fixed_bar` défini) | Fixée (entrée) | Calculé par le solveur (sortie) | Vérification seulement — le débit est une conséquence | Mode check uniquement (MVP) |
-| **Libre** (sinks, innodes sans pression fixée) | Calculée (sortie) | Fixé comme demande (entrée) | Le débit peut être ajusté | Mode check + optimize |
+| **Slack** (sources, `pressure_fixed_bar` défini) | Fixée (entrée) | Calculé par le solveur (sortie) = bilan des pipes | Le débit est une conséquence des pressions et des demandes du réseau | Vérification + **contrainte implicite** sur l'optimize |
+| **Libre** (sinks, innodes sans pression fixée) | Calculée (sortie) | Fixé comme demande (entrée) | Le débit est directement contrôlable | Vérification + variable d'optimisation |
 
-Le mode **vérification** fonctionne pour tous les nœuds. Le mode **optimisation (MVP)** ajuste uniquement les demandes des nœuds libres bornés. L'optimisation des nœuds slack (où la pression deviendrait variable) est un objectif post-MVP.
+### Pourquoi l'optimisation est non-triviale (couplage slack)
 
-### Formulation mathématique (mode optimisation)
+À première vue, optimiser les demandes des nœuds libres semble trivial : il suffirait de clamper chaque $d_i$ dans $[d_i^{\min}, d_i^{\max}]$. Mais le **couplage via les nœuds slack** rend le problème non-trivial.
+
+**Exemple concret :** réseau Y avec 1 source (slack, capacité max 120 m³/s) et 2 sinks :
+- Sink A : cible = −80, bornes = [−100, 0]
+- Sink B : cible = −70, bornes = [−100, 0]
+
+Le clampage naïf donne $d_A = -80$, $d_B = -70$, total = 150 m³/s. La source doit fournir 150, mais sa capacité max est 120. **Violation slack.**
+
+Pour respecter toutes les bornes (y compris slack), il faut **réduire les demandes libres** de façon coordonnée. C'est un problème d'optimisation sous contraintes couplées.
+
+### Formulation mathématique
 
 $$
-\min_{\mathbf{d}} \quad \sum_{i \in \mathcal{B}_{\text{free}}} (d_i - d_i^{\text{cible}})^2
+\min_{\mathbf{d}_{\text{free}}} \quad \sum_{i \in \mathcal{B}_{\text{free}}} w_i \cdot (d_i - d_i^{\text{cible}})^2
 $$
 
 $$
-\text{s.c.} \quad F_i(\boldsymbol{\pi}(\mathbf{d})) = 0 \quad \forall \text{ nœud libre } i
+\text{s.c.} \quad d_i^{\min} \leq d_i \leq d_i^{\max} \quad \forall i \in \mathcal{B}_{\text{free}} \quad \text{(bornes libres)}
 $$
 
 $$
-d_i^{\min} \leq d_i \leq d_i^{\max} \quad \forall i \in \mathcal{B}_{\text{free}}
+d_j^{\min} \leq d_j^{\text{eff}}(\mathbf{d}_{\text{free}}) \leq d_j^{\max} \quad \forall j \in \mathcal{B}_{\text{slack}} \quad \text{(bornes slack implicites)}
 $$
 
-où $\boldsymbol{\pi}(\mathbf{d})$ est la solution du système hydraulique pour les demandes $\mathbf{d}$.
+où $d_j^{\text{eff}}(\mathbf{d}_{\text{free}}) = -\sum_k Q_{jk}(\boldsymbol{\pi}(\mathbf{d}_{\text{free}}))$ est le débit effectif au nœud slack $j$, fonction non-linéaire des demandes libres via la solution hydraulique $\boldsymbol{\pi}$.
 
-### Méthode retenue : projection itérative avec barrière
+**Note sur la fonction objectif :** les poids $w_i$ sont par défaut uniformes ($w_i = 1$). L'architecture du solveur permet d'autres choix (poids prioritaires, coût économique) sans changer l'algorithme.
+
+### Méthode retenue : projection itérative
 
 L'approche initiale (complément de Schur sur le KKT) est mathématiquement élégante mais :
 - La dérivation correcte ne donne PAS une simple modification diagonale du Jacobien (le système réduit est $J^T \Sigma J$, pas $J - \text{diag}$).
 - L'implémentation est invasive et difficile à valider.
 
-L'approche retenue est une **méthode alternée** (block-coordinate) :
+L'approche retenue est une **méthode de projection itérative** :
 
 ```
-d = clamp(d_cible, d_min + ε, d_max - ε)
+d = clamp(d_cible, d_min + ε, d_max - ε)          [bornes libres]
 
-pour μ décroissant (μ₀, μ₀/5, μ₀/25, …) :
+pour outer_iter = 1..max_outer :
   Étape 1 — Résolution physique :
-    π = solve_newton(network, d)     ← solveur existant, INCHANGÉ
+    π = solve_newton(network, d)                    [solveur existant, INCHANGÉ]
 
-  Étape 2 — Mise à jour des demandes :
-    pour chaque nœud borné i :
-      d_i^phys = -F_i^pipe(π)        ← débit impliqué par les pressions
-      d_i^new = argmin  (d - d_cible)² - μ·ln(d - d_min) - μ·ln(d_max - d)
-                d∈[d_min+ε, d_max-ε]
-                + ρ·(d - d_i^phys)²  ← rappel vers la solution physique
+  Étape 2 — Calcul des débits slack effectifs :
+    d_slack_eff[j] = -Σ Q_jk(π)  pour chaque slack j
 
-  si |d^new - d^old| < tol ET Newton convergé : STOP
+  Étape 3 — Vérification slack :
+    slack_ok = toutes les bornes slack respectées ?
+    si slack_ok ET |d - d_old| < tol : CONVERGÉ
+
+  Étape 4 — Mise à jour des demandes libres :
+    pour chaque nœud libre borné i :
+      d[i] = projet_proximal(d[i], d_cible[i], d_slack_eff, bounds, outer_iter)
+
+  Warm-start: réutiliser π comme pressions initiales pour la prochaine itération
 ```
 
-L'étape 2 est un problème 1D convexe par nœud, résolu analytiquement (Newton 1D, ~3 itérations).
+L'étape 4 (projection proximale) est le cœur de l'algorithme. Deux stratégies :
 
-**Avantages :**
-- Réutilise le solveur Newton **tel quel** (zéro modification de `newton.rs`).
-- Chaque étape est correcte et vérifiable indépendamment.
-- Convergence garantie pour les problèmes convexes (Bertsekas, 1999).
-- ~300–400 lignes de Rust au lieu de ~600.
+**Stratégie A — Réduction proportionnelle (simple, robuste) :**
+Si la demande totale excède la capacité slack totale, réduire les demandes proportionnellement à leur écart avec la cible :
+$$
+d_i^{\text{new}} = d_i^{\text{cible}} \cdot \frac{C_{\text{slack}}}{\sum |d_j^{\text{cible}}|}
+$$
+puis re-clamper dans les bornes libres. Converge en 2–3 itérations.
 
-**Inconvénients :**
-- Convergence plus lente que l'approche KKT couplée (typiquement 3–8 boucles extérieures).
-- Pour GasLib-11 (~10 nœuds bornés), la surcharge est négligeable.
+**Stratégie B — Barrière proximale (optimale, plus lente) :**
+Résoudre un sous-problème 1D par nœud avec barrière logarithmique, en introduisant un terme de pénalité pour le dépassement slack. Converge vers l'optimum en ~5–8 itérations.
+
+**L'implémentation commence par la stratégie A** (plus simple, suffisante pour le MVP), avec la structure du code prévue pour intégrer la stratégie B ensuite.
+
+### Convergence
+
+La convergence de la méthode alternée n'est **pas formellement garantie** par les théorèmes standard (Bertsekas, 1999) car :
+- Le problème n'est pas block-séparable (le débit slack dépend des demandes libres via $\pi$).
+- L'application $\mathbf{d} \to \mathbf{d}^{\text{new}}$ n'est pas prouvée contractante en général.
+
+**En pratique**, la convergence est observée car :
+1. Le réseau gazier a un comportement régulier ($\pi(d)$ est localement Lipschitz, monotone en $d$).
+2. La réduction proportionnelle (stratégie A) est une contraction avec facteur $< 1$ quand la sur-demande est uniforme.
+3. Le warm-start des pressions accélère la convergence interne.
+
+Un **garde-fou** est implémenté : si le résidu d ne diminue pas pendant 3 itérations consécutives, le solveur s'arrête et retourne un diagnostic d'infaisabilité.
 
 ### Gestion de l'infaisabilité
 
-Si les bornes de capacité sont incompatibles avec la physique (ex: demande totale > capacité totale des sources), le solveur doit :
-1. Détecter que la boucle extérieure ne converge pas après `max_outer_iter`.
-2. Retourner le meilleur point trouvé + un diagnostic d'infaisabilité.
-3. Signaler quels nœuds sont en conflit.
+Si les bornes de capacité sont incompatibles avec la physique (ex: demande totale > capacité totale des sources même au minimum) :
+1. Détecter la stagnation de l'objectif après 3 itérations sans progrès.
+2. Retourner le meilleur point trouvé + un `InfeasibilityDiagnostic` :
+   - Quelle contrainte (slack ou libre) est violée.
+   - De combien (marge négative).
+   - Suggestion : quels nœuds ajuster.
 
 ### Références
 
 - Wächter & Biegler (2006). Interior-point filter line-search for large-scale NLP. *Math. Prog.*, 106(1).
 - Nocedal & Wright (2006). *Numerical Optimization*, 2e éd. Springer. Chap. 17–19.
 - Koch et al. (2015). *Evaluating Gas Network Capacities*. SIAM MOS.
+- Pfetsch et al. (2015). Validation of Nominations in Gas Network Optimization. *ZIB-Report 12-41*.
 - Ríos-Mercado & Borraz-Sánchez (2015). Optimization in gas transport. *Applied Energy*, 147.
-- Bertsekas, D.P. (1999). *Nonlinear Programming*, 2e éd. Athena Scientific. (convergence block-coordinate).
 
 ---
 
@@ -133,19 +166,42 @@ Enrichir `Node` avec les bornes de débit et parser les capacités GasLib.
 
 #### Détails techniques — P0-2
 
-Le XML GasLib peut contenir sur les nœuds `<source>` et `<sink>` :
+Le XML GasLib contient `<flowMin>` et `<flowMax>` sur **tous les types de nœuds** (source, sink, innode) :
 
 ```xml
-<source id="entry01" x="0" y="0">
-  <flowMin value="0" unit="1000m_cube_per_hour"/>
-  <flowMax value="500" unit="1000m_cube_per_hour"/>
+<source id="entry01">  <!-- flowMin=50, flowMax=750 (positifs, injection) -->
+  <flowMin value="50.0" unit="1000m_cube_per_hour"/>
+  <flowMax value="750.0" unit="1000m_cube_per_hour"/>
 </source>
+
+<sink id="exit01">    <!-- flowMin=50, flowMax=1250 (positifs = MAGNITUDES de soutirage) -->
+  <flowMin value="50.0" unit="1000m_cube_per_hour"/>
+  <flowMax value="1250.0" unit="1000m_cube_per_hour"/>
+</sink>
 ```
+
+**⚠️ Convention de signe GasLib vs code :**
+
+Dans GasLib, les bornes des sinks sont des **magnitudes positives** (quantité soutirée). Dans le code, les soutirages sont **négatifs** ($d < 0$). Le parser doit effectuer la conversion :
+
+| Type nœud GasLib | `flowMin` GasLib | `flowMax` GasLib | `flow_min_m3s` code | `flow_max_m3s` code |
+|---|---|---|---|---|
+| `source` (entry) | 50 | 750 | +50 × conv | +750 × conv |
+| `sink` (exit) | 50 | 1250 | **−1250** × conv | **−50** × conv |
+| `innode` | −1100 | 1100 | −1100 × conv | +1100 × conv |
+
+où $\text{conv} = 1000/3600$ pour l'unité `1000m_cube_per_hour` → m³/s.
+
+**Règle :** pour les `sink`, inverser et permuter : `flow_min_code = -flowMax_gaslib`, `flow_max_code = -flowMin_gaslib`. Pour les `source` et `innode`, mapper directement.
 
 Le parser doit :
 1. Ajouter `flow_min` et `flow_max` à `XmlNode` (même pattern que `pressure_min` / `pressure_max`).
-2. Convertir les unités en m³/s (réutiliser la logique de `scenario.rs`).
-3. Mapper vers `Node.flow_min_m3s` / `Node.flow_max_m3s` dans `load_network`.
+2. Détecter le type de nœud (`source` / `sink` / `innode`) — déjà parsé par `XmlConnection` variant, mais le type du nœud lui-même doit être propagé (ajouter un champ `node_type: NodeType` ou utiliser une heuristique basée sur le nom/contexte).
+3. Convertir les unités en m³/s (réutiliser la logique de `scenario.rs`).
+4. Appliquer la règle de signe pour les sinks.
+5. Mapper vers `Node.flow_min_m3s` / `Node.flow_max_m3s` dans `load_network`.
+
+Vérification sur GasLib-11 : `entry01` (source) → `[+13.89, +208.33]` m³/s ; `exit01` (sink) → `[-347.22, -13.89]` m³/s ; innodes → pas de bornes utiles (±305 m³/s, quasi-libres).
 
 ---
 
@@ -171,7 +227,10 @@ La fonction `validate_solution_physics` dans `steady_state.rs` calcule déjà ce
 | **P1-1** | Créer `CapacityViolation` struct | `back/src/solver/capacity.rs` | — | `{ node_id, bound_type: Min\|Max, limit, actual, margin }` | — |
 | **P1-2** | Implémenter `compute_node_effective_flows()` | `back/src/solver/capacity.rs` | `GasNetwork` + `SolverResult` + `demands` | `HashMap<String, f64>` : débit effectif par nœud | T1-1 |
 | **P1-3** | Implémenter `check_capacity_violations()` | `back/src/solver/capacity.rs` | Effective flows + `CapacityBounds` | `Vec<CapacityViolation>` | T1-2, T1-3 |
-| **P1-4** | Ajouter `capacity_violations: Vec<CapacityViolation>` à `SolverResult` | `back/src/solver/steady_state.rs` | — | Champ optionnel, `#[serde(default, skip_serializing_if = "Vec::is_empty")]` | T1-4 |
+| **P1-4** | Implémenter `check_pipe_flow_violations()` | `back/src/solver/capacity.rs` | `GasNetwork` + `SolverResult` | `Vec<CapacityViolation>` pour les pipes dont le débit excède `flowMin`/`flowMax` | T1-5 |
+| **P1-5** | Ajouter `capacity_violations: Vec<CapacityViolation>` à `SolverResult` | `back/src/solver/steady_state.rs` | — | Champ optionnel, `#[serde(default, skip_serializing_if = "Vec::is_empty")]` | T1-6 |
+
+**Note :** GasLib fournit aussi des bornes `<flowMin>`/`<flowMax>` sur les **pipes** (connexions). Elles sont déjà parsées dans `XmlConnectionRaw` (utilisées pour la détection valve ouverte/fermée). Les réutiliser pour la vérification est un gain rapide. Les pipes ont des bornes symétriques (ex: ±1100 1000m³/h) et un signe signé (négatif = flux inverse).
 
 #### Tests Phase 1
 
@@ -179,8 +238,10 @@ La fonction `validate_solution_physics` dans `steady_state.rs` calcule déjà ce
 |----|------|------|-------------|
 | T1-1 | `test_effective_flows_match_demands_for_free_nodes` | Unitaire | Bilan des pipes = demande pour les nœuds libres après convergence |
 | T1-2 | `test_no_violation_when_within_bounds` | Unitaire | Scénario dans les bornes → `violations.is_empty()` |
-| T1-3 | `test_detects_overflow_violation` | Unitaire | Débit > max → violation détectée avec valeurs correctes |
-| T1-4 | `test_solver_result_includes_violations` | Unitaire | `SolverResult` sérialisé en JSON contient le champ quand non vide, absent quand vide |
+| T1-3 | `test_detects_overflow_violation` | Unitaire | Débit nœud > max → violation détectée avec valeurs correctes |
+| T1-4 | `test_detects_underflow_violation` | Unitaire | Débit nœud < min → violation détectée (important pour les sinks avec min de soutirage) |
+| T1-5 | `test_pipe_flow_violation_detected` | Unitaire | Débit pipe > max → violation pipe détectée |
+| T1-6 | `test_solver_result_includes_violations` | Unitaire | `SolverResult` sérialisé en JSON contient le champ quand non vide, absent quand vide |
 
 ---
 
@@ -208,58 +269,61 @@ solver/
 
 | # | Tâche | Fichiers | Entrée | Sortie | Tests |
 |---|-------|----------|--------|--------|-------|
-| **P2-1** | Implémenter `ConstrainedSolverConfig` et `ConstrainedSolverResult` | `back/src/solver/capacity.rs` | — | Structs de config (μ₀, facteur, max_outer, ρ) et résultat enrichi (`active_bounds`, `adjusted_demands`, `objective_value`, `outer_iterations`) | T2-1 |
-| **P2-2** | Implémenter `barrier_proximal_update_1d()` | `back/src/solver/capacity.rs` | `d_phys`, `d_target`, bornes, `μ`, `ρ` | `d_new` solution du sous-problème 1D convexe | T2-2 |
-| **P2-3** | Implémenter `compute_physical_demands()` | `back/src/solver/capacity.rs` | `GasNetwork`, `SolverResult`, `demands` | `HashMap<String, f64>` : débit physique par nœud (bilan des pipes pour slack, demande pour free) | T2-3 |
-| **P2-4** | Implémenter `clamp_initial_demands()` | `back/src/solver/capacity.rs` | `target_demands`, `capacity_bounds` | Demandes initiales clampées dans `[d_min + ε, d_max - ε]` | T2-4 |
-| **P2-5** | Implémenter la boucle extérieure alternée | `back/src/solver/capacity.rs` | Config + network + bounds + demands | Boucle : Newton-solve → demand-update → convergence check | T2-5 |
-| **P2-6** | Implémenter la détection d'infaisabilité | `back/src/solver/capacity.rs` | Historique d'objectif + max_outer_iter | `InfeasibilityDiagnostic` si non-convergence | T2-6 |
+| **P2-1** | Implémenter `ConstrainedSolverConfig` et `ConstrainedSolverResult` | `back/src/solver/capacity.rs` | — | Structs de config (max_outer, relax_factor, stratégie) et résultat enrichi (`active_bounds`, `adjusted_demands`, `objective_value`, `outer_iterations`, `slack_violations`) | T2-1 |
+| **P2-2** | Implémenter `clamp_initial_demands()` | `back/src/solver/capacity.rs` | `target_demands`, `capacity_bounds` | Demandes initiales clampées dans `[d_min + ε, d_max - ε]` | T2-2 |
+| **P2-3** | Implémenter `compute_slack_effective_flows()` | `back/src/solver/capacity.rs` | `GasNetwork`, `SolverResult` | `HashMap<String, f64>` : débit effectif aux nœuds slack uniquement | T2-3 |
+| **P2-4** | Implémenter `proportional_demand_reduction()` (stratégie A) | `back/src/solver/capacity.rs` | Demandes courantes, bornes libres, slack effective flows, slack bounds | Nouvelles demandes réduites proportionnellement pour satisfaire les bornes slack | T2-4 |
+| **P2-5** | Implémenter la boucle extérieure | `back/src/solver/capacity.rs` | Config + network + all bounds + demands | Boucle : clamp → Newton-solve → check slack → adjust demands → repeat | T2-5 |
+| **P2-6** | Implémenter la détection d'infaisabilité et le garde-fou de stagnation | `back/src/solver/capacity.rs` | Historique d'objectif + max_outer_iter | `InfeasibilityDiagnostic` si non-convergence ou stagnation (3 iter sans progrès) | T2-6 |
 | **P2-7** | Exposer `solve_steady_state_constrained` + callbacks de progression | `back/src/solver/capacity.rs`, `back/src/solver/mod.rs` | Signature publique complète | Fonction appelable depuis l'API, progress report avec `outer_iter` + `inner_iter` | T2-7 |
 
-#### Détails mathématiques — P2-2
+#### Détails mathématiques — Stratégie A (réduction proportionnelle)
 
-Le sous-problème 1D pour chaque nœud borné $i$ :
-
-$$
-d_i^{\text{new}} = \arg\min_{d_i^{\min} + \varepsilon \leq d \leq d_i^{\max} - \varepsilon} \; (d - d_i^{\text{cible}})^2 + \rho (d - d_i^{\text{phys}})^2 - \mu \ln(d - d_i^{\min}) - \mu \ln(d_i^{\max} - d)
-$$
-
-La condition de stationnarité donne :
+Après convergence du Newton interne, on calcule les débits slack effectifs. Si un slack $j$ viole sa borne max :
 
 $$
-2(d - d_i^{\text{cible}}) + 2\rho(d - d_i^{\text{phys}}) - \frac{\mu}{d - d_i^{\min}} + \frac{\mu}{d_i^{\max} - d} = 0
+\text{excès}_j = d_j^{\text{eff}} - d_j^{\max}
 $$
 
-Cette équation 1D est résolue par Newton scalaire (3–5 itérations suffisent, la fonction est strictement convexe sur l'intervalle ouvert).
+L'excès total est réparti sur les demandes libres proportionnellement à leur amplitude :
 
-Le paramètre $\rho$ contrôle le couplage entre la cible commerciale et la physique :
-- $\rho = 0$ : on ignore la physique, on cherche le point le plus proche de la cible dans les bornes
-- $\rho \gg 1$ : on colle à la solution physique, les bornes ne sont actives qu'en cas de violation
-- Valeur recommandée : $\rho = 1$ (compromis, ajustable)
+$$
+d_i^{\text{new}} = d_i - \alpha \cdot \frac{|d_i|}{\sum_k |d_k|} \cdot \text{excès total}
+$$
+
+puis re-clampé dans les bornes libres. Le facteur $\alpha \in (0, 1]$ (sous-relaxation, défaut 0.95) évite les oscillations. Même logique pour les violations min.
+
+Cette stratégie est :
+- **Correcte** : réduit monotonement l'excès de débit (par construction).
+- **Non-optimale** : ne minimise pas formellement $(d - d_{\text{cible}})^2$. Mais la réduction proportionnelle est une heuristique raisonnable qui traite les nœuds de façon équitable.
+- **Rapide** : converge en 2–4 itérations dans les cas courants.
+
+#### Cas limite : $d_{\min} = d_{\max}$ (débit fixé)
+
+Si un nœud a $d_{\min} = d_{\max}$ (capacité fixe), le clamp impose $d = d_{\min}$ sans degré de liberté. Ce nœud est exclu de la réduction proportionnelle. Si les nœuds à débit fixé ne laissent pas assez de marge → infaisabilité.
 
 #### Détails techniques — P2-5
 
 ```
-d = clamp_initial_demands(d_target, bounds)
-μ = μ₀
+d_free = clamp_initial_demands(d_target, free_bounds)
 
 pour outer_iter = 1..max_outer :
-  result = solve_steady_state_with_progress(network, d, …)
-  si Newton n'a pas convergé : bail avec diagnostic
+  result = solve_newton(network, d_free, warm_start_π)
+  si Newton non convergé : bail avec diagnostic
 
-  d_phys = compute_physical_demands(network, result, d)
+  d_slack_eff = compute_slack_effective_flows(network, result)
+  slack_violations = check_slack_bounds(d_slack_eff, slack_bounds)
 
-  d_old = d.clone()
-  pour chaque nœud borné i :
-    d[i] = barrier_proximal_update_1d(d_phys[i], d_target[i], bounds[i], μ, ρ)
+  si slack_violations.is_empty() :
+    CONVERGÉ — retourner result + adjusted_demands + check(free bounds)
 
-  objective = Σ (d[i] - d_target[i])²
-  Δd_max = max |d[i] - d_old[i]|
+  d_old = d_free.clone()
+  d_free = proportional_demand_reduction(d_free, free_bounds, slack_violations)
 
-  report progress(outer_iter, objective, Δd_max)
+  Δd_max = max |d_free[i] - d_old[i]|
+  si Δd_max < tol : STAGNATION — retourner meilleur résultat + infeasibility diagnostic
 
-  si Δd_max < tol ET result.residual < tol : CONVERGÉ
-  μ *= reduction_factor
+  warm_start_π = result.pressures  [warm-start pour accélérer le Newton suivant]
 ```
 
 #### Signature cible — P2-7
@@ -291,16 +355,16 @@ pub struct ConstrainedProgress {
 
 | ID | Test | Type | Description |
 |----|------|------|-------------|
-| T2-1 | `test_constrained_config_defaults` | Unitaire | Config par défaut valide (μ₀, facteur, etc.) |
-| T2-2 | `test_barrier_proximal_1d_stays_in_bounds` | Unitaire | Solution 1D strictement dans `]d_min, d_max[` pour divers cas |
-| T2-3 | `test_barrier_proximal_1d_target_in_bounds` | Unitaire | Si `d_target` est dans les bornes et μ→0, solution → `d_target` |
-| T2-4 | `test_barrier_proximal_1d_clamps_to_bound` | Unitaire | Si `d_target > d_max`, solution → `d_max - ε` quand μ→0 |
-| T2-5 | `test_physical_demands_match_balance` | Unitaire | `compute_physical_demands` cohérent avec le bilan de masse |
-| T2-6 | `test_constrained_solver_two_nodes_within_bounds` | Intégration | Réseau 2-nœuds, bornes larges → résultat ≈ solveur non contraint |
-| T2-7 | `test_constrained_solver_two_nodes_clamps_demand` | Intégration | Réseau 2-nœuds, demande > max → débit ajusté à ~max |
-| T2-8 | `test_constrained_solver_y_network` | Intégration | Y-network, une sortie bornée → débit redistribué |
-| T2-9 | `test_constrained_vs_unconstrained_gaslib11` | Intégration | GasLib-11, bornes larges → résultats quasi-identiques |
-| T2-10 | `test_constrained_gaslib11_tight_bounds` | Intégration | GasLib-11, bornes serrées → au moins un nœud actif |
+| T2-1 | `test_constrained_config_defaults` | Unitaire | Config par défaut valide |
+| T2-2 | `test_clamp_initial_demands_respects_bounds` | Unitaire | Demandes clampées dans `]d_min, d_max[` |
+| T2-3 | `test_slack_effective_flows_match_balance` | Unitaire | `compute_slack_effective_flows` cohérent avec bilan de masse |
+| T2-4 | `test_proportional_reduction_reduces_total` | Unitaire | Réduction proportionnelle diminue la demande totale |
+| T2-5 | `test_proportional_reduction_respects_free_bounds` | Unitaire | Après réduction, toutes les demandes libres restent dans leurs bornes |
+| T2-6 | `test_constrained_no_iteration_when_all_bounds_ok` | Intégration | Bornes larges, aucune violation slack → converge en 1 outer iteration |
+| T2-7 | `test_constrained_reduces_demand_on_slack_violation` | Intégration | Y-network, source bornée, demande totale trop forte → demandes réduites |
+| T2-8 | `test_constrained_fixed_demand_node_excluded` | Intégration | Nœud avec d_min = d_max exclu de la réduction |
+| T2-9 | `test_constrained_vs_unconstrained_gaslib11` | Intégration | GasLib-11, bornes GasLib natives (larges) → résultats quasi-identiques |
+| T2-10 | `test_constrained_gaslib11_tight_slack_bound` | Intégration | GasLib-11, source bornée serré → demandes ajustées, slack respecté |
 | T2-11 | `test_constrained_infeasible_returns_diagnostic` | Intégration | Bornes impossibles → `InfeasibilityDiagnostic` retourné |
 
 ---
@@ -510,24 +574,25 @@ P0-1 ──┬── P0-2 ── P0-4
 - Fonctions internes : `barrier_proximal_update_1d`, `compute_physical_demands`, `compute_node_effective_flows`, `clamp_initial_demands`
 - Types API : `CapacityBoundDto` (pas de tuple pour JSON)
 
-### Convention de signes (inchangée)
+### Convention de signes
 
 - `d > 0` : injection (source)
 - `d < 0` : soutirage (sink)
-- Bornes : `flow_min_m3s ≤ d ≤ flow_max_m3s` (respectent la convention de signe du scénario)
-- Pour les sinks, `flow_min` et `flow_max` sont typiquement ≤ 0 dans GasLib (convention cohérente)
+- Bornes dans le code : `flow_min_m3s ≤ d ≤ flow_max_m3s` (signées, convention du code)
+- **⚠️ GasLib utilise des magnitudes positives pour les sinks.** Le parser doit inverser et permuter pour les sinks : `flow_min_code = -flowMax_gaslib × conv`, `flow_max_code = -flowMin_gaslib × conv`. Voir détails en P0-2.
+- Pour les sources et innodes, mapping direct.
 
 ### Paramètres par défaut du solveur contraint
 
 | Paramètre | Valeur | Justification |
 |-----------|--------|---------------|
-| `μ₀` | 0.1 | Standard pour NLP de petite taille |
-| Facteur réduction μ | 0.2 (÷5) | Convergence en ~5–8 passes barrière |
-| `ρ` (rappel physique) | 1.0 | Compromis cible commerciale / faisabilité physique |
-| `ε` (marge bornes) | `1e-6` | Garde les variables strictement dans l'intérieur |
+| `ε` (marge bornes) | `1e-6` m³/s | Garde les variables strictement dans l'intérieur des bornes |
 | Tolérance Δd | `tolerance × 10` | Cohérence avec le Newton sous-jacent |
-| Max outer iterations | 20 | Sécurité |
+| Max outer iterations | 15 | Suffisant pour les stratégies A et B ; garde-fou de stagnation à 3 iter |
 | Max inner Newton iter | identique au `max_iter` courant | Pas de changement |
+| Facteur de réduction proportionnelle (stratégie A) | 0.95 | Sous-relaxation pour éviter l'oscillation |
+
+**Note sur μ (stratégie B uniquement) :** le paramètre de barrière $\mu_0$ doit être proportionnel à l'échelle des demandes. Valeur recommandée : $\mu_0 = 0.01 \cdot \max_i |d_i^{\text{cible}}|^2$. Cette mise à l'échelle évite que les termes de barrière soient négligeables (μ trop petit) ou dominants (μ trop grand) par rapport à l'objectif quadratique.
 
 ### Initialisation des demandes
 
@@ -545,9 +610,10 @@ Au démarrage du solveur contraint :
 
 ### Limites du MVP et évolutions futures
 
-| Limite MVP | Évolution future |
-|------------|-----------------|
-| Optimisation uniquement sur les nœuds libres (non-slack) | Optimisation avec pression variable aux slacks (NLP complet) |
-| Pas d'optimisation de la compression | Coût de compression dans l'objectif |
-| Bornes de débit seulement | Bornes de pression dans l'optimisation (déjà parsées : `pressure_lower_bar`/`pressure_upper_bar`) |
-| Méthode alternée (convergence linéaire) | Méthode KKT couplée (convergence superlinéaire) pour réseaux > 1000 nœuds |
+| Limite MVP | Impact | Évolution future |
+|------------|--------|-----------------|
+| Stratégie A (réduction proportionnelle) — non-optimale au sens mathématique | La solution respecte les bornes mais ne minimise pas formellement l'écart à la cible | Stratégie B (barrière proximale) pour l'optimalité |
+| Pas de bornes de pression dans l'optimisation | Les violations de pression sont détectées mais pas corrigées automatiquement | Bornes de pression comme contraintes dans l'optimisation (déjà parsées : `pressure_lower_bar`/`pressure_upper_bar`) |
+| Convergence non formellement garantie | Le garde-fou de stagnation protège, mais certains réseaux pathologiques pourraient osciller | Méthode KKT couplée (convergence superlinéaire prouvée) pour réseaux > 1000 nœuds |
+| Pas d'optimisation de la compression | Le coût énergétique des compresseurs n'est pas pris en compte | Coût de compression dans la fonction objectif |
+| Fonction objectif fixe (moindres carrés) | L'utilisateur ne peut pas choisir entre min-deviation, min-cost, max-throughput | Architecture extensible (`ObjectiveFunction` trait) |
