@@ -298,7 +298,7 @@ fn run_solver_stream(
 ) {
     let started = Instant::now();
     let timeout = Duration::from_millis(options.timeout_ms);
-    let seq = std::cell::Cell::new(1_u64);
+    let seq = std::sync::atomic::AtomicU64::new(1);
 
     let progress_cb = |progress: SolverProgress| -> SolverControl {
         if options.timeout_ms == 0
@@ -312,8 +312,7 @@ fn run_solver_stream(
         }
 
         if progress.iter == 1 || progress.iter % options.iteration_every.max(1) == 0 {
-            let s = seq.get() + 1;
-            seq.set(s);
+            let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
             let _ = tx.blocking_send(ServerMessage::Iteration {
                 run_id: run_id.clone(),
                 seq: s,
@@ -324,8 +323,7 @@ fn run_solver_stream(
         }
 
         if let (Some(pressures), Some(flows)) = (progress.pressures, progress.flows) {
-            let s = seq.get() + 1;
-            seq.set(s);
+            let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
             let snapshot = ServerMessage::Snapshot {
                 run_id: run_id.clone(),
                 seq: s,
@@ -399,7 +397,6 @@ fn run_solver_stream(
         }
     };
 
-    let run_id_ref = &run_id;
     match outcome {
         SolveOutcome::Normal(Ok(final_result)) => {
             super::export::store_export_record(
@@ -413,7 +410,7 @@ fn run_solver_stream(
                     started.elapsed().as_millis() as u64,
                 ),
             );
-            let s = seq.get() + 1;
+            let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
             let _ = tx.blocking_send(ServerMessage::Converged {
                 run_id,
                 seq: s,
@@ -448,7 +445,7 @@ fn run_solver_stream(
                     started.elapsed().as_millis() as u64,
                 ),
             );
-            let s = seq.get() + 1;
+            let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
             let _ = tx.blocking_send(ServerMessage::Converged {
                 run_id,
                 seq: s,
@@ -480,7 +477,7 @@ fn run_solver_stream(
                     started.elapsed().as_millis() as u64,
                 ),
             );
-            let s = seq.get() + 1;
+            let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
             let _ = tx.blocking_send(ServerMessage::Converged {
                 run_id,
                 seq: s,
@@ -499,7 +496,7 @@ fn run_solver_stream(
             result: Err(err), ..
         }
         | SolveOutcome::Constrained(Err(err)) => {
-            let s = seq.get() + 1;
+            let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
             if cancel_flag.load(Ordering::Relaxed) {
                 let reason = match cancel_reason.load(Ordering::Relaxed) {
                     CANCEL_CLIENT_REQUEST => "client_request",
