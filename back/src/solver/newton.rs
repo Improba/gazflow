@@ -278,8 +278,6 @@ where
 
         let gmres_max_iters_default = if m > 1200 {
             220
-        } else if m > 600 {
-            GMRES_MAX_ITERS
         } else {
             GMRES_MAX_ITERS
         };

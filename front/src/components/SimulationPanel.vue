@@ -162,9 +162,17 @@ const canLoadNetwork = computed(
 );
 
 onMounted(async () => {
-  await networkStore.fetchAvailableNetworks();
+  try {
+    await networkStore.fetchAvailableNetworks();
+  } catch {
+    // API may not be reachable yet; the selector will remain empty.
+  }
   if (!networkStore.activeNetwork) {
-    await networkStore.fetchNetwork();
+    try {
+      await networkStore.fetchNetwork();
+    } catch {
+      // Will retry when user triggers an action.
+    }
   }
   selectedNetwork.value = networkStore.activeNetwork;
 });
