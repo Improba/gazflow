@@ -29,7 +29,31 @@ struct XmlNetwork {
 #[derive(Debug, Deserialize)]
 struct XmlNodes {
     #[serde(rename = "$value", default)]
-    entries: Vec<XmlNode>,
+    entries: Vec<XmlNodeEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+enum XmlNodeEntry {
+    #[serde(rename = "source")]
+    Source(XmlNode),
+    #[serde(rename = "sink")]
+    Sink(XmlNode),
+    #[serde(rename = "innode")]
+    Innode(XmlNode),
+    #[serde(rename = "node")]
+    Node(XmlNode),
+}
+
+impl XmlNodeEntry {
+    fn inner(&self) -> &XmlNode {
+        match self {
+            Self::Source(n) | Self::Sink(n) | Self::Innode(n) | Self::Node(n) => n,
+        }
+    }
+
+    fn is_sink(&self) -> bool {
+        matches!(self, Self::Sink(_))
+    }
 }
 
 /// Un nœud du réseau.  Peut être <node>, <source>, <sink> ou <innode> dans GasLib.
@@ -56,6 +80,10 @@ struct XmlNode {
     pressure_min: Option<XmlValue>,
     #[serde(rename = "pressureMax", default)]
     pressure_max: Option<XmlValue>,
+    #[serde(rename = "flowMin", default)]
+    flow_min: Option<XmlValue>,
+    #[serde(rename = "flowMax", default)]
+    flow_max: Option<XmlValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,6 +218,16 @@ fn parse_roughness_mm(value: &XmlValue) -> f64 {
     }
 }
 
+fn convert_flow_to_m3s(value: &XmlValue) -> f64 {
+    let raw = value.value;
+    match value.unit.as_deref() {
+        Some("1000m_cube_per_hour") => raw * 1000.0 / 3600.0,
+        Some("m_cube_per_hour") => raw / 3600.0,
+        Some("m_cube_per_second") | None => raw,
+        _ => raw,
+    }
+}
+
 fn valve_is_open(kind: ConnectionKind, raw: &XmlConnectionRaw) -> bool {
     if kind != ConnectionKind::Valve {
         return true;
@@ -231,7 +269,8 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
 
     let mut net = GasNetwork::new();
 
-    for node in &raw.nodes.entries {
+    for entry in &raw.nodes.entries {
+        let node = entry.inner();
         let pressure_lower_bar = node
             .pressure
             .as_ref()
@@ -242,6 +281,17 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
             .as_ref()
             .and_then(|p| p.upper)
             .or_else(|| node.pressure_max.as_ref().map(|v| v.value));
+        let (flow_min_m3s, flow_max_m3s) = if entry.is_sink() {
+            (
+                node.flow_max.as_ref().map(|v| -convert_flow_to_m3s(v)),
+                node.flow_min.as_ref().map(|v| -convert_flow_to_m3s(v)),
+            )
+        } else {
+            (
+                node.flow_min.as_ref().map(|v| convert_flow_to_m3s(v)),
+                node.flow_max.as_ref().map(|v| convert_flow_to_m3s(v)),
+            )
+        };
         net.add_node(crate::graph::Node {
             id: node.id.clone(),
             x: node.x,
@@ -257,6 +307,8 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
             pressure_lower_bar,
             pressure_upper_bar,
             pressure_fixed_bar: node.pressure.as_ref().and_then(|p| p.value),
+            flow_min_m3s,
+            flow_max_m3s,
         });
     }
 
@@ -298,6 +350,8 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
                 .or(src.drag_factor_attr)
                 .unwrap_or(default_roughness_mm),
             compressor_ratio_max,
+            flow_min_m3s: src.flow_min.as_ref().map(convert_flow_to_m3s),
+            flow_max_m3s: src.flow_max.as_ref().map(convert_flow_to_m3s),
         });
     }
 

@@ -419,6 +419,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         network.add_node(Node {
             id: "B".into(),
@@ -430,6 +432,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         network.add_pipe(Pipe {
             id: "P1".into(),
@@ -441,6 +445,8 @@ mod tests {
             diameter_mm: 500.0,
             roughness_mm: 0.012,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
 
         Arc::new(super::super::AppState {

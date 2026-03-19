@@ -16,6 +16,8 @@ pub struct Node {
     pub pressure_lower_bar: Option<f64>,
     pub pressure_upper_bar: Option<f64>,
     pub pressure_fixed_bar: Option<f64>,
+    pub flow_min_m3s: Option<f64>,
+    pub flow_max_m3s: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -40,6 +42,10 @@ pub struct Pipe {
     pub roughness_mm: f64,
     #[serde(skip_serializing)]
     pub compressor_ratio_max: Option<f64>,
+    #[serde(skip_serializing)]
+    pub flow_min_m3s: Option<f64>,
+    #[serde(skip_serializing)]
+    pub flow_max_m3s: Option<f64>,
 }
 
 /// Réseau gazier : graphe orienté (nœuds + tuyaux).
@@ -110,6 +116,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "B".into(),
@@ -121,6 +129,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_pipe(Pipe {
             id: "P1".into(),
@@ -132,6 +142,8 @@ mod tests {
             diameter_mm: 500.0,
             roughness_mm: 0.012,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
 
         assert_eq!(net.node_count(), 2);

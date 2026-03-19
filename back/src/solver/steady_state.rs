@@ -593,6 +593,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "sink".into(),
@@ -604,6 +606,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_pipe(Pipe {
             id: "pipe1".into(),
@@ -615,6 +619,8 @@ mod tests {
             diameter_mm: 500.0,
             roughness_mm: 0.012,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net
     }
@@ -631,6 +637,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "J".into(),
@@ -642,6 +650,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "A".into(),
@@ -653,6 +663,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "B".into(),
@@ -664,6 +676,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_pipe(Pipe {
             id: "SJ".into(),
@@ -675,6 +689,8 @@ mod tests {
             diameter_mm: 600.0,
             roughness_mm: 0.012,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_pipe(Pipe {
             id: "JA".into(),
@@ -686,6 +702,8 @@ mod tests {
             diameter_mm: 400.0,
             roughness_mm: 0.012,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_pipe(Pipe {
             id: "JB".into(),
@@ -697,6 +715,8 @@ mod tests {
             diameter_mm: 400.0,
             roughness_mm: 0.012,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net
     }
@@ -713,6 +733,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "sink".into(),
@@ -724,6 +746,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_pipe(Pipe {
             id: "link".into(),
@@ -741,6 +765,8 @@ mod tests {
             } else {
                 None
             },
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net
     }
@@ -765,6 +791,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "sink".into(),
@@ -776,6 +804,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_pipe(Pipe {
             id: "v_closed".into(),
@@ -787,6 +817,8 @@ mod tests {
             diameter_mm: 500.0,
             roughness_mm: 0.012,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net
     }
@@ -803,6 +835,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "connected".into(),
@@ -814,6 +848,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "isolated".into(),
@@ -825,6 +861,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_pipe(Pipe {
             id: "p".into(),
@@ -836,6 +874,8 @@ mod tests {
             diameter_mm: 500.0,
             roughness_mm: 0.012,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net
     }
@@ -1654,6 +1694,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net_low.add_node(Node {
             id: "sink".into(),
@@ -1665,6 +1707,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net_low.add_pipe(Pipe {
             id: "p".into(),
@@ -1676,6 +1720,8 @@ mod tests {
             diameter_mm: 500.0,
             roughness_mm: 0.01,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
 
         let mut net_high = GasNetwork::new();
@@ -1689,6 +1735,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net_high.add_node(Node {
             id: "sink".into(),
@@ -1700,6 +1748,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net_high.add_pipe(Pipe {
             id: "p".into(),
@@ -1711,6 +1761,8 @@ mod tests {
             diameter_mm: 500.0,
             roughness_mm: 0.2,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
 
         let mut demands = HashMap::new();
@@ -1739,6 +1791,8 @@ mod tests {
             pressure_lower_bar: Some(40.0),
             pressure_upper_bar: Some(60.0),
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
 
         let mut pressures = HashMap::new();

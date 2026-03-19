@@ -430,6 +430,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "sink".into(),
@@ -441,6 +443,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_pipe(Pipe {
             id: "p1".into(),
@@ -452,6 +456,8 @@ mod tests {
             diameter_mm: 500.0,
             roughness_mm: 0.012,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
 
         let mut defaults = HashMap::new();
@@ -478,6 +484,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "sink".into(),
@@ -489,6 +497,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_pipe(Pipe {
             id: "p1".into(),
@@ -500,6 +510,8 @@ mod tests {
             diameter_mm: 500.0,
             roughness_mm: 0.012,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
 
         let mut defaults = HashMap::new();
@@ -524,6 +536,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "sink".into(),
@@ -535,6 +549,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
             id: "isolated".into(),
@@ -546,6 +562,8 @@ mod tests {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_pipe(Pipe {
             id: "p1".into(),
@@ -557,6 +575,8 @@ mod tests {
             diameter_mm: 500.0,
             roughness_mm: 0.012,
             compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
 
         let mut defaults = HashMap::new();
