@@ -25,21 +25,31 @@ Natural gas network flow simulator, inspired by SIMONE.
 
 ## What GazFlow does (business vision)
 
-GazFlow simulates gas flow in a transport network from a GasLib topology and a demand scenario. The tool computes a steady-state hydraulic operating point (nodal pressures and pipe flows), then presents it for operational reading: 3D map, convergence monitoring, and usable exports.
+GazFlow simulates gas flow in a transport network from a GasLib topology and a demand scenario. The tool computes a steady-state hydraulic operating point (nodal pressures and pipe flows), then presents it for operational reading: 3D map, convergence monitoring, and usable exports. You can optionally attach **min/max flow bounds** per node (and use pipe bounds from the file) to **check** a scenario against capacities or **optimize** demands toward a feasible operating point.
 
 ### Use cases
 
 - Study the hydraulic behaviour of a network under different withdrawal/injection levels
 - Quickly visualise high/low pressure zones and the most loaded pipes
-- Compare scenarios and document results (JSON/CSV/ZIP)
+- **Capacity-aware workflows**: after loading a GasLib network, optional per-node min/max flows (m³/s) can be sent with a simulation; use **check** to flag violations or **optimize** to project demands toward feasible slack (source) throughput while staying close to the target scenario
+- Compare scenarios and document results (JSON/CSV/XLSX/ZIP), including capacity diagnostics when applicable
 
 ### What the tool is not
 
 GazFlow is a simulation and visualisation prototype inspired by industrial tools. It does not replace a certified network operation simulator.
 
-### Perspective
+### Capacity constraints (min / max flows)
 
-Today the simulator takes **fixed** injection and withdrawal flows per node and computes the resulting pressures and pipe flows. A natural extension would be to take **entry/exit capacities** into account (min/max flow per point), so as to simulate the effects of **purchases and sales**: e.g. limit injections and withdrawals to contractual or physical capacities, and either check that a given scenario stays within those bounds or optimise flows within them.
+The steady-state hydraulic core still solves for pressures and pipe flows from **nodal demands** (injections positive, withdrawals negative). On top of that, you can work with **flow bounds**:
+
+- **From GasLib (`.net`)**: optional `flow_min` / `flow_max` on nodes and pipes are parsed into the graph. Node bounds appear on `GET /api/network` as `flow_min_m3s` / `flow_max_m3s`. Pipe bounds are kept on the backend and used whenever you run a capacity-aware solve.
+- **From the client**: `POST /api/simulate` and the WebSocket `start_simulation` message accept optional `capacity_bounds` (`{ "nodeId": { "min", "max" } }`, m³/s) and optional `mode`:
+  - **`check`** — Run the usual solve with your demands, then return **`capacity_violations`** where effective node net flows or pipe flows fall outside bounds.
+  - **`optimize`** — Iterative **projection**: bounded free-node demands are clamped and the hydraulic solve is repeated; if a **slack** node (fixed pressure) would exceed its bounds, bounded free-node demands are adjusted proportionally until slack is feasible or an infeasibility / stagnation diagnostic is returned. The response includes **adjusted demands**, **active bounds**, and a simple squared-distance **objective** vs the target scenario.
+
+This supports operational questions such as “does this nomination respect entry/exit-style envelopes?” and “what feasible demands are closest if the source is capped?”. It is **not** full market or contract optimisation (products, time slices, tariffs) unless you encode them yourself as static min/max.
+
+For the algorithm and limitations in depth, see [Capacity constraints plan](docs/plans/capacity-constraints-plan.md).
 
 ## Architecture
 
@@ -110,5 +120,6 @@ The `Cargo.toml` and `package.json` files are on the shared volume: changes are 
 - [Architecture](docs/architecture/overview.md)
 - [Results export contract](docs/architecture/export-contract.md)
 - [Physical equations](docs/science/equations.md)
+- [Capacity constraints plan](docs/plans/capacity-constraints-plan.md)
 - [Implementation plan (shared)](docs/plans/implementation-plan.md)
 - [MVP features](docs/features/mvp.md)
