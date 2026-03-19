@@ -38,3 +38,37 @@ This file defines contribution rules for agents/assistants only. Detailed execut
 ## Anti-redundancy principle
 
 Do not duplicate here sections already maintained elsewhere (scripts, quickstart, catalogues). Add a link to the source of truth rather than a copy.
+
+## Cursor Cloud specific instructions
+
+### Docker-in-Docker
+
+The Cloud Agent VM does not ship Docker pre-installed. The VM snapshot installs Docker CE, `fuse-overlayfs`, and configures `iptables-legacy` for DinD compatibility. After the snapshot boots, the Docker daemon must be started before any `docker compose` command:
+
+```bash
+sudo dockerd &>/tmp/dockerd.log &
+sleep 3
+```
+
+### Starting development services
+
+See `README.md` § Quickstart. Summary:
+
+1. **GasLib data** (one-time): `./scripts/fetch_gaslib.sh GasLib-11` — downloads XML topology into `back/dat/`.
+2. **Services**: `sudo docker compose up -d --build` (backend on `:3001`, frontend on `:9000`).
+3. First start compiles Rust deps (~60-90s); subsequent starts use cached volumes (`back-target`, `cargo-registry`).
+
+Use `sudo` for all `docker` / `docker compose` commands (the `ubuntu` user is in the `docker` group but the shell session may not reflect it without re-login).
+
+### Running tests
+
+- Backend: `sudo docker compose exec back cargo test`
+- Frontend: `sudo docker compose exec front npm test`
+- Full CI: `sudo docker compose run --rm back cargo test && sudo docker compose run --rm front npx quasar build`
+- See `docs/testing/README.md` for targeted tests and validation packs.
+
+### Key gotchas
+
+- The frontend container runs `npm install` on startup (CMD in Dockerfile). If `node_modules` volume is stale after dependency changes, remove it: `sudo docker volume rm workspace_front-node-modules` then restart.
+- `cargo watch` hot-reloads the backend on file changes; no manual restart needed.
+- The `back/dat/` directory is `.gitignored` — always re-run `fetch_gaslib.sh` on a fresh clone.
