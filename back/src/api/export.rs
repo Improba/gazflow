@@ -312,6 +312,14 @@ fn build_json_payload(_state: &super::SharedState, record: &ExportRecord) -> Exp
     }
 }
 
+fn csv_escape(field: &str) -> String {
+    if field.contains(',') || field.contains('"') || field.contains('\n') {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
 fn build_csv(_state: &super::SharedState, record: &ExportRecord) -> String {
     let mut lines = Vec::new();
     lines.push("kind,id,from,to,value,abs_value,unit,direction".to_string());
@@ -320,7 +328,8 @@ fn build_csv(_state: &super::SharedState, record: &ExportRecord) -> String {
     pressure_rows.sort_by(|(a, _), (b, _)| a.cmp(b));
     for (node_id, pressure) in pressure_rows {
         lines.push(format!(
-            "pressure,{node_id},,,{pressure},{},bar,",
+            "pressure,{},,,{pressure},{},bar,",
+            csv_escape(node_id),
             pressure.abs()
         ));
     }
@@ -335,7 +344,10 @@ fn build_csv(_state: &super::SharedState, record: &ExportRecord) -> String {
             .unwrap_or_else(|| (String::new(), String::new()));
         let direction = if *flow >= 0.0 { "forward" } else { "reverse" };
         lines.push(format!(
-            "flow,{pipe_id},{from},{to},{flow},{},m3/s,{direction}",
+            "flow,{},{},{},{flow},{},m3/s,{direction}",
+            csv_escape(pipe_id),
+            csv_escape(&from),
+            csv_escape(&to),
             flow.abs()
         ));
     }
