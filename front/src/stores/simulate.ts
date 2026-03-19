@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { api, type SimulationResult } from 'src/services/api';
+import { api, type SimulationResult, type CapacityViolation } from 'src/services/api';
 import {
   SimulationWsClient,
   type WsServerMessage,
   type WsStartOptions,
+  type WsCapacityOptions,
 } from 'src/services/ws';
 
 type SimulationStatus = 'idle' | 'running' | 'converged' | 'cancelled' | 'error';
@@ -24,6 +25,10 @@ export const useSimulateStore = defineStore('simulate', () => {
 
   const livePressures = ref<Record<string, number>>({});
   const liveFlows = ref<Record<string, number>>({});
+
+  const capacityViolations = ref<CapacityViolation[]>([]);
+  const adjustedDemands = ref<Record<string, number>>({});
+  const activeBounds = ref<string[]>([]);
 
   let wsClient: SimulationWsClient | null = null;
   let lastSnapshotAt = 0;
@@ -55,7 +60,7 @@ export const useSimulateStore = defineStore('simulate', () => {
 
   async function runSimulation(
     demands?: Record<string, number>,
-    options?: WsStartOptions,
+    options?: WsStartOptions & WsCapacityOptions,
   ) {
     await ensureConnectedWs();
     const warmStartPressures =
@@ -66,6 +71,8 @@ export const useSimulateStore = defineStore('simulate', () => {
     loading.value = true;
     status.value = 'running';
 
+    const { capacity_bounds, mode, ...solverOpts } = options ?? {};
+
     wsClient!.startSimulation({
       runId: currentRunId.value,
       demands,
@@ -75,8 +82,10 @@ export const useSimulateStore = defineStore('simulate', () => {
         max_iter: 1000,
         tolerance: 5e-4,
         initial_pressures: warmStartPressures,
-        ...(options ?? {}),
+        ...solverOpts,
       },
+      capacityBounds: capacity_bounds,
+      mode,
     });
   }
 
@@ -112,6 +121,9 @@ export const useSimulateStore = defineStore('simulate', () => {
         liveFlows.value = { ...msg.result.flows };
         iteration.value = msg.result.iterations;
         residual.value = msg.result.residual;
+        capacityViolations.value = msg.result.capacity_violations ?? [];
+        adjustedDemands.value = msg.result.adjusted_demands ?? {};
+        activeBounds.value = msg.result.active_bounds ?? [];
         status.value = 'converged';
         loading.value = false;
         addLog(`converged in ${msg.total_ms}ms`);
@@ -146,6 +158,9 @@ export const useSimulateStore = defineStore('simulate', () => {
     result.value = null;
     livePressures.value = {};
     liveFlows.value = {};
+    capacityViolations.value = [];
+    adjustedDemands.value = {};
+    activeBounds.value = [];
   }
 
   function queueSnapshot(msg: Extract<WsServerMessage, { type: 'snapshot' }>) {
@@ -183,7 +198,7 @@ export const useSimulateStore = defineStore('simulate', () => {
     currentRunId.value = null;
   }
 
-  async function exportResult(format: 'json' | 'csv' | 'zip') {
+  async function exportResult(format: 'json' | 'csv' | 'zip' | 'xlsx') {
     if (!currentRunId.value || status.value !== 'converged') {
       return;
     }
@@ -221,6 +236,9 @@ export const useSimulateStore = defineStore('simulate', () => {
     exporting,
     livePressures,
     liveFlows,
+    capacityViolations,
+    adjustedDemands,
+    activeBounds,
     runSimulation,
     cancelSimulation,
     resetSimulation,

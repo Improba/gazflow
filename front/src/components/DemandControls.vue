@@ -20,7 +20,7 @@
           <q-slider
             :model-value="sliderValues[node.id] ?? 0"
             :min="0"
-            :max="20"
+            :max="getMaxWithdrawal(node)"
             :step="0.5"
             color="amber-5"
             label
@@ -49,7 +49,7 @@
 
 <script setup lang="ts">
 import { computed, reactive, watch } from 'vue';
-import { useNetworkStore } from 'src/stores/network';
+import { useNetworkStore, type NodeDto } from 'src/stores/network';
 
 const props = withDefaults(
   defineProps<{
@@ -71,6 +71,13 @@ let publishTimer: ReturnType<typeof setTimeout> | null = null;
 const adjustableNodes = computed(() =>
   networkStore.nodes.filter((node) => node.pressure_fixed_bar == null),
 );
+
+function getMaxWithdrawal(node: NodeDto): number {
+  if (node.flow_min_m3s != null && node.flow_min_m3s < 0) {
+    return Math.abs(node.flow_min_m3s);
+  }
+  return 20;
+}
 
 watch(
   adjustableNodes,

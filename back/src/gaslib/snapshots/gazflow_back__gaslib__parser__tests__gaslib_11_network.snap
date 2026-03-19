@@ -14,6 +14,8 @@ nodes:
     pressure_lower_bar: 40
     pressure_upper_bar: 70
     pressure_fixed_bar: ~
+    flow_min_m3s: ~
+    flow_max_m3s: ~
   - id: N02
     x: 600
     y: 100
@@ -23,6 +25,8 @@ nodes:
     pressure_lower_bar: 40
     pressure_upper_bar: 70
     pressure_fixed_bar: ~
+    flow_min_m3s: ~
+    flow_max_m3s: ~
   - id: N03
     x: 600
     y: -100
@@ -32,6 +36,8 @@ nodes:
     pressure_lower_bar: 40
     pressure_upper_bar: 70
     pressure_fixed_bar: ~
+    flow_min_m3s: ~
+    flow_max_m3s: ~
   - id: N04
     x: 800
     y: 0
@@ -41,6 +47,8 @@ nodes:
     pressure_lower_bar: 40
     pressure_upper_bar: 70
     pressure_fixed_bar: ~
+    flow_min_m3s: ~
+    flow_max_m3s: ~
   - id: N05
     x: 1000
     y: 0
@@ -50,6 +58,8 @@ nodes:
     pressure_lower_bar: 40
     pressure_upper_bar: 70
     pressure_fixed_bar: ~
+    flow_min_m3s: ~
+    flow_max_m3s: ~
   - id: entry01
     x: 0
     y: 0
@@ -59,6 +69,8 @@ nodes:
     pressure_lower_bar: 40
     pressure_upper_bar: 70
     pressure_fixed_bar: ~
+    flow_min_m3s: 13.88888888888889
+    flow_max_m3s: 208.33333333333334
   - id: entry02
     x: 600
     y: -300
@@ -68,6 +80,8 @@ nodes:
     pressure_lower_bar: 40
     pressure_upper_bar: 70
     pressure_fixed_bar: ~
+    flow_min_m3s: 27.77777777777778
+    flow_max_m3s: 138.88888888888889
   - id: entry03
     x: 200
     y: 0
@@ -77,6 +91,8 @@ nodes:
     pressure_lower_bar: 40
     pressure_upper_bar: 70
     pressure_fixed_bar: ~
+    flow_min_m3s: 0
+    flow_max_m3s: 138.88888888888889
   - id: exit01
     x: 600
     y: 300
@@ -86,6 +102,8 @@ nodes:
     pressure_lower_bar: 40
     pressure_upper_bar: 70
     pressure_fixed_bar: ~
+    flow_min_m3s: -347.22222222222223
+    flow_max_m3s: -13.88888888888889
   - id: exit02
     x: 1141
     y: 141
@@ -95,6 +113,8 @@ nodes:
     pressure_lower_bar: 40
     pressure_upper_bar: 60
     pressure_fixed_bar: ~
+    flow_min_m3s: -111.11111111111111
+    flow_max_m3s: -22.22222222222222
   - id: exit03
     x: 1141
     y: -141
@@ -104,6 +124,8 @@ nodes:
     pressure_lower_bar: 40
     pressure_upper_bar: 60
     pressure_fixed_bar: ~
+    flow_min_m3s: -166.66666666666666
+    flow_max_m3s: -11.11111111111111
 pipes:
   - id: CS01_entry03_N01
     from: entry03

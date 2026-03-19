@@ -29,6 +29,19 @@
 
     <DemandControls v-model="demandOverrides" />
 
+    <q-btn-toggle
+      v-model="simulationMode"
+      :options="[
+        { label: 'Libre', value: 'free' },
+        { label: 'Vérifier', value: 'check' },
+        { label: 'Optimiser', value: 'optimize' },
+      ]"
+      dense
+      no-caps
+      toggle-color="primary"
+      class="q-mb-sm"
+    />
+
     <div class="row q-col-gutter-sm q-mb-md">
       <div class="col">
         <q-btn
@@ -103,6 +116,58 @@
             @click="simulateStore.exportResult('zip')"
           />
         </div>
+        <div class="col">
+          <q-btn
+            dense
+            icon="table_chart"
+            label="EXPORTER XLSX"
+            color="secondary"
+            class="full-width"
+            :loading="simulateStore.exporting"
+            :disable="simulateStore.status !== 'converged' || simulateStore.exporting"
+            @click="simulateStore.exportResult('xlsx')"
+          />
+        </div>
+      </div>
+
+      <div v-if="simulateStore.capacityViolations.length > 0" class="q-mt-md">
+        <q-banner dense class="bg-red-10 text-white q-mb-sm" rounded>
+          <template v-slot:avatar>
+            <q-icon name="warning" />
+          </template>
+          {{ simulateStore.capacityViolations.length }} violation(s) de capacité
+        </q-banner>
+        <div
+          v-for="v in simulateStore.capacityViolations"
+          :key="v.element_id + v.bound_type"
+          class="text-caption q-mb-xs"
+        >
+          <q-icon
+            :name="v.bound_type === 'max' ? 'arrow_upward' : 'arrow_downward'"
+            :color="'red-4'"
+            size="14px"
+          />
+          <span class="text-bold">{{ v.element_id }}</span>:
+          {{ v.actual.toFixed(2) }} m³/s
+          ({{ v.bound_type === 'max' ? 'max' : 'min' }}: {{ v.limit.toFixed(2) }})
+        </div>
+      </div>
+
+      <div v-if="Object.keys(simulateStore.adjustedDemands).length > 0" class="q-mt-md">
+        <div class="text-subtitle2 q-mb-xs">Demandes ajustées</div>
+        <div
+          v-for="(value, nodeId) in simulateStore.adjustedDemands"
+          :key="'adj-' + nodeId"
+          class="text-caption q-mb-xs"
+        >
+          <q-icon
+            v-if="simulateStore.activeBounds.includes(String(nodeId))"
+            name="lock"
+            color="amber-5"
+            size="14px"
+          />
+          {{ nodeId }}: {{ value.toFixed(2) }} m³/s
+        </div>
       </div>
 
       <q-separator dark class="q-my-sm" />
@@ -148,11 +213,13 @@ import LogPanel from 'src/components/LogPanel.vue';
 import ProgressBar from 'src/components/ProgressBar.vue';
 import { useNetworkStore } from 'src/stores/network';
 import { useSimulateStore } from 'src/stores/simulate';
+import type { WsStartOptions } from 'src/services/ws';
 
 const networkStore = useNetworkStore();
 const simulateStore = useSimulateStore();
 const demandOverrides = ref<Record<string, number>>({});
 const selectedNetwork = ref<string | null>(null);
+const simulationMode = ref<'free' | 'check' | 'optimize'>('free');
 
 const canLoadNetwork = computed(
   () =>
@@ -185,8 +252,23 @@ watch(
 );
 
 function startSimulation() {
-  const hasOverrides = Object.keys(demandOverrides.value).length > 0;
-  simulateStore.runSimulation(hasOverrides ? demandOverrides.value : undefined);
+  const demands = Object.keys(demandOverrides.value).length > 0
+    ? demandOverrides.value
+    : undefined;
+
+  const opts: WsStartOptions = {};
+  if (simulationMode.value !== 'free') {
+    opts.mode = simulationMode.value;
+    const bounds: Record<string, { min: number; max: number }> = {};
+    for (const node of networkStore.nodes) {
+      if (node.flow_min_m3s != null && node.flow_max_m3s != null) {
+        bounds[node.id] = { min: node.flow_min_m3s, max: node.flow_max_m3s };
+      }
+    }
+    opts.capacity_bounds = bounds;
+  }
+
+  simulateStore.runSimulation(demands, opts);
 }
 
 async function loadSelectedNetwork() {

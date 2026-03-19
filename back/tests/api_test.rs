@@ -20,6 +20,8 @@ fn build_test_network(with_isolated: bool) -> GasNetwork {
         pressure_lower_bar: None,
         pressure_upper_bar: None,
         pressure_fixed_bar: Some(70.0),
+        flow_min_m3s: None,
+        flow_max_m3s: None,
     });
     net.add_node(Node {
         id: "sink".into(),
@@ -31,6 +33,8 @@ fn build_test_network(with_isolated: bool) -> GasNetwork {
         pressure_lower_bar: None,
         pressure_upper_bar: None,
         pressure_fixed_bar: None,
+        flow_min_m3s: None,
+        flow_max_m3s: None,
     });
     if with_isolated {
         net.add_node(Node {
@@ -43,6 +47,8 @@ fn build_test_network(with_isolated: bool) -> GasNetwork {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
     }
     net.add_pipe(Pipe {
@@ -55,6 +61,8 @@ fn build_test_network(with_isolated: bool) -> GasNetwork {
         diameter_mm: 500.0,
         roughness_mm: 0.012,
         compressor_ratio_max: None,
+        flow_min_m3s: None,
+        flow_max_m3s: None,
     });
     net
 }

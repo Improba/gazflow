@@ -29,7 +29,31 @@ struct XmlNetwork {
 #[derive(Debug, Deserialize)]
 struct XmlNodes {
     #[serde(rename = "$value", default)]
-    entries: Vec<XmlNode>,
+    entries: Vec<XmlNodeEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+enum XmlNodeEntry {
+    #[serde(rename = "source")]
+    Source(XmlNode),
+    #[serde(rename = "sink")]
+    Sink(XmlNode),
+    #[serde(rename = "innode")]
+    Innode(XmlNode),
+    #[serde(rename = "node")]
+    Node(XmlNode),
+}
+
+impl XmlNodeEntry {
+    fn inner(&self) -> &XmlNode {
+        match self {
+            Self::Source(n) | Self::Sink(n) | Self::Innode(n) | Self::Node(n) => n,
+        }
+    }
+
+    fn is_sink(&self) -> bool {
+        matches!(self, Self::Sink(_))
+    }
 }
 
 /// Un nœud du réseau.  Peut être <node>, <source>, <sink> ou <innode> dans GasLib.
@@ -56,6 +80,10 @@ struct XmlNode {
     pressure_min: Option<XmlValue>,
     #[serde(rename = "pressureMax", default)]
     pressure_max: Option<XmlValue>,
+    #[serde(rename = "flowMin", default)]
+    flow_min: Option<XmlValue>,
+    #[serde(rename = "flowMax", default)]
+    flow_max: Option<XmlValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,6 +218,16 @@ fn parse_roughness_mm(value: &XmlValue) -> f64 {
     }
 }
 
+fn convert_flow_to_m3s(value: &XmlValue) -> f64 {
+    let raw = value.value;
+    match value.unit.as_deref() {
+        Some("1000m_cube_per_hour") => raw * 1000.0 / 3600.0,
+        Some("m_cube_per_hour") => raw / 3600.0,
+        Some("m_cube_per_second") | None => raw,
+        _ => raw,
+    }
+}
+
 fn valve_is_open(kind: ConnectionKind, raw: &XmlConnectionRaw) -> bool {
     if kind != ConnectionKind::Valve {
         return true;
@@ -231,7 +269,8 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
 
     let mut net = GasNetwork::new();
 
-    for node in &raw.nodes.entries {
+    for entry in &raw.nodes.entries {
+        let node = entry.inner();
         let pressure_lower_bar = node
             .pressure
             .as_ref()
@@ -242,6 +281,17 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
             .as_ref()
             .and_then(|p| p.upper)
             .or_else(|| node.pressure_max.as_ref().map(|v| v.value));
+        let (flow_min_m3s, flow_max_m3s) = if entry.is_sink() {
+            (
+                node.flow_max.as_ref().map(|v| -convert_flow_to_m3s(v)),
+                node.flow_min.as_ref().map(|v| -convert_flow_to_m3s(v)),
+            )
+        } else {
+            (
+                node.flow_min.as_ref().map(|v| convert_flow_to_m3s(v)),
+                node.flow_max.as_ref().map(|v| convert_flow_to_m3s(v)),
+            )
+        };
         net.add_node(crate::graph::Node {
             id: node.id.clone(),
             x: node.x,
@@ -257,6 +307,8 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
             pressure_lower_bar,
             pressure_upper_bar,
             pressure_fixed_bar: node.pressure.as_ref().and_then(|p| p.value),
+            flow_min_m3s,
+            flow_max_m3s,
         });
     }
 
@@ -298,6 +350,8 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
                 .or(src.drag_factor_attr)
                 .unwrap_or(default_roughness_mm),
             compressor_ratio_max,
+            flow_min_m3s: src.flow_min.as_ref().map(convert_flow_to_m3s),
+            flow_max_m3s: src.flow_max.as_ref().map(convert_flow_to_m3s),
         });
     }
 
@@ -475,6 +529,90 @@ mod tests {
         assert_eq!(pipe.length_km, 55.0);
         assert_eq!(pipe.diameter_mm, 500.0);
         assert_eq!(pipe.roughness_mm, 0.1);
+    }
+
+    #[test]
+    fn test_parse_flow_bounds_sign_convention() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <nodes>
+    <source id="SRC" x="0" y="0">
+      <flowMin value="50.0" unit="1000m_cube_per_hour"/>
+      <flowMax value="750.0" unit="1000m_cube_per_hour"/>
+    </source>
+    <sink id="SNK" x="1" y="0">
+      <flowMin value="80.0" unit="1000m_cube_per_hour"/>
+      <flowMax value="400.0" unit="1000m_cube_per_hour"/>
+    </sink>
+    <innode id="MID" x="0.5" y="0">
+      <flowMin value="-1100" unit="1000m_cube_per_hour"/>
+      <flowMax value="1100" unit="1000m_cube_per_hour"/>
+    </innode>
+  </nodes>
+  <connections>
+    <pipe id="P1" from="SRC" to="MID"/>
+    <pipe id="P2" from="MID" to="SNK"/>
+  </connections>
+</network>"#;
+
+        let dir = std::env::temp_dir().join("gazflow_test_xml");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test_flow_sign.net");
+        std::fs::write(&path, xml).unwrap();
+
+        let net = load_network(&path).expect("load_network");
+
+        let src = net.nodes().find(|n| n.id == "SRC").expect("SRC");
+        assert!(
+            src.flow_min_m3s.unwrap() > 0.0,
+            "source flow_min should be positive (injection)"
+        );
+        assert!(
+            src.flow_max_m3s.unwrap() > src.flow_min_m3s.unwrap(),
+            "source flow_max > flow_min"
+        );
+
+        let snk = net.nodes().find(|n| n.id == "SNK").expect("SNK");
+        assert!(
+            snk.flow_min_m3s.unwrap() < 0.0,
+            "sink flow_min should be negative (withdrawal): got {}",
+            snk.flow_min_m3s.unwrap()
+        );
+        assert!(
+            snk.flow_max_m3s.unwrap() < 0.0,
+            "sink flow_max should be negative: got {}",
+            snk.flow_max_m3s.unwrap()
+        );
+        assert!(
+            snk.flow_min_m3s.unwrap() < snk.flow_max_m3s.unwrap(),
+            "sink flow_min < flow_max (more negative < less negative)"
+        );
+
+        let mid = net.nodes().find(|n| n.id == "MID").expect("MID");
+        assert!(
+            mid.flow_min_m3s.unwrap() < 0.0,
+            "innode flow_min should be negative"
+        );
+        assert!(
+            mid.flow_max_m3s.unwrap() > 0.0,
+            "innode flow_max should be positive"
+        );
+
+        let conv = 1000.0 / 3600.0;
+        assert!(
+            (src.flow_min_m3s.unwrap() - 50.0 * conv).abs() < 1e-9,
+            "source flow_min unit conversion"
+        );
+        assert!(
+            (snk.flow_min_m3s.unwrap() - (-400.0 * conv)).abs() < 1e-9,
+            "sink flow_min = -flowMax_gaslib * conv: got {}",
+            snk.flow_min_m3s.unwrap()
+        );
+        assert!(
+            (snk.flow_max_m3s.unwrap() - (-80.0 * conv)).abs() < 1e-9,
+            "sink flow_max = -flowMin_gaslib * conv: got {}",
+            snk.flow_max_m3s.unwrap()
+        );
     }
 
     #[test]

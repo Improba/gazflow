@@ -632,6 +632,8 @@ mod tests {
                 pressure_lower_bar: None,
                 pressure_upper_bar: None,
                 pressure_fixed_bar: if i == 0 { Some(70.0) } else { None },
+                flow_min_m3s: None,
+                flow_max_m3s: None,
             });
         }
         for i in 0..pipe_count {
@@ -645,6 +647,8 @@ mod tests {
                 diameter_mm: 500.0,
                 roughness_mm: 0.05,
                 compressor_ratio_max: None,
+                flow_min_m3s: None,
+                flow_max_m3s: None,
             });
         }
         net
