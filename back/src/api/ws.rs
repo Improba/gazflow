@@ -460,35 +460,42 @@ fn run_solver_stream(
             });
         }
         SolveOutcome::Constrained(Ok(constrained)) => {
-            let export_result = SolverResult {
+            let total_ms = started.elapsed().as_millis() as u64;
+            let ws_result = SolverResult {
                 pressures: constrained.pressures.clone(),
                 flows: constrained.flows.clone(),
                 iterations: constrained.iterations,
                 residual: constrained.residual,
             };
+            let ws_violations = constrained.capacity_violations.clone();
+            let ws_adjusted = constrained.adjusted_demands.clone();
+            let ws_active = constrained.active_bounds.clone();
+            let ws_obj = constrained.objective_value;
+            let ws_outer = constrained.outer_iterations;
+            let ws_diag = constrained.infeasibility_diagnostic.clone();
             super::export::store_export_record(
                 &state,
-                super::export::new_export_record(
+                super::export::new_constrained_export_record(
                     run_id.clone(),
                     network_id,
                     &network,
                     demands.clone(),
-                    export_result.clone(),
-                    started.elapsed().as_millis() as u64,
+                    constrained,
+                    total_ms,
                 ),
             );
             let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
             let _ = tx.blocking_send(ServerMessage::Converged {
                 run_id,
                 seq: s,
-                result: export_result,
-                total_ms: started.elapsed().as_millis() as u64,
-                capacity_violations: constrained.capacity_violations,
-                adjusted_demands: Some(constrained.adjusted_demands),
-                active_bounds: Some(constrained.active_bounds),
-                objective_value: Some(constrained.objective_value),
-                outer_iterations: Some(constrained.outer_iterations),
-                infeasibility_diagnostic: constrained.infeasibility_diagnostic,
+                result: ws_result,
+                total_ms,
+                capacity_violations: ws_violations,
+                adjusted_demands: Some(ws_adjusted),
+                active_bounds: Some(ws_active),
+                objective_value: Some(ws_obj),
+                outer_iterations: Some(ws_outer),
+                infeasibility_diagnostic: ws_diag,
             });
         }
         SolveOutcome::Normal(Err(err))

@@ -78,7 +78,7 @@ export const api = {
 
   async exportSimulation(
     simulationId: string,
-    format: 'json' | 'csv' | 'zip',
+    format: 'json' | 'csv' | 'zip' | 'xlsx',
   ): Promise<Blob> {
     const { data } = await client.get<Blob>(`/export/${encodeURIComponent(simulationId)}`, {
       params: { format },

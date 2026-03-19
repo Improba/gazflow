@@ -198,7 +198,7 @@ export const useSimulateStore = defineStore('simulate', () => {
     currentRunId.value = null;
   }
 
-  async function exportResult(format: 'json' | 'csv' | 'zip') {
+  async function exportResult(format: 'json' | 'csv' | 'zip' | 'xlsx') {
     if (!currentRunId.value || status.value !== 'converged') {
       return;
     }

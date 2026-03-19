@@ -31,6 +31,11 @@ pub(super) struct ExportRecord {
     pub node_count: usize,
     pub pipe_count: usize,
     pub pipe_meta: HashMap<String, (String, String)>,
+    pub capacity_violations: Vec<crate::solver::CapacityViolation>,
+    pub adjusted_demands: Option<HashMap<String, f64>>,
+    pub active_bounds: Vec<String>,
+    pub objective_value: Option<f64>,
+    pub outer_iterations: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +53,12 @@ struct ExportPayload {
     units: UnitsSection,
     results: ResultsSection,
     stats: StatsSection,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    capacity_violations: Vec<crate::solver::CapacityViolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adjusted_demands: Option<HashMap<String, f64>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    active_bounds: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -185,6 +196,34 @@ pub(super) async fn get_export(
             );
             Ok(response)
         }
+        "xlsx" | "excel" => {
+            let xlsx = build_xlsx(&state, &record).map_err(|err| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(super::ApiError {
+                        error: format!("EXPORT_INTERNAL_ERROR: {err}"),
+                    }),
+                )
+            })?;
+            let mut response = xlsx.into_response();
+            response.headers_mut().insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static(
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            );
+            response.headers_mut().insert(
+                CONTENT_DISPOSITION,
+                HeaderValue::from_str(&format!(
+                    "attachment; filename=\"{}-export.xlsx\"",
+                    record.simulation_id
+                ))
+                .unwrap_or_else(|_| {
+                    HeaderValue::from_static("attachment; filename=\"export.xlsx\"")
+                }),
+            );
+            Ok(response)
+        }
         _ => Err((
             StatusCode::BAD_REQUEST,
             Json(super::ApiError {
@@ -226,6 +265,53 @@ pub(super) fn new_export_record(
         node_count: network.node_count(),
         pipe_count: network.edge_count(),
         pipe_meta,
+        capacity_violations: Vec::new(),
+        adjusted_demands: None,
+        active_bounds: Vec::new(),
+        objective_value: None,
+        outer_iterations: None,
+    }
+}
+
+pub(super) fn new_constrained_export_record(
+    simulation_id: String,
+    network_id: String,
+    network: &GasNetwork,
+    target_demands: HashMap<String, f64>,
+    result: crate::solver::ConstrainedSolverResult,
+    elapsed_ms: u64,
+) -> ExportRecord {
+    let mut pipe_meta = HashMap::new();
+    for pipe in network.pipes() {
+        pipe_meta.insert(pipe.id.clone(), (pipe.from.clone(), pipe.to.clone()));
+    }
+    ExportRecord {
+        simulation_id,
+        created_at: now_iso8601_approx(),
+        status: if result.infeasibility_diagnostic.is_some() {
+            "infeasible".to_string()
+        } else {
+            "converged".to_string()
+        },
+        network_id,
+        scenario_id: "default".to_string(),
+        demands: target_demands,
+        solver_method: "constrained_projection".to_string(),
+        result: SolverResult {
+            pressures: result.pressures,
+            flows: result.flows,
+            iterations: result.iterations,
+            residual: result.residual,
+        },
+        elapsed_ms,
+        node_count: network.node_count(),
+        pipe_count: network.edge_count(),
+        pipe_meta,
+        capacity_violations: result.capacity_violations,
+        adjusted_demands: Some(result.adjusted_demands),
+        active_bounds: result.active_bounds,
+        objective_value: Some(result.objective_value),
+        outer_iterations: Some(result.outer_iterations),
     }
 }
 
@@ -309,22 +395,42 @@ fn build_json_payload(_state: &super::SharedState, record: &ExportRecord) -> Exp
             },
             max_abs_flow,
         },
+        capacity_violations: record.capacity_violations.clone(),
+        adjusted_demands: record.adjusted_demands.clone(),
+        active_bounds: record.active_bounds.clone(),
     }
 }
 
 fn build_csv(_state: &super::SharedState, record: &ExportRecord) -> String {
     let mut lines = Vec::new();
-    lines.push("kind,id,from,to,value,abs_value,unit,direction".to_string());
 
+    lines.push("# GazFlow Export".to_string());
+    lines.push(format!("# Simulation: {}", record.simulation_id));
+    lines.push(format!("# Network: {}", record.network_id));
+    lines.push(format!("# Status: {}", record.status));
+    lines.push(format!(
+        "# Solver: {} | Iterations: {} | Residual: {:.3e} | Time: {} ms",
+        record.solver_method, record.result.iterations, record.result.residual, record.elapsed_ms
+    ));
+    if let Some(outer) = record.outer_iterations {
+        lines.push(format!("# Outer iterations: {}", outer));
+    }
+    if let Some(obj) = record.objective_value {
+        lines.push(format!("# Objective value: {:.6e}", obj));
+    }
+    lines.push(String::new());
+
+    lines.push("## Pressures".to_string());
+    lines.push("node_id,pressure_bar".to_string());
     let mut pressure_rows: Vec<_> = record.result.pressures.iter().collect();
     pressure_rows.sort_by(|(a, _), (b, _)| a.cmp(b));
     for (node_id, pressure) in pressure_rows {
-        lines.push(format!(
-            "pressure,{node_id},,,{pressure},{},bar,",
-            pressure.abs()
-        ));
+        lines.push(format!("{node_id},{pressure:.6}"));
     }
+    lines.push(String::new());
 
+    lines.push("## Flows".to_string());
+    lines.push("pipe_id,from,to,flow_m3s,abs_flow_m3s,direction".to_string());
     let mut flow_rows: Vec<_> = record.result.flows.iter().collect();
     flow_rows.sort_by(|(a, _), (b, _)| a.cmp(b));
     for (pipe_id, flow) in flow_rows {
@@ -335,12 +441,305 @@ fn build_csv(_state: &super::SharedState, record: &ExportRecord) -> String {
             .unwrap_or_else(|| (String::new(), String::new()));
         let direction = if *flow >= 0.0 { "forward" } else { "reverse" };
         lines.push(format!(
-            "flow,{pipe_id},{from},{to},{flow},{},m3/s,{direction}",
+            "{pipe_id},{from},{to},{flow:.6},{:.6},{direction}",
             flow.abs()
         ));
     }
 
+    if record.adjusted_demands.is_some() || !record.demands.is_empty() {
+        lines.push(String::new());
+        lines.push("## Demands".to_string());
+        lines.push("node_id,target_demand_m3s,adjusted_demand_m3s,active_bound".to_string());
+        let mut demand_ids: Vec<_> = record.demands.keys().collect();
+        demand_ids.sort();
+        for node_id in demand_ids {
+            let target = record.demands.get(node_id).copied().unwrap_or(0.0);
+            let adjusted = record
+                .adjusted_demands
+                .as_ref()
+                .and_then(|m| m.get(node_id))
+                .copied();
+            let active = if record.active_bounds.contains(node_id) {
+                "yes"
+            } else {
+                "no"
+            };
+            match adjusted {
+                Some(adj) => lines.push(format!("{node_id},{target:.6},{adj:.6},{active}")),
+                None => lines.push(format!("{node_id},{target:.6},,{active}")),
+            }
+        }
+    }
+
+    if !record.capacity_violations.is_empty() {
+        lines.push(String::new());
+        lines.push("## Capacity Violations".to_string());
+        lines.push("element_id,element_type,bound_type,limit_m3s,actual_m3s,margin_m3s".to_string());
+        for v in &record.capacity_violations {
+            let etype = match v.element_type {
+                crate::solver::capacity::ViolationElementType::Node => "node",
+                crate::solver::capacity::ViolationElementType::Pipe => "pipe",
+            };
+            let btype = match v.bound_type {
+                crate::solver::capacity::BoundType::Min => "min",
+                crate::solver::capacity::BoundType::Max => "max",
+            };
+            lines.push(format!(
+                "{},{etype},{btype},{:.6},{:.6},{:.6}",
+                v.element_id, v.limit, v.actual, v.margin
+            ));
+        }
+    }
+
     lines.join("\n")
+}
+
+fn build_xlsx(_state: &super::SharedState, record: &ExportRecord) -> Result<Vec<u8>, String> {
+    use rust_xlsxwriter::{Color, Format, FormatBorder, Workbook};
+
+    let mut workbook = Workbook::new();
+
+    let header_fmt = Format::new()
+        .set_bold()
+        .set_background_color(Color::RGB(0x2C3E50))
+        .set_font_color(Color::White)
+        .set_border(FormatBorder::Thin);
+    let number_fmt = Format::new().set_num_format("0.000000");
+    let title_fmt = Format::new().set_bold().set_font_size(14);
+    let meta_fmt = Format::new().set_italic();
+
+    // === Sheet 1: Pressures ===
+    let sheet = workbook.add_worksheet();
+    sheet.set_name("Pressions").map_err(|e| e.to_string())?;
+    sheet.set_column_width(0, 20).map_err(|e| e.to_string())?;
+    sheet.set_column_width(1, 15).map_err(|e| e.to_string())?;
+
+    sheet
+        .write_string_with_format(0, 0, "Pressions nodales", &title_fmt)
+        .map_err(|e| e.to_string())?;
+    sheet
+        .write_string_with_format(
+            1,
+            0,
+            &format!(
+                "Réseau: {} | Solveur: {} | Itérations: {} | Résidu: {:.3e}",
+                record.network_id,
+                record.solver_method,
+                record.result.iterations,
+                record.result.residual
+            ),
+            &meta_fmt,
+        )
+        .map_err(|e| e.to_string())?;
+
+    let hrow = 3u32;
+    sheet
+        .write_string_with_format(hrow, 0, "Nœud", &header_fmt)
+        .map_err(|e| e.to_string())?;
+    sheet
+        .write_string_with_format(hrow, 1, "Pression (bar)", &header_fmt)
+        .map_err(|e| e.to_string())?;
+
+    let mut pressure_rows: Vec<_> = record.result.pressures.iter().collect();
+    pressure_rows.sort_by(|(a, _), (b, _)| a.cmp(b));
+    for (i, (node_id, pressure)) in pressure_rows.into_iter().enumerate() {
+        let row = hrow + 1 + i as u32;
+        sheet
+            .write_string(row, 0, node_id.as_str())
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_number_with_format(row, 1, *pressure, &number_fmt)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // === Sheet 2: Flows ===
+    let sheet = workbook.add_worksheet();
+    sheet.set_name("Débits").map_err(|e| e.to_string())?;
+    for col in 0..6u16 {
+        sheet
+            .set_column_width(col, 18)
+            .map_err(|e| e.to_string())?;
+    }
+
+    sheet
+        .write_string_with_format(0, 0, "Débits dans les conduites", &title_fmt)
+        .map_err(|e| e.to_string())?;
+
+    let hrow = 2u32;
+    let headers = [
+        "Conduite",
+        "De",
+        "Vers",
+        "Débit (m³/s)",
+        "|Débit| (m³/s)",
+        "Direction",
+    ];
+    for (c, h) in headers.iter().enumerate() {
+        sheet
+            .write_string_with_format(hrow, c as u16, *h, &header_fmt)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let mut flow_rows: Vec<_> = record.result.flows.iter().collect();
+    flow_rows.sort_by(|(a, _), (b, _)| a.cmp(b));
+    for (i, (pipe_id, flow)) in flow_rows.into_iter().enumerate() {
+        let row = hrow + 1 + i as u32;
+        let (from, to) = record
+            .pipe_meta
+            .get(pipe_id)
+            .cloned()
+            .unwrap_or_else(|| (String::new(), String::new()));
+        sheet
+            .write_string(row, 0, pipe_id.as_str())
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_string(row, 1, &from)
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_string(row, 2, &to)
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_number_with_format(row, 3, *flow, &number_fmt)
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_number_with_format(row, 4, flow.abs(), &number_fmt)
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_string(row, 5, if *flow >= 0.0 { "→" } else { "←" })
+            .map_err(|e| e.to_string())?;
+    }
+
+    // === Sheet 3: Demands (if constrained) ===
+    if record.adjusted_demands.is_some() || !record.demands.is_empty() {
+        let sheet = workbook.add_worksheet();
+        sheet.set_name("Demandes").map_err(|e| e.to_string())?;
+        for col in 0..4u16 {
+            sheet
+                .set_column_width(col, 22)
+                .map_err(|e| e.to_string())?;
+        }
+
+        sheet
+            .write_string_with_format(0, 0, "Demandes (cible vs ajusté)", &title_fmt)
+            .map_err(|e| e.to_string())?;
+
+        let hrow = 2u32;
+        let headers = [
+            "Nœud",
+            "Demande cible (m³/s)",
+            "Demande ajustée (m³/s)",
+            "Borne active",
+        ];
+        for (c, h) in headers.iter().enumerate() {
+            sheet
+                .write_string_with_format(hrow, c as u16, *h, &header_fmt)
+                .map_err(|e| e.to_string())?;
+        }
+
+        let mut demand_ids: Vec<_> = record.demands.keys().collect();
+        demand_ids.sort();
+        for (i, node_id) in demand_ids.into_iter().enumerate() {
+            let row = hrow + 1 + i as u32;
+            let target = record.demands.get(node_id).copied().unwrap_or(0.0);
+            let adjusted = record
+                .adjusted_demands
+                .as_ref()
+                .and_then(|m| m.get(node_id))
+                .copied();
+            let active = record.active_bounds.contains(node_id);
+
+            sheet
+                .write_string(row, 0, node_id.as_str())
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_number_with_format(row, 1, target, &number_fmt)
+                .map_err(|e| e.to_string())?;
+            if let Some(adj) = adjusted {
+                sheet
+                    .write_number_with_format(row, 2, adj, &number_fmt)
+                    .map_err(|e| e.to_string())?;
+            }
+            sheet
+                .write_string(row, 3, if active { "oui" } else { "non" })
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // === Sheet 4: Violations (if any) ===
+    if !record.capacity_violations.is_empty() {
+        let sheet = workbook.add_worksheet();
+        sheet.set_name("Violations").map_err(|e| e.to_string())?;
+        for col in 0..6u16 {
+            sheet
+                .set_column_width(col, 18)
+                .map_err(|e| e.to_string())?;
+        }
+
+        let warn_fmt = Format::new()
+            .set_bold()
+            .set_font_color(Color::RGB(0xE74C3C))
+            .set_font_size(14);
+        sheet
+            .write_string_with_format(
+                0,
+                0,
+                &format!(
+                    "⚠ {} violation(s) de capacité",
+                    record.capacity_violations.len()
+                ),
+                &warn_fmt,
+            )
+            .map_err(|e| e.to_string())?;
+
+        let hrow = 2u32;
+        let headers = [
+            "Élément",
+            "Type",
+            "Borne",
+            "Limite (m³/s)",
+            "Réel (m³/s)",
+            "Marge (m³/s)",
+        ];
+        for (c, h) in headers.iter().enumerate() {
+            sheet
+                .write_string_with_format(hrow, c as u16, *h, &header_fmt)
+                .map_err(|e| e.to_string())?;
+        }
+
+        let violation_fmt = Format::new().set_background_color(Color::RGB(0xFDEDEC));
+
+        for (i, v) in record.capacity_violations.iter().enumerate() {
+            let row = hrow + 1 + i as u32;
+            let etype = match v.element_type {
+                crate::solver::capacity::ViolationElementType::Node => "nœud",
+                crate::solver::capacity::ViolationElementType::Pipe => "conduite",
+            };
+            let btype = match v.bound_type {
+                crate::solver::capacity::BoundType::Min => "min",
+                crate::solver::capacity::BoundType::Max => "max",
+            };
+            sheet
+                .write_string_with_format(row, 0, &v.element_id, &violation_fmt)
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string_with_format(row, 1, etype, &violation_fmt)
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string_with_format(row, 2, btype, &violation_fmt)
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_number_with_format(row, 3, v.limit, &number_fmt)
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_number_with_format(row, 4, v.actual, &number_fmt)
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_number_with_format(row, 5, v.margin, &number_fmt)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    workbook.save_to_buffer().map_err(|e| e.to_string())
 }
 
 fn build_zip_bundle(
@@ -365,6 +764,13 @@ fn build_zip_bundle(
         .map_err(|err| format!("zip result.csv: {err}"))?;
     zip.write_all(csv_content.as_bytes())
         .map_err(|err| format!("write result.csv: {err}"))?;
+
+    if let Ok(xlsx_content) = build_xlsx(state, record) {
+        zip.start_file("result.xlsx", options)
+            .map_err(|err| format!("zip result.xlsx: {err}"))?;
+        zip.write_all(&xlsx_content)
+            .map_err(|err| format!("write result.xlsx: {err}"))?;
+    }
 
     let context = serde_json::json!({
         "simulation_id": record.simulation_id,
@@ -524,12 +930,80 @@ mod tests {
             12,
         );
         let csv = build_csv(&state, &record);
-        let mut lines = csv.lines();
-        assert_eq!(
-            lines.next(),
-            Some("kind,id,from,to,value,abs_value,unit,direction")
+        assert!(csv.contains("# GazFlow Export"));
+        assert!(csv.contains("## Pressures"));
+        assert!(csv.contains("## Flows"));
+        assert!(csv.contains("node_id,pressure_bar"));
+        assert!(csv.contains("pipe_id,from,to,flow_m3s"));
+    }
+
+    #[test]
+    fn test_export_csv_includes_sections() {
+        let state = fake_state();
+        let mut pressures = HashMap::new();
+        pressures.insert("A".to_string(), 70.0);
+        let mut flows = HashMap::new();
+        flows.insert("P1".to_string(), 1.0);
+        let record = new_export_record(
+            "sim-test".to_string(),
+            "custom".to_string(),
+            &state
+                .network
+                .read()
+                .expect("network lock should not be poisoned"),
+            [("A".to_string(), 0.0), ("B".to_string(), -10.0)]
+                .into_iter()
+                .collect(),
+            SolverResult {
+                pressures,
+                flows,
+                iterations: 3,
+                residual: 1e-4,
+            },
+            12,
         );
-        assert!(csv.contains("pressure,A,,,70"));
-        assert!(csv.contains("flow,P1,A,B,1"));
+        let csv = build_csv(&state, &record);
+        assert!(csv.contains("## Pressures"), "should have pressures section");
+        assert!(csv.contains("## Flows"), "should have flows section");
+        assert!(csv.contains("## Demands"), "should have demands section");
+        assert!(csv.contains("node_id,pressure_bar"), "pressure header");
+        assert!(
+            csv.contains("pipe_id,from,to,flow_m3s"),
+            "flow header"
+        );
+    }
+
+    #[test]
+    fn test_export_result_xlsx_generates_valid_buffer() {
+        let state = fake_state();
+        let mut pressures = HashMap::new();
+        pressures.insert("A".to_string(), 70.0);
+        pressures.insert("B".to_string(), 65.0);
+        let mut flows = HashMap::new();
+        flows.insert("P1".to_string(), 5.5);
+        let record = new_export_record(
+            "sim-test".to_string(),
+            "custom".to_string(),
+            &state.network.read().expect("lock"),
+            HashMap::new(),
+            SolverResult {
+                pressures,
+                flows,
+                iterations: 7,
+                residual: 1e-4,
+            },
+            42,
+        );
+        let xlsx = build_xlsx(&state, &record).expect("xlsx generation should succeed");
+        assert!(
+            xlsx.len() > 100,
+            "xlsx should have content, got {} bytes",
+            xlsx.len()
+        );
+        assert_eq!(
+            &xlsx[0..2],
+            b"PK",
+            "xlsx should start with PK (zip signature)"
+        );
     }
 }

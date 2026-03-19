@@ -495,6 +495,7 @@ async fn run_simulation_with_demands(
         })?;
     let pool = state.rayon_pool.clone();
 
+    let mut export_stored = false;
     let response: SimulationResponse = match capacity_bounds {
         Some(ref api_bounds) if matches!(mode, Some(SimulationMode::Optimize)) => {
             let bounds = api_bounds_to_solver(api_bounds, &network_for_solve);
@@ -529,7 +530,27 @@ async fn run_simulation_with_demands(
                     }),
                 )
             })?;
-            constrained_result.into()
+            let export_id = format!(
+                "rest-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            );
+            let resp: SimulationResponse = constrained_result.clone().into();
+            export::store_export_record(
+                state,
+                export::new_constrained_export_record(
+                    export_id,
+                    network_id.clone(),
+                    &network,
+                    demands_for_export.clone(),
+                    constrained_result,
+                    0,
+                ),
+            );
+            export_stored = true;
+            resp
         }
         Some(ref api_bounds) => {
             let bounds = api_bounds_to_solver(api_bounds, &network_for_solve);
@@ -592,30 +613,32 @@ async fn run_simulation_with_demands(
         }
     };
 
-    let export_result = solver::SolverResult {
-        pressures: response.pressures.clone(),
-        flows: response.flows.clone(),
-        iterations: response.iterations,
-        residual: response.residual,
-    };
-    let export_id = format!(
-        "rest-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    );
-    export::store_export_record(
-        state,
-        export::new_export_record(
-            export_id,
-            network_id,
-            &network,
-            demands_for_export,
-            export_result,
-            0,
-        ),
-    );
+    if !export_stored {
+        let export_result = solver::SolverResult {
+            pressures: response.pressures.clone(),
+            flows: response.flows.clone(),
+            iterations: response.iterations,
+            residual: response.residual,
+        };
+        let export_id = format!(
+            "rest-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        );
+        export::store_export_record(
+            state,
+            export::new_export_record(
+                export_id,
+                network_id,
+                &network,
+                demands_for_export,
+                export_result,
+                0,
+            ),
+        );
+    }
 
     Ok(Json(response))
 }

@@ -116,6 +116,18 @@
             @click="simulateStore.exportResult('zip')"
           />
         </div>
+        <div class="col">
+          <q-btn
+            dense
+            icon="table_chart"
+            label="EXPORTER XLSX"
+            color="secondary"
+            class="full-width"
+            :loading="simulateStore.exporting"
+            :disable="simulateStore.status !== 'converged' || simulateStore.exporting"
+            @click="simulateStore.exportResult('xlsx')"
+          />
+        </div>
       </div>
 
       <div v-if="simulateStore.capacityViolations.length > 0" class="q-mt-md">
