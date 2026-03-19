@@ -20,6 +20,8 @@ use tokio::{sync::mpsc, task};
 
 use crate::solver::{self, SolverControl, SolverProgress, SolverResult};
 
+use super::{CapacityBoundDto, SimulationMode};
+
 const CANCEL_NONE: u8 = 0;
 const CANCEL_CLIENT_REQUEST: u8 = 1;
 const CANCEL_TIMEOUT: u8 = 2;
@@ -31,6 +33,8 @@ enum ClientMessage {
         run_id: Option<String>,
         demands: Option<HashMap<String, f64>>,
         options: Option<StartOptions>,
+        capacity_bounds: Option<HashMap<String, CapacityBoundDto>>,
+        mode: Option<SimulationMode>,
     },
     CancelSimulation {
         run_id: Option<String>,
@@ -92,6 +96,18 @@ enum ServerMessage {
         seq: u64,
         result: SolverResult,
         total_ms: u64,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        capacity_violations: Vec<solver::CapacityViolation>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        adjusted_demands: Option<HashMap<String, f64>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        active_bounds: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        objective_value: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        outer_iterations: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        infeasibility_diagnostic: Option<String>,
     },
     Cancelled {
         run_id: String,
@@ -135,7 +151,7 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                 match message {
                     Message::Text(text) => {
                         match serde_json::from_str::<ClientMessage>(&text) {
-                            Ok(ClientMessage::StartSimulation { run_id, demands, options }) => {
+                            Ok(ClientMessage::StartSimulation { run_id, demands, options, capacity_bounds, mode }) => {
                                 if active_run_id.is_some() {
                                     let run_id_for_error = run_id.unwrap_or_else(|| "active-run".to_string());
                                     let _ = tx.send(ServerMessage::Error {
@@ -206,6 +222,8 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                         run_cancel,
                                         run_cancel_reason,
                                         tx_for_solver,
+                                        capacity_bounds,
+                                        mode,
                                     );
                                 });
                             }
@@ -275,60 +293,115 @@ fn run_solver_stream(
     cancel_flag: Arc<AtomicBool>,
     cancel_reason: Arc<AtomicU8>,
     tx: mpsc::Sender<ServerMessage>,
+    capacity_bounds: Option<HashMap<String, CapacityBoundDto>>,
+    mode: Option<SimulationMode>,
 ) {
     let started = Instant::now();
     let timeout = Duration::from_millis(options.timeout_ms);
-    let mut seq = 1_u64;
+    let seq = std::cell::Cell::new(1_u64);
 
-    let result = state.rayon_pool.install(|| {
-        solver::solve_steady_state_with_progress(
-            &network,
-            &demands,
-            options.initial_pressures.as_ref(),
-            options.max_iter,
-            options.tolerance,
-            options.snapshot_every,
-            |progress: SolverProgress| {
-                if options.timeout_ms == 0
-                    || (options.timeout_ms > 0 && started.elapsed() >= timeout)
-                {
-                    cancel_reason.store(CANCEL_TIMEOUT, Ordering::Relaxed);
-                    cancel_flag.store(true, Ordering::Relaxed);
-                }
-                if cancel_flag.load(Ordering::Relaxed) {
-                    return SolverControl::Cancel;
-                }
+    let progress_cb = |progress: SolverProgress| -> SolverControl {
+        if options.timeout_ms == 0
+            || (options.timeout_ms > 0 && started.elapsed() >= timeout)
+        {
+            cancel_reason.store(CANCEL_TIMEOUT, Ordering::Relaxed);
+            cancel_flag.store(true, Ordering::Relaxed);
+        }
+        if cancel_flag.load(Ordering::Relaxed) {
+            return SolverControl::Cancel;
+        }
 
-                if progress.iter == 1 || progress.iter % options.iteration_every.max(1) == 0 {
-                    seq += 1;
-                    let _ = tx.blocking_send(ServerMessage::Iteration {
-                        run_id: run_id.clone(),
-                        seq,
-                        iter: progress.iter,
-                        residual: progress.residual,
-                        elapsed_ms: started.elapsed().as_millis() as u64,
-                    });
-                }
+        if progress.iter == 1 || progress.iter % options.iteration_every.max(1) == 0 {
+            let s = seq.get() + 1;
+            seq.set(s);
+            let _ = tx.blocking_send(ServerMessage::Iteration {
+                run_id: run_id.clone(),
+                seq: s,
+                iter: progress.iter,
+                residual: progress.residual,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            });
+        }
 
-                if let (Some(pressures), Some(flows)) = (progress.pressures, progress.flows) {
-                    seq += 1;
-                    let snapshot = ServerMessage::Snapshot {
-                        run_id: run_id.clone(),
-                        seq,
-                        iter: progress.iter,
-                        pressures,
-                        flows,
-                    };
-                    let _ = tx.try_send(snapshot);
-                }
+        if let (Some(pressures), Some(flows)) = (progress.pressures, progress.flows) {
+            let s = seq.get() + 1;
+            seq.set(s);
+            let snapshot = ServerMessage::Snapshot {
+                run_id: run_id.clone(),
+                seq: s,
+                iter: progress.iter,
+                pressures,
+                flows,
+            };
+            let _ = tx.try_send(snapshot);
+        }
 
-                SolverControl::Continue
-            },
-        )
-    });
+        SolverControl::Continue
+    };
 
-    match result {
-        Ok(final_result) => {
+    enum SolveOutcome {
+        Normal(anyhow::Result<SolverResult>),
+        Constrained(anyhow::Result<solver::ConstrainedSolverResult>),
+        Check {
+            result: anyhow::Result<SolverResult>,
+            bounds: solver::CapacityBounds,
+        },
+    }
+
+    let outcome = match (&capacity_bounds, &mode) {
+        (Some(api_bounds), Some(SimulationMode::Optimize)) => {
+            let bounds = super::api_bounds_to_solver(api_bounds, &network);
+            let result = state.rayon_pool.install(|| {
+                solver::capacity::solve_steady_state_constrained(
+                    &network,
+                    &demands,
+                    &bounds,
+                    options.initial_pressures.as_ref(),
+                    solver::capacity::ConstrainedSolverConfig {
+                        inner_max_iter: options.max_iter,
+                        inner_tolerance: options.tolerance,
+                        inner_snapshot_every: options.snapshot_every,
+                        ..Default::default()
+                    },
+                    |cp| progress_cb(cp.inner_progress),
+                )
+            });
+            SolveOutcome::Constrained(result)
+        }
+        (Some(api_bounds), _) => {
+            let bounds = super::api_bounds_to_solver(api_bounds, &network);
+            let result = state.rayon_pool.install(|| {
+                solver::solve_steady_state_with_progress(
+                    &network,
+                    &demands,
+                    options.initial_pressures.as_ref(),
+                    options.max_iter,
+                    options.tolerance,
+                    options.snapshot_every,
+                    &progress_cb,
+                )
+            });
+            SolveOutcome::Check { result, bounds }
+        }
+        _ => {
+            let result = state.rayon_pool.install(|| {
+                solver::solve_steady_state_with_progress(
+                    &network,
+                    &demands,
+                    options.initial_pressures.as_ref(),
+                    options.max_iter,
+                    options.tolerance,
+                    options.snapshot_every,
+                    &progress_cb,
+                )
+            });
+            SolveOutcome::Normal(result)
+        }
+    };
+
+    let run_id_ref = &run_id;
+    match outcome {
+        SolveOutcome::Normal(Ok(final_result)) => {
             super::export::store_export_record(
                 &state,
                 super::export::new_export_record(
@@ -340,16 +413,93 @@ fn run_solver_stream(
                     started.elapsed().as_millis() as u64,
                 ),
             );
-            seq += 1;
+            let s = seq.get() + 1;
             let _ = tx.blocking_send(ServerMessage::Converged {
                 run_id,
-                seq,
+                seq: s,
                 result: final_result,
                 total_ms: started.elapsed().as_millis() as u64,
+                capacity_violations: Vec::new(),
+                adjusted_demands: None,
+                active_bounds: None,
+                objective_value: None,
+                outer_iterations: None,
+                infeasibility_diagnostic: None,
             });
         }
-        Err(err) => {
-            seq += 1;
+        SolveOutcome::Check {
+            result: Ok(final_result),
+            bounds,
+        } => {
+            let violations = solver::capacity::check_capacity_violations(
+                &network,
+                &final_result,
+                &demands,
+                &bounds,
+            );
+            super::export::store_export_record(
+                &state,
+                super::export::new_export_record(
+                    run_id.clone(),
+                    network_id,
+                    &network,
+                    demands.clone(),
+                    final_result.clone(),
+                    started.elapsed().as_millis() as u64,
+                ),
+            );
+            let s = seq.get() + 1;
+            let _ = tx.blocking_send(ServerMessage::Converged {
+                run_id,
+                seq: s,
+                result: final_result,
+                total_ms: started.elapsed().as_millis() as u64,
+                capacity_violations: violations,
+                adjusted_demands: None,
+                active_bounds: None,
+                objective_value: None,
+                outer_iterations: None,
+                infeasibility_diagnostic: None,
+            });
+        }
+        SolveOutcome::Constrained(Ok(constrained)) => {
+            let export_result = SolverResult {
+                pressures: constrained.pressures.clone(),
+                flows: constrained.flows.clone(),
+                iterations: constrained.iterations,
+                residual: constrained.residual,
+            };
+            super::export::store_export_record(
+                &state,
+                super::export::new_export_record(
+                    run_id.clone(),
+                    network_id,
+                    &network,
+                    demands.clone(),
+                    export_result.clone(),
+                    started.elapsed().as_millis() as u64,
+                ),
+            );
+            let s = seq.get() + 1;
+            let _ = tx.blocking_send(ServerMessage::Converged {
+                run_id,
+                seq: s,
+                result: export_result,
+                total_ms: started.elapsed().as_millis() as u64,
+                capacity_violations: constrained.capacity_violations,
+                adjusted_demands: Some(constrained.adjusted_demands),
+                active_bounds: Some(constrained.active_bounds),
+                objective_value: Some(constrained.objective_value),
+                outer_iterations: Some(constrained.outer_iterations),
+                infeasibility_diagnostic: constrained.infeasibility_diagnostic,
+            });
+        }
+        SolveOutcome::Normal(Err(err))
+        | SolveOutcome::Check {
+            result: Err(err), ..
+        }
+        | SolveOutcome::Constrained(Err(err)) => {
+            let s = seq.get() + 1;
             if cancel_flag.load(Ordering::Relaxed) {
                 let reason = match cancel_reason.load(Ordering::Relaxed) {
                     CANCEL_CLIENT_REQUEST => "client_request",
@@ -358,19 +508,19 @@ fn run_solver_stream(
                 };
                 let _ = tx.blocking_send(ServerMessage::Cancelled {
                     run_id,
-                    seq,
+                    seq: s,
                     reason: reason.to_string(),
                 });
             } else if err.to_string().contains("did not converge") {
                 let _ = tx.blocking_send(ServerMessage::Cancelled {
                     run_id,
-                    seq,
+                    seq: s,
                     reason: "diverged".to_string(),
                 });
             } else {
                 let _ = tx.blocking_send(ServerMessage::Error {
                     run_id,
-                    seq,
+                    seq: s,
                     message: err.to_string(),
                     fatal: true,
                 });

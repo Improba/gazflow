@@ -215,6 +215,8 @@ struct NodeDto {
     lat: Option<f64>,
     height_m: f64,
     pressure_fixed_bar: Option<f64>,
+    flow_min_m3s: Option<f64>,
+    flow_max_m3s: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -226,9 +228,80 @@ struct PipeDto {
     diameter_mm: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CapacityBoundDto {
+    pub min: f64,
+    pub max: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SimulationMode {
+    Check,
+    Optimize,
+}
+
+#[derive(Debug, Deserialize)]
 struct SimulateRequest {
     demands: HashMap<String, f64>,
+    #[serde(default)]
+    capacity_bounds: Option<HashMap<String, CapacityBoundDto>>,
+    #[serde(default)]
+    mode: Option<SimulationMode>,
+}
+
+#[derive(Debug, Serialize)]
+struct SimulationResponse {
+    pressures: HashMap<String, f64>,
+    flows: HashMap<String, f64>,
+    iterations: usize,
+    residual: f64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    capacity_violations: Vec<solver::CapacityViolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adjusted_demands: Option<HashMap<String, f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_bounds: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    objective_value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outer_iterations: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    infeasibility_diagnostic: Option<String>,
+}
+
+impl From<solver::SolverResult> for SimulationResponse {
+    fn from(r: solver::SolverResult) -> Self {
+        Self {
+            pressures: r.pressures,
+            flows: r.flows,
+            iterations: r.iterations,
+            residual: r.residual,
+            capacity_violations: Vec::new(),
+            adjusted_demands: None,
+            active_bounds: None,
+            objective_value: None,
+            outer_iterations: None,
+            infeasibility_diagnostic: None,
+        }
+    }
+}
+
+impl From<solver::ConstrainedSolverResult> for SimulationResponse {
+    fn from(r: solver::ConstrainedSolverResult) -> Self {
+        Self {
+            pressures: r.pressures,
+            flows: r.flows,
+            iterations: r.iterations,
+            residual: r.residual,
+            capacity_violations: r.capacity_violations,
+            adjusted_demands: Some(r.adjusted_demands),
+            active_bounds: Some(r.active_bounds),
+            objective_value: Some(r.objective_value),
+            outer_iterations: Some(r.outer_iterations),
+            infeasibility_diagnostic: r.infeasibility_diagnostic,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -268,6 +341,8 @@ async fn get_network(State(state): State<SharedState>) -> Json<NetworkResponse> 
             lat: n.lat,
             height_m: n.height_m,
             pressure_fixed_bar: n.pressure_fixed_bar,
+            flow_min_m3s: n.flow_min_m3s,
+            flow_max_m3s: n.flow_max_m3s,
         })
         .collect();
 
@@ -352,24 +427,55 @@ async fn select_network(
     }))
 }
 
+fn api_bounds_to_solver(
+    api_bounds: &HashMap<String, CapacityBoundDto>,
+    network: &GasNetwork,
+) -> solver::CapacityBounds {
+    let node_bounds = api_bounds
+        .iter()
+        .map(|(id, b)| (id.clone(), (b.min, b.max)))
+        .collect();
+    let pipe_bounds = network
+        .pipes()
+        .filter_map(|p| {
+            match (p.flow_min_m3s, p.flow_max_m3s) {
+                (Some(min), Some(max)) => Some((p.id.clone(), (min, max))),
+                _ => None,
+            }
+        })
+        .collect();
+    solver::CapacityBounds {
+        node_bounds,
+        pipe_bounds,
+    }
+}
+
 async fn run_simulation_default(
     State(state): State<SharedState>,
-) -> ApiResult<solver::SolverResult> {
+) -> ApiResult<SimulationResponse> {
     let demands = (*active_default_demands(&state)).clone();
-    run_simulation_with_demands(&state, demands).await
+    run_simulation_with_demands(&state, demands, None, None).await
 }
 
 async fn run_simulation_custom(
     State(state): State<SharedState>,
     Json(payload): Json<SimulateRequest>,
-) -> ApiResult<solver::SolverResult> {
-    run_simulation_with_demands(&state, payload.demands).await
+) -> ApiResult<SimulationResponse> {
+    run_simulation_with_demands(
+        &state,
+        payload.demands,
+        payload.capacity_bounds,
+        payload.mode,
+    )
+    .await
 }
 
 async fn run_simulation_with_demands(
     state: &SharedState,
     demands: HashMap<String, f64>,
-) -> ApiResult<solver::SolverResult> {
+    capacity_bounds: Option<HashMap<String, CapacityBoundDto>>,
+    mode: Option<SimulationMode>,
+) -> ApiResult<SimulationResponse> {
     let demands_for_export = demands.clone();
     let network = active_network(state);
     let network_for_solve = network.clone();
@@ -388,28 +494,110 @@ async fn run_simulation_with_demands(
             )
         })?;
     let pool = state.rayon_pool.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        pool.install(|| solver::solve_steady_state(&network_for_solve, &demands, 1000, 5e-4))
-    })
-    .await
-    .map_err(|err| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: format!("simulation task join error: {err}"),
-            }),
-        )
-    })?
-    .map_err(|err| {
-        (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ApiError {
-                error: err.to_string(),
-            }),
-        )
-    })?;
 
+    let response: SimulationResponse = match capacity_bounds {
+        Some(ref api_bounds) if matches!(mode, Some(SimulationMode::Optimize)) => {
+            let bounds = api_bounds_to_solver(api_bounds, &network_for_solve);
+            let demands_clone = demands.clone();
+            let constrained_result = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                pool.install(|| {
+                    solver::capacity::solve_steady_state_constrained(
+                        &network_for_solve,
+                        &demands_clone,
+                        &bounds,
+                        None,
+                        solver::capacity::ConstrainedSolverConfig::default(),
+                        |_| solver::SolverControl::Continue,
+                    )
+                })
+            })
+            .await
+            .map_err(|err| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError {
+                        error: format!("simulation task join error: {err}"),
+                    }),
+                )
+            })?
+            .map_err(|err| {
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ApiError {
+                        error: err.to_string(),
+                    }),
+                )
+            })?;
+            constrained_result.into()
+        }
+        Some(ref api_bounds) => {
+            let bounds = api_bounds_to_solver(api_bounds, &network_for_solve);
+            let demands_for_check = demands.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                pool.install(|| {
+                    solver::solve_steady_state(&network_for_solve, &demands_for_check, 1000, 5e-4)
+                })
+            })
+            .await
+            .map_err(|err| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError {
+                        error: format!("simulation task join error: {err}"),
+                    }),
+                )
+            })?
+            .map_err(|err| {
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ApiError {
+                        error: err.to_string(),
+                    }),
+                )
+            })?;
+            let violations = solver::capacity::check_capacity_violations(
+                &network, &result, &demands, &bounds,
+            );
+            let mut resp: SimulationResponse = result.into();
+            resp.capacity_violations = violations;
+            resp
+        }
+        None => {
+            let result = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                pool.install(|| {
+                    solver::solve_steady_state(&network_for_solve, &demands, 1000, 5e-4)
+                })
+            })
+            .await
+            .map_err(|err| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError {
+                        error: format!("simulation task join error: {err}"),
+                    }),
+                )
+            })?
+            .map_err(|err| {
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ApiError {
+                        error: err.to_string(),
+                    }),
+                )
+            })?;
+            result.into()
+        }
+    };
+
+    let export_result = solver::SolverResult {
+        pressures: response.pressures.clone(),
+        flows: response.flows.clone(),
+        iterations: response.iterations,
+        residual: response.residual,
+    };
     let export_id = format!(
         "rest-{}",
         SystemTime::now()
@@ -424,12 +612,12 @@ async fn run_simulation_with_demands(
             network_id,
             &network,
             demands_for_export,
-            result.clone(),
+            export_result,
             0,
         ),
     );
 
-    Ok(Json(result))
+    Ok(Json(response))
 }
 
 fn active_network(state: &SharedState) -> Arc<GasNetwork> {
