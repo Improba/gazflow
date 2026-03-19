@@ -15,11 +15,12 @@
     </q-page-container>
 
     <q-dialog v-model="showInfo">
-      <q-card style="min-width: 350px">
+      <!-- Override body --scada-text (pale on white Quasar card) -->
+      <q-card class="bg-white text-grey-10" style="min-width: 350px">
         <q-card-section>
-          <div class="text-h6">GazFlow</div>
+          <div class="text-h6 text-grey-10">GazFlow</div>
         </q-card-section>
-        <q-card-section>
+        <q-card-section class="text-body1 text-grey-9">
           Simulateur d'écoulement de gaz en réseau. Données : GasLib.
         </q-card-section>
         <q-card-actions align="right">
