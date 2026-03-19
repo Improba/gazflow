@@ -819,6 +819,84 @@ mod tests {
     }
 
     #[test]
+    fn test_constrained_mass_conservation() {
+        let net = make_y_network();
+        let bounds = CapacityBounds::from_network(&net);
+        let demands: HashMap<String, f64> =
+            [("A".into(), -20.0), ("B".into(), -20.0)].into_iter().collect();
+        let result = solve_steady_state_constrained(
+            &net,
+            &demands,
+            &bounds,
+            None,
+            ConstrainedSolverConfig::default(),
+            |_| SolverControl::Continue,
+        )
+        .unwrap();
+
+        let mut node_balance: HashMap<String, f64> = HashMap::new();
+        for node in net.nodes() {
+            let d = result.adjusted_demands.get(&node.id).copied().unwrap_or(0.0);
+            *node_balance.entry(node.id.clone()).or_default() += d;
+        }
+        for pipe in net.pipes() {
+            let q = result.flows.get(&pipe.id).copied().unwrap_or(0.0);
+            *node_balance.entry(pipe.from.clone()).or_default() -= q;
+            *node_balance.entry(pipe.to.clone()).or_default() += q;
+        }
+        for (id, bal) in &node_balance {
+            if net.nodes().any(|n| n.id == *id && n.pressure_fixed_bar.is_some()) {
+                continue;
+            }
+            assert!(
+                bal.abs() < 1e-3,
+                "mass imbalance at free node {id}: {bal:.4e}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_constrained_clamp_narrow_bounds() {
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "S".into(), x: 0.0, y: 0.0, lon: None, lat: None, height_m: 0.0,
+            pressure_lower_bar: None, pressure_upper_bar: None,
+            pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None, flow_max_m3s: None,
+        });
+        net.add_node(Node {
+            id: "D".into(), x: 1.0, y: 0.0, lon: None, lat: None, height_m: 0.0,
+            pressure_lower_bar: None, pressure_upper_bar: None,
+            pressure_fixed_bar: None,
+            flow_min_m3s: Some(-10.0), flow_max_m3s: Some(-10.0),
+        });
+        net.add_pipe(Pipe {
+            id: "P1".into(), from: "S".into(), to: "D".into(),
+            kind: ConnectionKind::Pipe, is_open: true,
+            length_km: 50.0, diameter_mm: 500.0, roughness_mm: 0.012,
+            compressor_ratio_max: None, flow_min_m3s: None, flow_max_m3s: None,
+        });
+
+        let bounds = CapacityBounds::from_network(&net);
+        let demands: HashMap<String, f64> = [("D".into(), -15.0)].into_iter().collect();
+        let result = solve_steady_state_constrained(
+            &net,
+            &demands,
+            &bounds,
+            None,
+            ConstrainedSolverConfig::default(),
+            |_| SolverControl::Continue,
+        )
+        .unwrap();
+
+        let adj_d = result.adjusted_demands["D"];
+        assert!(
+            (adj_d - (-10.0)).abs() < 0.01,
+            "demand should be clamped to fixed bound -10.0, got {adj_d}"
+        );
+    }
+
+    #[test]
     fn test_constrained_gaslib11_wide_bounds() {
         let path = std::path::Path::new("dat/GasLib-11.net");
         if !path.exists() {

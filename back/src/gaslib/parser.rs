@@ -532,6 +532,90 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_flow_bounds_sign_convention() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <nodes>
+    <source id="SRC" x="0" y="0">
+      <flowMin value="50.0" unit="1000m_cube_per_hour"/>
+      <flowMax value="750.0" unit="1000m_cube_per_hour"/>
+    </source>
+    <sink id="SNK" x="1" y="0">
+      <flowMin value="80.0" unit="1000m_cube_per_hour"/>
+      <flowMax value="400.0" unit="1000m_cube_per_hour"/>
+    </sink>
+    <innode id="MID" x="0.5" y="0">
+      <flowMin value="-1100" unit="1000m_cube_per_hour"/>
+      <flowMax value="1100" unit="1000m_cube_per_hour"/>
+    </innode>
+  </nodes>
+  <connections>
+    <pipe id="P1" from="SRC" to="MID"/>
+    <pipe id="P2" from="MID" to="SNK"/>
+  </connections>
+</network>"#;
+
+        let dir = std::env::temp_dir().join("gazflow_test_xml");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test_flow_sign.net");
+        std::fs::write(&path, xml).unwrap();
+
+        let net = load_network(&path).expect("load_network");
+
+        let src = net.nodes().find(|n| n.id == "SRC").expect("SRC");
+        assert!(
+            src.flow_min_m3s.unwrap() > 0.0,
+            "source flow_min should be positive (injection)"
+        );
+        assert!(
+            src.flow_max_m3s.unwrap() > src.flow_min_m3s.unwrap(),
+            "source flow_max > flow_min"
+        );
+
+        let snk = net.nodes().find(|n| n.id == "SNK").expect("SNK");
+        assert!(
+            snk.flow_min_m3s.unwrap() < 0.0,
+            "sink flow_min should be negative (withdrawal): got {}",
+            snk.flow_min_m3s.unwrap()
+        );
+        assert!(
+            snk.flow_max_m3s.unwrap() < 0.0,
+            "sink flow_max should be negative: got {}",
+            snk.flow_max_m3s.unwrap()
+        );
+        assert!(
+            snk.flow_min_m3s.unwrap() < snk.flow_max_m3s.unwrap(),
+            "sink flow_min < flow_max (more negative < less negative)"
+        );
+
+        let mid = net.nodes().find(|n| n.id == "MID").expect("MID");
+        assert!(
+            mid.flow_min_m3s.unwrap() < 0.0,
+            "innode flow_min should be negative"
+        );
+        assert!(
+            mid.flow_max_m3s.unwrap() > 0.0,
+            "innode flow_max should be positive"
+        );
+
+        let conv = 1000.0 / 3600.0;
+        assert!(
+            (src.flow_min_m3s.unwrap() - 50.0 * conv).abs() < 1e-9,
+            "source flow_min unit conversion"
+        );
+        assert!(
+            (snk.flow_min_m3s.unwrap() - (-400.0 * conv)).abs() < 1e-9,
+            "sink flow_min = -flowMax_gaslib * conv: got {}",
+            snk.flow_min_m3s.unwrap()
+        );
+        assert!(
+            (snk.flow_max_m3s.unwrap() - (-80.0 * conv)).abs() < 1e-9,
+            "sink flow_max = -flowMin_gaslib * conv: got {}",
+            snk.flow_max_m3s.unwrap()
+        );
+    }
+
+    #[test]
     fn test_parse_gaslib_11_topology() {
         let path = Path::new("dat/GasLib-11.net");
         if !path.exists() {
