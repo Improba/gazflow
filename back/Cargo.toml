@@ -18,6 +18,9 @@ serde_json = "1"
 
 # Parsing XML (GasLib)
 quick-xml = { version = "0.37", features = ["serialize"] }
+serde_yaml = "0.9"
+csv = "1"
+shapefile = "0.6"
 
 # Graphes & algèbre linéaire
 petgraph = "0.8"
@@ -33,6 +36,7 @@ anyhow = "1"
 thiserror = "2"
 futures-util = "0.3"
 zip = "2"
+base64 = "0.22"
 rust_xlsxwriter = "0.94.0"
 
 [dev-dependencies]
@@ -42,6 +46,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 tokio-test = "0.4"
 reqwest = { version = "0.12", features = ["json"] }
 tokio-tungstenite = "0.24"
+serial_test = "3.5.0"
 
 [[bench]]
 name = "solver_bench"

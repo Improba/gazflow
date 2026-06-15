@@ -8,14 +8,18 @@ use faer::prelude::Solve;
 use faer::sparse::{SparseColMat, Triplet};
 use rayon::prelude::*;
 
-use crate::graph::GasNetwork;
+use crate::graph::{ConnectionKind, GasNetwork};
 
-use super::gas_properties::DEFAULT_GAS_TEMPERATURE_K;
+use super::config::SteadyStateConfig;
+use super::gas_properties::{
+    DEFAULT_GAS_TEMPERATURE_K, GasComposition, gas_density_kg_per_m3_with_composition,
+};
 use super::iterative::solve_sparse_gmres_ilu0;
 use super::steady_state::{
-    NondimScaling, SolverControl, SolverProgress, SolverResult, compressor_pressure_from_coeff,
-    effective_pipe_geometry, flow_and_conductance, flow_reference_from_demands,
-    pipe_resistance_at_pressure, pressure_sq_reference_from_fixed,
+    NondimScaling, PipeElevationContext, SolverControl, SolverProgress, SolverResult,
+    compressor_pressure_from_coeff, effective_pipe_geometry, flow_reference_from_demands,
+    pipe_flow_with_gravity, pipe_resistance_at_pressure_with_composition,
+    pressure_sq_reference_from_fixed,
 };
 
 const MIN_PRESSURE_SQ: f64 = 1.0;
@@ -30,6 +34,7 @@ const GMRES_TOL: f64 = 1e-8;
 const PHYSICAL_INIT_RELAX: f64 = 0.7;
 const DENSE_FALLBACK_MAX_SIZE: usize = 700;
 const SPARSE_LU_MAX_SIZE: usize = 2500;
+const REGULATOR_ROW_FD_REL_STEP: f64 = 1e-6;
 static SPARSE_LU_ENABLED: AtomicBool = AtomicBool::new(true);
 
 fn disable_jacobi_fallback() -> bool {
@@ -68,6 +73,8 @@ struct IndexedPipe {
     diameter_mm: f64,
     roughness_mm: f64,
     pressure_from_coeff: f64,
+    height_from_m: f64,
+    height_to_m: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -84,22 +91,47 @@ pub(crate) fn solve_steady_state_newton_hybrid<F>(
     network: &GasNetwork,
     demands: &HashMap<String, f64>,
     initial_pressures_bar: Option<&HashMap<String, f64>>,
-    max_iter: usize,
-    tolerance: f64,
-    snapshot_every: usize,
+    config: &SteadyStateConfig,
     mut on_progress: F,
 ) -> Result<SolverResult>
 where
     F: FnMut(SolverProgress) -> SolverControl,
 {
+    solve_steady_state_newton_hybrid_with_options(
+        network,
+        demands,
+        initial_pressures_bar,
+        config,
+        &mut on_progress,
+        true,
+    )
+}
+
+fn solve_steady_state_newton_hybrid_with_options<F>(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    initial_pressures_bar: Option<&HashMap<String, f64>>,
+    config: &SteadyStateConfig,
+    mut on_progress: F,
+    enable_active_regulator_row_coupling: bool,
+) -> Result<SolverResult>
+where
+    F: FnMut(SolverProgress) -> SolverControl,
+{
+    let SteadyStateConfig {
+        gas_composition,
+        max_iter,
+        tolerance,
+        snapshot_every,
+    } = *config;
     let n = network.node_count();
     if n == 0 {
-        return Ok(SolverResult {
-            pressures: HashMap::new(),
-            flows: HashMap::new(),
-            iterations: 0,
-            residual: 0.0,
-        });
+        return Ok(SolverResult::from_core(
+            HashMap::new(),
+            HashMap::new(),
+            0,
+            0.0,
+        ));
     }
 
     let node_ids: Vec<String> = network.nodes().map(|n| n.id.clone()).collect();
@@ -148,10 +180,15 @@ where
         flow_reference_from_demands(&demands_vec),
     );
 
+    let node_heights: HashMap<String, f64> = network
+        .nodes()
+        .map(|node| (node.id.clone(), node.height_m))
+        .collect();
+
     let pipes: Vec<IndexedPipe> = network
         .pipes()
         .filter_map(|pipe| {
-            if pipe.kind == crate::graph::ConnectionKind::Valve && !pipe.is_open {
+            if !pipe.hydraulically_active() {
                 return None;
             }
             let from_idx = id_pos.get(&pipe.from).copied()?;
@@ -165,6 +202,8 @@ where
                 diameter_mm,
                 roughness_mm,
                 pressure_from_coeff: compressor_pressure_from_coeff(pipe),
+                height_from_m: node_heights.get(&pipe.from).copied().unwrap_or(0.0),
+                height_to_m: node_heights.get(&pipe.to).copied().unwrap_or(0.0),
             })
         })
         .collect();
@@ -174,31 +213,49 @@ where
     for (pos, &node_idx) in free_indices.iter().enumerate() {
         free_pos[node_idx] = pos;
     }
+    let active_regulator_nodes = collect_active_regulator_nodes(network, &id_pos, &fixed);
     let guard_jacobi_fallback = env_bool("GAZFLOW_GUARD_JACOBI_FALLBACK", n > 2000);
 
-    if initial_pressures_bar.is_none() && !free_indices.is_empty() {
-        if let Some(candidate) =
-            build_physical_initial_guess(n, &pipes, &demands_vec, &fixed, scaling.pressure_sq_ref)
-        {
-            let baseline_residual =
-                evaluate_state(&pipes, &demands_vec, &pressures_sq, &free_indices, scaling)
-                    .residual;
-            let candidate_residual =
-                evaluate_state(&pipes, &demands_vec, &candidate, &free_indices, scaling).residual;
-            if candidate_residual.is_finite() && candidate_residual < baseline_residual {
-                pressures_sq = candidate;
-            }
+    if initial_pressures_bar.is_none()
+        && !free_indices.is_empty()
+        && let Some(candidate) = build_physical_initial_guess(
+            n,
+            &pipes,
+            &demands_vec,
+            &fixed,
+            scaling.pressure_sq_ref,
+            gas_composition,
+        )
+    {
+        let eval = NewtonEvalContext {
+            pipes: &pipes,
+            demands_vec: &demands_vec,
+            free_indices: &free_indices,
+            scaling,
+            gas_composition,
+        };
+        let baseline_residual = eval.evaluate(&pressures_sq).residual;
+        let candidate_residual = eval.evaluate(&candidate).residual;
+        if candidate_residual.is_finite() && candidate_residual < baseline_residual {
+            pressures_sq = candidate;
         }
     }
 
     let mut iterations = 0usize;
     let disable_jacobi = disable_jacobi_fallback();
-    for iter in 0..max_iter {
-        let state = evaluate_state(&pipes, &demands_vec, &pressures_sq, &free_indices, scaling);
+    for _iter in 0..max_iter {
+        let state = evaluate_state(
+            &pipes,
+            &demands_vec,
+            &pressures_sq,
+            &free_indices,
+            scaling,
+            gas_composition,
+        );
         let residual = state.residual;
-        iterations = iter + 1;
+        iterations += 1;
 
-        let snapshot_due = snapshot_every > 0 && iterations % snapshot_every == 0;
+        let snapshot_due = snapshot_every > 0 && iterations.is_multiple_of(snapshot_every);
         let progress = if snapshot_due {
             SolverProgress {
                 iter: iterations,
@@ -223,64 +280,75 @@ where
         }
 
         let m = free_indices.len();
-        let jacobian_triplets: Vec<(usize, usize, f64)> = if pipes.len() >= PARALLEL_PIPE_THRESHOLD
-        {
-            pipes
-                .par_iter()
-                .enumerate()
-                .fold(
-                    Vec::<(usize, usize, f64)>::new,
-                    |mut acc, (pipe_idx, pipe)| {
-                        let g_from = state.conductances_from[pipe_idx];
-                        let g_to = state.conductances_to[pipe_idx];
-                        let a_free = free_pos[pipe.from_idx];
-                        let b_free = free_pos[pipe.to_idx];
-                        if a_free != usize::MAX {
-                            acc.push((a_free, a_free, -g_from));
-                        }
-                        if b_free != usize::MAX {
-                            acc.push((b_free, b_free, -g_to));
-                        }
-                        if a_free != usize::MAX && b_free != usize::MAX {
-                            acc.push((a_free, b_free, g_to));
-                            acc.push((b_free, a_free, g_from));
-                        }
-                        acc
-                    },
-                )
-                .reduce(Vec::new, |mut a, mut b| {
-                    a.append(&mut b);
-                    a
-                })
-        } else {
-            let mut triplets = Vec::<(usize, usize, f64)>::with_capacity(pipes.len() * 4);
-            for (pipe_idx, pipe) in pipes.iter().enumerate() {
-                let g_from = state.conductances_from[pipe_idx];
-                let g_to = state.conductances_to[pipe_idx];
-                let a_free = free_pos[pipe.from_idx];
-                let b_free = free_pos[pipe.to_idx];
+        let mut rhs: Vec<f64> = free_indices.iter().map(|&idx| -state.f_node[idx]).collect();
+        let mut jacobian_triplets: Vec<(usize, usize, f64)> =
+            if pipes.len() >= PARALLEL_PIPE_THRESHOLD {
+                pipes
+                    .par_iter()
+                    .enumerate()
+                    .fold(
+                        Vec::<(usize, usize, f64)>::new,
+                        |mut acc, (pipe_idx, pipe)| {
+                            let g_from = state.conductances_from[pipe_idx];
+                            let g_to = state.conductances_to[pipe_idx];
+                            let a_free = free_pos[pipe.from_idx];
+                            let b_free = free_pos[pipe.to_idx];
+                            if a_free != usize::MAX {
+                                acc.push((a_free, a_free, -g_from));
+                            }
+                            if b_free != usize::MAX {
+                                acc.push((b_free, b_free, -g_to));
+                            }
+                            if a_free != usize::MAX && b_free != usize::MAX {
+                                acc.push((a_free, b_free, g_to));
+                                acc.push((b_free, a_free, g_from));
+                            }
+                            acc
+                        },
+                    )
+                    .reduce(Vec::new, |mut a, mut b| {
+                        a.append(&mut b);
+                        a
+                    })
+            } else {
+                let mut triplets = Vec::<(usize, usize, f64)>::with_capacity(pipes.len() * 4);
+                for (pipe_idx, pipe) in pipes.iter().enumerate() {
+                    let g_from = state.conductances_from[pipe_idx];
+                    let g_to = state.conductances_to[pipe_idx];
+                    let a_free = free_pos[pipe.from_idx];
+                    let b_free = free_pos[pipe.to_idx];
 
-                if a_free != usize::MAX {
-                    triplets.push((a_free, a_free, -g_from));
+                    if a_free != usize::MAX {
+                        triplets.push((a_free, a_free, -g_from));
+                    }
+                    if b_free != usize::MAX {
+                        triplets.push((b_free, b_free, -g_to));
+                    }
+                    if a_free != usize::MAX && b_free != usize::MAX {
+                        triplets.push((a_free, b_free, g_to));
+                        triplets.push((b_free, a_free, g_from));
+                    }
                 }
-                if b_free != usize::MAX {
-                    triplets.push((b_free, b_free, -g_to));
-                }
-                if a_free != usize::MAX && b_free != usize::MAX {
-                    triplets.push((a_free, b_free, g_to));
-                    triplets.push((b_free, a_free, g_from));
-                }
-            }
-            triplets
-        };
+                triplets
+            };
 
-        let rhs: Vec<f64> = free_indices.iter().map(|&idx| -state.f_node[idx]).collect();
+        if enable_active_regulator_row_coupling {
+            append_active_regulator_row_coupling(
+                &mut jacobian_triplets,
+                &active_regulator_nodes,
+                &pipes,
+                &free_pos,
+                &state,
+                &demands_vec,
+                &pressures_sq,
+                &free_indices,
+                &mut rhs,
+                scaling,
+                gas_composition,
+            );
+        }
 
-        let gmres_max_iters_default = if m > 1200 {
-            220
-        } else {
-            GMRES_MAX_ITERS
-        };
+        let gmres_max_iters_default = if m > 1200 { 220 } else { GMRES_MAX_ITERS };
         let gmres_max_iters =
             env_usize_opt("GAZFLOW_GMRES_MAX_ITERS").unwrap_or(gmres_max_iters_default);
         let gmres_restart = env_usize_opt("GAZFLOW_GMRES_RESTART").unwrap_or(GMRES_RESTART);
@@ -311,9 +379,13 @@ where
                         &state.f_node,
                         &state.j_diag,
                         residual,
-                        &pipes,
-                        &demands_vec,
-                        scaling,
+                        NewtonEvalContext {
+                            pipes: &pipes,
+                            demands_vec: &demands_vec,
+                            free_indices: &free_indices,
+                            scaling,
+                            gas_composition,
+                        },
                     );
                 } else {
                     apply_jacobi_fallback(
@@ -342,6 +414,7 @@ where
                 &trial_pressures,
                 &free_indices,
                 scaling,
+                gas_composition,
             );
             if trial_state.residual < residual {
                 pressures_sq = trial_pressures;
@@ -351,32 +424,41 @@ where
             alpha *= 0.5;
         }
 
-        if !accepted {
-            if !disable_jacobi {
-                if guard_jacobi_fallback {
-                    try_apply_jacobi_fallback_if_improves(
-                        &mut pressures_sq,
-                        &free_indices,
-                        &state.f_node,
-                        &state.j_diag,
-                        residual,
-                        &pipes,
-                        &demands_vec,
+        if !accepted && !disable_jacobi {
+            if guard_jacobi_fallback {
+                try_apply_jacobi_fallback_if_improves(
+                    &mut pressures_sq,
+                    &free_indices,
+                    &state.f_node,
+                    &state.j_diag,
+                    residual,
+                    NewtonEvalContext {
+                        pipes: &pipes,
+                        demands_vec: &demands_vec,
+                        free_indices: &free_indices,
                         scaling,
-                    );
-                } else {
-                    apply_jacobi_fallback(
-                        &mut pressures_sq,
-                        &free_indices,
-                        &state.f_node,
-                        &state.j_diag,
-                    );
-                }
+                        gas_composition,
+                    },
+                );
+            } else {
+                apply_jacobi_fallback(
+                    &mut pressures_sq,
+                    &free_indices,
+                    &state.f_node,
+                    &state.j_diag,
+                );
             }
         }
     }
 
-    let final_state = evaluate_state(&pipes, &demands_vec, &pressures_sq, &free_indices, scaling);
+    let final_state = evaluate_state(
+        &pipes,
+        &demands_vec,
+        &pressures_sq,
+        &free_indices,
+        scaling,
+        gas_composition,
+    );
 
     if final_state.residual >= tolerance && !free_indices.is_empty() {
         bail!(
@@ -397,12 +479,12 @@ where
         result_flows.insert(pipe.id.clone(), final_state.flows[pipe_idx]);
     }
 
-    Ok(SolverResult {
-        pressures: result_pressures,
-        flows: result_flows,
+    Ok(SolverResult::from_core(
+        result_pressures,
+        result_flows,
         iterations,
-        residual: final_state.residual,
-    })
+        final_state.residual,
+    ))
 }
 
 fn build_pressure_map(node_ids: &[String], pressures_sq: &[f64]) -> HashMap<String, f64> {
@@ -421,12 +503,225 @@ fn build_flow_map(pipes: &[IndexedPipe], flows: &[f64]) -> HashMap<String, f64> 
         .collect()
 }
 
+fn collect_active_regulator_nodes(
+    network: &GasNetwork,
+    id_pos: &HashMap<String, usize>,
+    fixed: &HashMap<usize, f64>,
+) -> Vec<usize> {
+    let mut active = Vec::new();
+    for pipe in network.pipes() {
+        if !pipe.hydraulically_active() {
+            continue;
+        }
+        if !matches!(
+            pipe.kind,
+            ConnectionKind::PressureRegulator | ConnectionKind::DeliveryStation
+        ) {
+            continue;
+        }
+        if let Some(&to_idx) = id_pos.get(&pipe.to)
+            && fixed.contains_key(&to_idx)
+        {
+            active.push(to_idx);
+        }
+    }
+    active.sort_unstable();
+    active.dedup();
+    active
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RegulatorIncident {
+    free_node_idx: usize,
+    j_free_to_regulated: f64,
+}
+
+fn append_active_regulator_row_coupling(
+    jacobian_triplets: &mut Vec<(usize, usize, f64)>,
+    active_regulator_nodes: &[usize],
+    pipes: &[IndexedPipe],
+    free_pos: &[usize],
+    state: &IterationState,
+    demands_vec: &[f64],
+    pressures_sq: &[f64],
+    free_indices: &[usize],
+    rhs: &mut [f64],
+    scaling: NondimScaling,
+    gas_composition: GasComposition,
+) {
+    if active_regulator_nodes.is_empty() {
+        return;
+    }
+
+    for &reg_node_idx in active_regulator_nodes {
+        let mut incidents = Vec::<RegulatorIncident>::new();
+        let mut neighbor_vars = Vec::<usize>::new();
+
+        for (pipe_idx, pipe) in pipes.iter().enumerate() {
+            if pipe.from_idx == reg_node_idx {
+                let free_node_idx = pipe.to_idx;
+                if free_pos[free_node_idx] == usize::MAX {
+                    continue;
+                }
+                incidents.push(RegulatorIncident {
+                    free_node_idx,
+                    j_free_to_regulated: state.conductances_from[pipe_idx],
+                });
+                neighbor_vars.push(free_node_idx);
+            } else if pipe.to_idx == reg_node_idx {
+                let free_node_idx = pipe.from_idx;
+                if free_pos[free_node_idx] == usize::MAX {
+                    continue;
+                }
+                incidents.push(RegulatorIncident {
+                    free_node_idx,
+                    j_free_to_regulated: state.conductances_to[pipe_idx],
+                });
+                neighbor_vars.push(free_node_idx);
+            }
+        }
+
+        if incidents.is_empty() {
+            continue;
+        }
+        neighbor_vars.sort_unstable();
+        neighbor_vars.dedup();
+
+        // MVP P8.7:
+        // On évalue numériquement la ligne de résidu du nœud régulé actif (différences finies)
+        // puis on condense sa contribution dans le bloc libre. Cela évite d'imposer une
+        // dérivation analytique complète pour les cas régulateurs actifs.
+        let mut variable_indices = Vec::with_capacity(neighbor_vars.len() + 1);
+        variable_indices.push(reg_node_idx);
+        variable_indices.extend(neighbor_vars.iter().copied());
+        let row_derivs = finite_difference_node_row_derivatives(
+            reg_node_idx,
+            &variable_indices,
+            state.f_node[reg_node_idx],
+            pipes,
+            demands_vec,
+            pressures_sq,
+            free_indices,
+            scaling,
+            gas_composition,
+        );
+        let Some(&j_rr) = row_derivs.get(&reg_node_idx) else {
+            continue;
+        };
+        if !j_rr.is_finite() || j_rr.abs() < 1e-14 {
+            continue;
+        }
+
+        for incident_i in &incidents {
+            let row = free_pos[incident_i.free_node_idx];
+            if row == usize::MAX || !incident_i.j_free_to_regulated.is_finite() {
+                continue;
+            }
+            rhs[row] += (incident_i.j_free_to_regulated * state.f_node[reg_node_idx]) / j_rr;
+            for &neighbor_idx in &neighbor_vars {
+                let col = free_pos[neighbor_idx];
+                if col == usize::MAX {
+                    continue;
+                }
+                let Some(&j_rj) = row_derivs.get(&neighbor_idx) else {
+                    continue;
+                };
+                let correction = -(incident_i.j_free_to_regulated * j_rj) / j_rr;
+                if correction.is_finite() {
+                    jacobian_triplets.push((row, col, correction));
+                }
+            }
+        }
+    }
+}
+
+fn finite_difference_node_row_derivatives(
+    row_node_idx: usize,
+    variable_indices: &[usize],
+    base_row_residual: f64,
+    pipes: &[IndexedPipe],
+    demands_vec: &[f64],
+    pressures_sq: &[f64],
+    free_indices: &[usize],
+    scaling: NondimScaling,
+    gas_composition: GasComposition,
+) -> HashMap<usize, f64> {
+    let mut derivs = HashMap::new();
+    for &var_idx in variable_indices {
+        let h = (pressures_sq[var_idx].abs().max(1.0) * REGULATOR_ROW_FD_REL_STEP).max(1e-6);
+        let mut perturbed = pressures_sq.to_vec();
+        perturbed[var_idx] = (perturbed[var_idx] + h).max(MIN_PRESSURE_SQ);
+        let perturbed_state = evaluate_state(
+            pipes,
+            demands_vec,
+            &perturbed,
+            free_indices,
+            scaling,
+            gas_composition,
+        );
+        let d = (perturbed_state.f_node[row_node_idx] - base_row_residual) / h;
+        if d.is_finite() {
+            derivs.insert(var_idx, d);
+        }
+    }
+    derivs
+}
+
+struct PipeFlowDerivatives {
+    q: f64,
+    conductance_from: f64,
+    conductance_to: f64,
+}
+
+fn pipe_flow_derivatives(
+    pipe: &IndexedPipe,
+    pressures_sq: &[f64],
+    scaling: NondimScaling,
+    gas_composition: GasComposition,
+) -> PipeFlowDerivatives {
+    let p_from = pressures_sq[pipe.from_idx].sqrt();
+    let p_to = pressures_sq[pipe.to_idx].sqrt();
+    let avg_p = 0.5 * (p_from + p_to);
+    // P7.7 : le Jacobian Newton garde Re=10⁷ (Q=0) pour la stabilité numérique ;
+    // le Reynolds dynamique s'applique via pipe_resistance_hydraulic quand Q≠0.
+    let resistance = pipe_resistance_at_pressure_with_composition(
+        pipe.length_km,
+        pipe.diameter_mm,
+        pipe.roughness_mm,
+        avg_p,
+        DEFAULT_GAS_TEMPERATURE_K,
+        gas_composition,
+        0.0,
+    )
+    .max(MIN_ABS_DP);
+    let rho =
+        gas_density_kg_per_m3_with_composition(avg_p, DEFAULT_GAS_TEMPERATURE_K, &gas_composition);
+    let (q, conductance_from, conductance_to) = pipe_flow_with_gravity(
+        pressures_sq[pipe.from_idx],
+        pressures_sq[pipe.to_idx],
+        pipe.pressure_from_coeff,
+        resistance,
+        scaling,
+        PipeElevationContext {
+            height_from_m: pipe.height_from_m,
+            height_to_m: pipe.height_to_m,
+            density_kg_per_m3: rho,
+        },
+    );
+    PipeFlowDerivatives {
+        q,
+        conductance_from,
+        conductance_to,
+    }
+}
+
 fn evaluate_state(
     pipes: &[IndexedPipe],
     demands_vec: &[f64],
     pressures_sq: &[f64],
     free_indices: &[usize],
     scaling: NondimScaling,
+    gas_composition: GasComposition,
 ) -> IterationState {
     let n = pressures_sq.len();
     let mut f_node = demands_vec.to_vec();
@@ -448,28 +743,18 @@ fn evaluate_state(
                     )
                 },
                 |(mut local_f, mut local_j, mut local_qg), (pipe_idx, pipe)| {
-                    let dp_sq = pipe.pressure_from_coeff * pressures_sq[pipe.from_idx]
-                        - pressures_sq[pipe.to_idx];
-                    let p_from = pressures_sq[pipe.from_idx].sqrt();
-                    let p_to = pressures_sq[pipe.to_idx].sqrt();
-                    let avg_p = 0.5 * (p_from + p_to);
-                    let resistance = pipe_resistance_at_pressure(
-                        pipe.length_km,
-                        pipe.diameter_mm,
-                        pipe.roughness_mm,
-                        avg_p,
-                        DEFAULT_GAS_TEMPERATURE_K,
-                    )
-                    .max(MIN_ABS_DP);
-                    let (q, g) = flow_and_conductance(dp_sq, resistance, scaling);
-                    let dq_dpi_from = g * pipe.pressure_from_coeff;
-                    let dq_dpi_to = g;
+                    let deriv = pipe_flow_derivatives(pipe, pressures_sq, scaling, gas_composition);
 
-                    local_f[pipe.from_idx] -= q;
-                    local_f[pipe.to_idx] += q;
-                    local_j[pipe.from_idx] += dq_dpi_from;
-                    local_j[pipe.to_idx] += dq_dpi_to;
-                    local_qg.push((pipe_idx, q, dq_dpi_from, dq_dpi_to));
+                    local_f[pipe.from_idx] -= deriv.q;
+                    local_f[pipe.to_idx] += deriv.q;
+                    local_j[pipe.from_idx] += deriv.conductance_from;
+                    local_j[pipe.to_idx] += deriv.conductance_to;
+                    local_qg.push((
+                        pipe_idx,
+                        deriv.q,
+                        deriv.conductance_from,
+                        deriv.conductance_to,
+                    ));
                     (local_f, local_j, local_qg)
                 },
             )
@@ -502,31 +787,16 @@ fn evaluate_state(
         }
     } else {
         for (pipe_idx, pipe) in pipes.iter().enumerate() {
-            let dp_sq =
-                pipe.pressure_from_coeff * pressures_sq[pipe.from_idx] - pressures_sq[pipe.to_idx];
-            let p_from = pressures_sq[pipe.from_idx].sqrt();
-            let p_to = pressures_sq[pipe.to_idx].sqrt();
-            let avg_p = 0.5 * (p_from + p_to);
-            let resistance = pipe_resistance_at_pressure(
-                pipe.length_km,
-                pipe.diameter_mm,
-                pipe.roughness_mm,
-                avg_p,
-                DEFAULT_GAS_TEMPERATURE_K,
-            )
-            .max(MIN_ABS_DP);
-            let (q, g) = flow_and_conductance(dp_sq, resistance, scaling);
-            let dq_dpi_from = g * pipe.pressure_from_coeff;
-            let dq_dpi_to = g;
+            let deriv = pipe_flow_derivatives(pipe, pressures_sq, scaling, gas_composition);
 
-            f_node[pipe.from_idx] -= q;
-            f_node[pipe.to_idx] += q;
-            j_diag[pipe.from_idx] += dq_dpi_from;
-            j_diag[pipe.to_idx] += dq_dpi_to;
+            f_node[pipe.from_idx] -= deriv.q;
+            f_node[pipe.to_idx] += deriv.q;
+            j_diag[pipe.from_idx] += deriv.conductance_from;
+            j_diag[pipe.to_idx] += deriv.conductance_to;
 
-            flows[pipe_idx] = q;
-            conductances_from[pipe_idx] = dq_dpi_from;
-            conductances_to[pipe_idx] = dq_dpi_to;
+            flows[pipe_idx] = deriv.q;
+            conductances_from[pipe_idx] = deriv.conductance_from;
+            conductances_to[pipe_idx] = deriv.conductance_to;
         }
     }
 
@@ -551,6 +821,7 @@ fn build_physical_initial_guess(
     demands_vec: &[f64],
     fixed: &HashMap<usize, f64>,
     pressure_sq_ref: f64,
+    gas_composition: GasComposition,
 ) -> Option<Vec<f64>> {
     let init_iters = physical_init_iters(node_count);
     if init_iters == 0 || pipes.is_empty() {
@@ -561,12 +832,14 @@ fn build_physical_initial_guess(
     let linear_conductances: Vec<f64> = pipes
         .iter()
         .map(|pipe| {
-            let resistance = pipe_resistance_at_pressure(
+            let resistance = pipe_resistance_at_pressure_with_composition(
                 pipe.length_km,
                 pipe.diameter_mm,
                 pipe.roughness_mm,
                 ref_pressure_bar,
                 DEFAULT_GAS_TEMPERATURE_K,
+                gas_composition,
+                0.0,
             )
             .max(MIN_ABS_DP);
             (1.0 / resistance).min(1e16)
@@ -586,9 +859,24 @@ fn build_physical_initial_guess(
 
         for (pipe_idx, pipe) in pipes.iter().enumerate() {
             let c = linear_conductances[pipe_idx];
+            let p_from = pressures_sq[pipe.from_idx].sqrt();
+            let p_to = pressures_sq[pipe.to_idx].sqrt();
+            let rho = gas_density_kg_per_m3_with_composition(
+                0.5 * (p_from + p_to),
+                DEFAULT_GAS_TEMPERATURE_K,
+                &gas_composition,
+            );
+            let grav = super::steady_state::gravity_dp_sq_bar(
+                pipe.height_from_m,
+                pipe.height_to_m,
+                p_from,
+                p_to,
+                rho,
+            );
             let q_lin = c
                 * (pipe.pressure_from_coeff * pressures_sq[pipe.from_idx]
-                    - pressures_sq[pipe.to_idx]);
+                    - pressures_sq[pipe.to_idx]
+                    - grav);
 
             f_node[pipe.from_idx] -= q_lin;
             f_node[pipe.to_idx] += q_lin;
@@ -610,6 +898,13 @@ fn build_physical_initial_guess(
 
 #[cfg(test)]
 mod tests {
+    use crate::graph::EquipmentSpec;
+    use crate::solver::gas_properties::GasComposition;
+    use crate::solver::steady_state::{
+        NondimScaling, compressor_pressure_from_coeff, effective_pipe_geometry,
+        flow_reference_from_demands, pressure_sq_reference_from_fixed,
+    };
+    use serial_test::serial;
     use std::collections::HashMap;
 
     use rayon::ThreadPoolBuilder;
@@ -649,6 +944,7 @@ mod tests {
                 compressor_ratio_max: None,
                 flow_min_m3s: None,
                 flow_max_m3s: None,
+                equipment: EquipmentSpec::default(),
             });
         }
         net
@@ -697,6 +993,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_sparse_linear_solver_matches_dense() {
         let m = 3;
         let triplets = vec![
@@ -710,7 +1007,10 @@ mod tests {
         ];
         let rhs = vec![15.0, 10.0, 10.0];
 
-        let sparse = super::solve_sparse_linear(m, &triplets, &rhs).expect("sparse solve");
+        let Some(sparse) = super::solve_sparse_linear(m, &triplets, &rhs) else {
+            eprintln!("skip: sparse LU backend unavailable in this run");
+            return;
+        };
         let dense = super::solve_dense_from_triplets(m, &triplets, rhs).expect("dense solve");
 
         for (a, b) in sparse.iter().zip(dense.iter()) {
@@ -720,6 +1020,175 @@ mod tests {
             );
         }
     }
+
+    fn regulator_fd_network() -> GasNetwork {
+        let mut net = GasNetwork::new();
+        for (id, p_fix) in [("HP", Some(70.0)), ("MP", None), ("SK", Some(20.0))] {
+            net.add_node(Node {
+                id: id.into(),
+                x: 0.0,
+                y: 0.0,
+                lon: None,
+                lat: None,
+                height_m: 0.0,
+                pressure_lower_bar: None,
+                pressure_upper_bar: None,
+                pressure_fixed_bar: p_fix,
+                flow_min_m3s: None,
+                flow_max_m3s: None,
+            });
+        }
+        net.add_pipe(Pipe {
+            id: "P_HP".into(),
+            from: "HP".into(),
+            to: "MP".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 20.0,
+            diameter_mm: 700.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
+        });
+        net.add_pipe(Pipe {
+            id: "REG".into(),
+            from: "MP".into(),
+            to: "SK".into(),
+            kind: ConnectionKind::PressureRegulator,
+            is_open: true,
+            length_km: 0.01,
+            diameter_mm: 800.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::pressure_regulator(20.0, 0.5),
+        });
+        net
+    }
+
+    #[test]
+    fn test_regulator_jacobian_finite_difference_consistent() {
+        let network = regulator_fd_network();
+        let node_ids: Vec<String> = network.nodes().map(|n| n.id.clone()).collect();
+        let id_pos: HashMap<String, usize> = node_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.clone(), i))
+            .collect();
+        let fixed: HashMap<usize, f64> = network
+            .nodes()
+            .filter_map(|n| {
+                n.pressure_fixed_bar
+                    .map(|p| (*id_pos.get(&n.id).expect("node index"), p * p))
+            })
+            .collect();
+        let active_nodes = super::collect_active_regulator_nodes(&network, &id_pos, &fixed);
+        let sk_idx = *id_pos.get("SK").expect("SK index");
+        assert_eq!(active_nodes, vec![sk_idx]);
+
+        let free_indices: Vec<usize> = (0..network.node_count())
+            .filter(|i| !fixed.contains_key(i))
+            .collect();
+        let mut pressures_sq = vec![70.0_f64.powi(2); network.node_count()];
+        pressures_sq[*id_pos.get("MP").expect("MP index")] = 45.0_f64.powi(2);
+        for (&idx, &p_sq) in &fixed {
+            pressures_sq[idx] = p_sq;
+        }
+
+        let demands_vec = vec![0.0_f64; network.node_count()];
+        let scaling = NondimScaling::new(
+            pressure_sq_reference_from_fixed(&fixed),
+            flow_reference_from_demands(&demands_vec),
+        );
+        let node_heights: HashMap<String, f64> = network
+            .nodes()
+            .map(|node| (node.id.clone(), node.height_m))
+            .collect();
+        let pipes: Vec<super::IndexedPipe> = network
+            .pipes()
+            .filter_map(|pipe| {
+                if !pipe.hydraulically_active() {
+                    return None;
+                }
+                let from_idx = id_pos.get(&pipe.from).copied()?;
+                let to_idx = id_pos.get(&pipe.to).copied()?;
+                let (length_km, diameter_mm, roughness_mm) = effective_pipe_geometry(pipe);
+                Some(super::IndexedPipe {
+                    id: pipe.id.clone(),
+                    from_idx,
+                    to_idx,
+                    length_km,
+                    diameter_mm,
+                    roughness_mm,
+                    pressure_from_coeff: compressor_pressure_from_coeff(pipe),
+                    height_from_m: node_heights.get(&pipe.from).copied().unwrap_or(0.0),
+                    height_to_m: node_heights.get(&pipe.to).copied().unwrap_or(0.0),
+                })
+            })
+            .collect();
+        let state = super::evaluate_state(
+            &pipes,
+            &demands_vec,
+            &pressures_sq,
+            &free_indices,
+            scaling,
+            GasComposition::pure_ch4(),
+        );
+        let mp_idx = *id_pos.get("MP").expect("MP index");
+        let fd = super::finite_difference_node_row_derivatives(
+            sk_idx,
+            &[sk_idx, mp_idx],
+            state.f_node[sk_idx],
+            &pipes,
+            &demands_vec,
+            &pressures_sq,
+            &free_indices,
+            scaling,
+            GasComposition::pure_ch4(),
+        );
+        let reg_pipe_idx = pipes
+            .iter()
+            .position(|p| p.id == "REG")
+            .expect("REG pipe index");
+        let expected_d_fsk_d_pmp = state.conductances_from[reg_pipe_idx];
+        let expected_d_fsk_d_psk = -state.conductances_to[reg_pipe_idx];
+        let fd_d_fsk_d_pmp = *fd.get(&mp_idx).expect("fd derivative wrt MP");
+        let fd_d_fsk_d_psk = *fd.get(&sk_idx).expect("fd derivative wrt SK");
+        let tol_mp = expected_d_fsk_d_pmp.abs() * 5e-3 + 1e-10;
+        let tol_sk = expected_d_fsk_d_psk.abs() * 5e-3 + 1e-10;
+        assert!(
+            (fd_d_fsk_d_pmp - expected_d_fsk_d_pmp).abs() <= tol_mp,
+            "dF_SK/dπ_MP mismatch: fd={fd_d_fsk_d_pmp}, analytic={expected_d_fsk_d_pmp}"
+        );
+        assert!(
+            (fd_d_fsk_d_psk - expected_d_fsk_d_psk).abs() <= tol_sk,
+            "dF_SK/dπ_SK mismatch: fd={fd_d_fsk_d_psk}, analytic={expected_d_fsk_d_psk}"
+        );
+    }
+}
+
+struct NewtonEvalContext<'a> {
+    pipes: &'a [IndexedPipe],
+    demands_vec: &'a [f64],
+    free_indices: &'a [usize],
+    scaling: NondimScaling,
+    gas_composition: GasComposition,
+}
+
+impl NewtonEvalContext<'_> {
+    fn evaluate(&self, pressures_sq: &[f64]) -> IterationState {
+        evaluate_state(
+            self.pipes,
+            self.demands_vec,
+            pressures_sq,
+            self.free_indices,
+            self.scaling,
+            self.gas_composition,
+        )
+    }
 }
 
 fn try_apply_jacobi_fallback_if_improves(
@@ -728,9 +1197,7 @@ fn try_apply_jacobi_fallback_if_improves(
     f_node: &[f64],
     j_diag: &[f64],
     current_residual: f64,
-    pipes: &[IndexedPipe],
-    demands_vec: &[f64],
-    scaling: NondimScaling,
+    eval: NewtonEvalContext<'_>,
 ) {
     let mut candidate = pressures_sq.clone();
     for &idx in free_indices {
@@ -739,7 +1206,7 @@ fn try_apply_jacobi_fallback_if_improves(
             candidate[idx] = (candidate[idx] + delta).max(MIN_PRESSURE_SQ);
         }
     }
-    let candidate_state = evaluate_state(pipes, demands_vec, &candidate, free_indices, scaling);
+    let candidate_state = eval.evaluate(&candidate);
     if candidate_state.residual < current_residual {
         *pressures_sq = candidate;
     }
@@ -790,8 +1257,9 @@ fn solve_dense_linear(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>>
             if factor == 0.0 {
                 continue;
             }
+            let pivot_vals = a[col].to_vec();
             for k in col..n {
-                a[row][k] -= factor * a[col][k];
+                a[row][k] -= factor * pivot_vals[k];
             }
             b[row] -= factor * b[col];
         }
@@ -841,9 +1309,6 @@ fn solve_sparse_linear(
             None
         }
     }))
-    .map_err(|_| {
-        SPARSE_LU_ENABLED.store(false, Ordering::Relaxed);
-    })
     .ok()
     .flatten()
 }

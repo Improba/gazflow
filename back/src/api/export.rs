@@ -15,12 +15,30 @@ use serde::{Deserialize, Serialize};
 use zip::write::SimpleFileOptions;
 
 use crate::graph::GasNetwork;
-use crate::solver::SolverResult;
+use crate::solver::{self, SolverResult};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportKind {
+    Steady,
+    Constrained,
+    Timeseries,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportSummary {
+    pub id: String,
+    pub network_id: String,
+    pub created_ms: u64,
+    pub kind: ExportKind,
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct ExportRecord {
     pub simulation_id: String,
     pub created_at: String,
+    pub created_ms: u64,
+    pub kind: ExportKind,
     pub status: String,
     pub network_id: String,
     pub scenario_id: String,
@@ -44,6 +62,12 @@ pub(super) struct ExportQuery {
     pub format: Option<String>,
     #[serde(default)]
     pub include_logs: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ContingencyExportQuery {
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,6 +139,38 @@ struct StatsSection {
     min_pressure: f64,
     max_pressure: f64,
     max_abs_flow: f64,
+}
+
+pub(super) fn list_exports(state: &super::SharedState) -> Vec<ExportSummary> {
+    let guard = match state.exports.read() {
+        Ok(guard) => guard,
+        Err(_) => return Vec::new(),
+    };
+    let mut summaries: Vec<ExportSummary> = guard
+        .values()
+        .map(|record| ExportSummary {
+            id: record.simulation_id.clone(),
+            network_id: record.network_id.clone(),
+            created_ms: record.created_ms,
+            kind: record.kind,
+        })
+        .collect();
+    summaries.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+    summaries
+}
+
+pub(super) async fn get_exports_list(
+    State(state): State<super::SharedState>,
+) -> Json<Vec<ExportSummary>> {
+    Json(list_exports(&state))
+}
+
+pub(super) async fn download_export(
+    Path(id): Path<String>,
+    Query(query): Query<ExportQuery>,
+    State(state): State<super::SharedState>,
+) -> Result<Response, (StatusCode, Json<super::ApiError>)> {
+    get_export(Path(id), Query(query), State(state)).await
 }
 
 pub(super) async fn get_export(
@@ -233,6 +289,62 @@ pub(super) async fn get_export(
     }
 }
 
+pub(super) async fn post_contingency_export(
+    Query(query): Query<ContingencyExportQuery>,
+    State(state): State<super::SharedState>,
+    Json(payload): Json<super::ContingencyRequest>,
+) -> Result<Response, (StatusCode, Json<super::ApiError>)> {
+    let report = super::compute_contingency_report(&state, payload).await?;
+    let format = query
+        .format
+        .unwrap_or_else(|| "xlsx".to_string())
+        .to_ascii_lowercase();
+
+    match format.as_str() {
+        "xlsx" | "excel" => {
+            let xlsx = build_contingency_xlsx(&report).map_err(|err| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(super::ApiError {
+                        error: format!("EXPORT_INTERNAL_ERROR: {err}"),
+                    }),
+                )
+            })?;
+            let mut response = xlsx.into_response();
+            response.headers_mut().insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static(
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            );
+            response.headers_mut().insert(
+                CONTENT_DISPOSITION,
+                HeaderValue::from_static("attachment; filename=\"contingency-export.xlsx\""),
+            );
+            Ok(response)
+        }
+        "csv" => {
+            let csv = build_contingency_csv(&report);
+            let mut response = csv.into_response();
+            response.headers_mut().insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static("text/csv; charset=utf-8"),
+            );
+            response.headers_mut().insert(
+                CONTENT_DISPOSITION,
+                HeaderValue::from_static("attachment; filename=\"contingency-export.csv\""),
+            );
+            Ok(response)
+        }
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            Json(super::ApiError {
+                error: format!("EXPORT_FORMAT_UNSUPPORTED: {format}"),
+            }),
+        )),
+    }
+}
+
 pub(super) fn store_export_record(state: &super::SharedState, record: ExportRecord) {
     if let Ok(mut guard) = state.exports.write() {
         guard.insert(record.simulation_id.clone(), record);
@@ -252,9 +364,12 @@ pub(super) fn new_export_record(
         pipe_meta.insert(pipe.id.clone(), (pipe.from.clone(), pipe.to.clone()));
     }
 
+    let created_ms = now_ms();
     ExportRecord {
         simulation_id,
-        created_at: now_iso8601_approx(),
+        created_at: format!("unix-ms-{created_ms}"),
+        created_ms,
+        kind: ExportKind::Steady,
         status: "converged".to_string(),
         network_id,
         scenario_id: "default".to_string(),
@@ -285,9 +400,12 @@ pub(super) fn new_constrained_export_record(
     for pipe in network.pipes() {
         pipe_meta.insert(pipe.id.clone(), (pipe.from.clone(), pipe.to.clone()));
     }
+    let created_ms = now_ms();
     ExportRecord {
         simulation_id,
-        created_at: now_iso8601_approx(),
+        created_at: format!("unix-ms-{created_ms}"),
+        created_ms,
+        kind: ExportKind::Constrained,
         status: if result.infeasibility_diagnostic.is_some() {
             "infeasible".to_string()
         } else {
@@ -297,12 +415,12 @@ pub(super) fn new_constrained_export_record(
         scenario_id: "default".to_string(),
         demands: target_demands,
         solver_method: "constrained_projection".to_string(),
-        result: SolverResult {
-            pressures: result.pressures,
-            flows: result.flows,
-            iterations: result.iterations,
-            residual: result.residual,
-        },
+        result: SolverResult::from_core(
+            result.pressures,
+            result.flows,
+            result.iterations,
+            result.residual,
+        ),
         elapsed_ms,
         node_count: network.node_count(),
         pipe_count: network.edge_count(),
@@ -485,7 +603,8 @@ fn build_csv(_state: &super::SharedState, record: &ExportRecord) -> String {
     if !record.capacity_violations.is_empty() {
         lines.push(String::new());
         lines.push("## Capacity Violations".to_string());
-        lines.push("element_id,element_type,bound_type,limit_m3s,actual_m3s,margin_m3s".to_string());
+        lines
+            .push("element_id,element_type,bound_type,limit_m3s,actual_m3s,margin_m3s".to_string());
         for v in &record.capacity_violations {
             let etype = match v.element_type {
                 crate::solver::capacity::ViolationElementType::Node => "node",
@@ -532,7 +651,7 @@ fn build_xlsx(_state: &super::SharedState, record: &ExportRecord) -> Result<Vec<
         .write_string_with_format(
             1,
             0,
-            &format!(
+            format!(
                 "Réseau: {} | Solveur: {} | Itérations: {} | Résidu: {:.3e}",
                 record.network_id,
                 record.solver_method,
@@ -567,9 +686,7 @@ fn build_xlsx(_state: &super::SharedState, record: &ExportRecord) -> Result<Vec<
     let sheet = workbook.add_worksheet();
     sheet.set_name("Débits").map_err(|e| e.to_string())?;
     for col in 0..6u16 {
-        sheet
-            .set_column_width(col, 18)
-            .map_err(|e| e.to_string())?;
+        sheet.set_column_width(col, 18).map_err(|e| e.to_string())?;
     }
 
     sheet
@@ -606,9 +723,7 @@ fn build_xlsx(_state: &super::SharedState, record: &ExportRecord) -> Result<Vec<
         sheet
             .write_string(row, 1, &from)
             .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(row, 2, &to)
-            .map_err(|e| e.to_string())?;
+        sheet.write_string(row, 2, &to).map_err(|e| e.to_string())?;
         sheet
             .write_number_with_format(row, 3, *flow, &number_fmt)
             .map_err(|e| e.to_string())?;
@@ -625,9 +740,7 @@ fn build_xlsx(_state: &super::SharedState, record: &ExportRecord) -> Result<Vec<
         let sheet = workbook.add_worksheet();
         sheet.set_name("Demandes").map_err(|e| e.to_string())?;
         for col in 0..4u16 {
-            sheet
-                .set_column_width(col, 22)
-                .map_err(|e| e.to_string())?;
+            sheet.set_column_width(col, 22).map_err(|e| e.to_string())?;
         }
 
         sheet
@@ -681,9 +794,7 @@ fn build_xlsx(_state: &super::SharedState, record: &ExportRecord) -> Result<Vec<
         let sheet = workbook.add_worksheet();
         sheet.set_name("Violations").map_err(|e| e.to_string())?;
         for col in 0..6u16 {
-            sheet
-                .set_column_width(col, 18)
-                .map_err(|e| e.to_string())?;
+            sheet.set_column_width(col, 18).map_err(|e| e.to_string())?;
         }
 
         let warn_fmt = Format::new()
@@ -694,7 +805,7 @@ fn build_xlsx(_state: &super::SharedState, record: &ExportRecord) -> Result<Vec<
             .write_string_with_format(
                 0,
                 0,
-                &format!(
+                format!(
                     "⚠ {} violation(s) de capacité",
                     record.capacity_violations.len()
                 ),
@@ -753,6 +864,198 @@ fn build_xlsx(_state: &super::SharedState, record: &ExportRecord) -> Result<Vec<
     workbook.save_to_buffer().map_err(|e| e.to_string())
 }
 
+fn build_contingency_csv(report: &solver::ContingencyReport) -> String {
+    let mut lines = vec![
+        "# GazFlow Contingency Export".to_string(),
+        format!("# Total cases: {}", report.results.len()),
+        format!("# Red cases: {}", report.red_cases.len()),
+        format!("# Green cases: {}", report.green_cases.len()),
+        String::new(),
+        "## Cases".to_string(),
+        "index,element_id,element_type,action,converged,min_pressure_bar,violation_count"
+            .to_string(),
+    ];
+
+    for (index, result) in report.results.iter().enumerate() {
+        let row = format!(
+            "{},{},{},{},{},{:.6},{}",
+            index + 1,
+            result.case.element_id,
+            contingency_element_type_label(result.case.element_type),
+            contingency_action_label(result.case.action),
+            result.converged,
+            result.min_pressure_bar,
+            result.violations.len()
+        );
+        lines.push(row);
+    }
+
+    lines.push(String::new());
+    lines.push("## Violations".to_string());
+    lines.push("index,element_id,node_id,pressure_bar,threshold_bar,deficit_bar".to_string());
+    for (index, result) in report.results.iter().enumerate() {
+        for violation in &result.violations {
+            lines.push(format!(
+                "{},{},{},{:.6},{:.6},{:.6}",
+                index + 1,
+                result.case.element_id,
+                violation.node_id,
+                violation.pressure_bar,
+                violation.threshold_bar,
+                violation.deficit_bar
+            ));
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn build_contingency_xlsx(report: &solver::ContingencyReport) -> Result<Vec<u8>, String> {
+    use rust_xlsxwriter::{Color, Format, FormatBorder, Workbook};
+
+    let mut workbook = Workbook::new();
+    let header_fmt = Format::new()
+        .set_bold()
+        .set_background_color(Color::RGB(0x2C3E50))
+        .set_font_color(Color::White)
+        .set_border(FormatBorder::Thin);
+    let title_fmt = Format::new().set_bold().set_font_size(14);
+    let number_fmt = Format::new().set_num_format("0.000000");
+
+    let cases = workbook.add_worksheet();
+    cases.set_name("Cases").map_err(|e| e.to_string())?;
+    for col in 0..7u16 {
+        cases.set_column_width(col, 20).map_err(|e| e.to_string())?;
+    }
+
+    cases
+        .write_string_with_format(0, 0, "Contingency N-1 Cases", &title_fmt)
+        .map_err(|e| e.to_string())?;
+    cases
+        .write_string(
+            1,
+            0,
+            format!(
+                "Total: {} | Red: {} | Green: {}",
+                report.results.len(),
+                report.red_cases.len(),
+                report.green_cases.len()
+            ),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let headers = [
+        "Index",
+        "Element",
+        "Element type",
+        "Action",
+        "Converged",
+        "Min pressure (bar)",
+        "Violation count",
+    ];
+    let header_row = 3u32;
+    for (col, title) in headers.iter().enumerate() {
+        cases
+            .write_string_with_format(header_row, col as u16, *title, &header_fmt)
+            .map_err(|e| e.to_string())?;
+    }
+
+    for (index, result) in report.results.iter().enumerate() {
+        let row = header_row + 1 + index as u32;
+        cases
+            .write_number(row, 0, (index + 1) as f64)
+            .map_err(|e| e.to_string())?;
+        cases
+            .write_string(row, 1, &result.case.element_id)
+            .map_err(|e| e.to_string())?;
+        cases
+            .write_string(
+                row,
+                2,
+                contingency_element_type_label(result.case.element_type),
+            )
+            .map_err(|e| e.to_string())?;
+        cases
+            .write_string(row, 3, contingency_action_label(result.case.action))
+            .map_err(|e| e.to_string())?;
+        cases
+            .write_string(row, 4, if result.converged { "yes" } else { "no" })
+            .map_err(|e| e.to_string())?;
+        cases
+            .write_number_with_format(row, 5, result.min_pressure_bar, &number_fmt)
+            .map_err(|e| e.to_string())?;
+        cases
+            .write_number(row, 6, result.violations.len() as f64)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let violations = workbook.add_worksheet();
+    violations
+        .set_name("Violations")
+        .map_err(|e| e.to_string())?;
+    for col in 0..6u16 {
+        violations
+            .set_column_width(col, 22)
+            .map_err(|e| e.to_string())?;
+    }
+    let violation_headers = [
+        "Case index",
+        "Element",
+        "Node",
+        "Pressure (bar)",
+        "Threshold (bar)",
+        "Deficit (bar)",
+    ];
+    for (col, title) in violation_headers.iter().enumerate() {
+        violations
+            .write_string_with_format(0, col as u16, *title, &header_fmt)
+            .map_err(|e| e.to_string())?;
+    }
+    let mut row = 1u32;
+    for (index, result) in report.results.iter().enumerate() {
+        for violation in &result.violations {
+            violations
+                .write_number(row, 0, (index + 1) as f64)
+                .map_err(|e| e.to_string())?;
+            violations
+                .write_string(row, 1, &result.case.element_id)
+                .map_err(|e| e.to_string())?;
+            violations
+                .write_string(row, 2, &violation.node_id)
+                .map_err(|e| e.to_string())?;
+            violations
+                .write_number_with_format(row, 3, violation.pressure_bar, &number_fmt)
+                .map_err(|e| e.to_string())?;
+            violations
+                .write_number_with_format(row, 4, violation.threshold_bar, &number_fmt)
+                .map_err(|e| e.to_string())?;
+            violations
+                .write_number_with_format(row, 5, violation.deficit_bar, &number_fmt)
+                .map_err(|e| e.to_string())?;
+            row += 1;
+        }
+    }
+
+    workbook.save_to_buffer().map_err(|e| e.to_string())
+}
+
+fn contingency_action_label(action: solver::ContingencyAction) -> &'static str {
+    match action {
+        solver::ContingencyAction::RemovePipe => "remove_pipe",
+        solver::ContingencyAction::CloseValve => "close_valve",
+        solver::ContingencyAction::ClosePipe => "close_pipe",
+        solver::ContingencyAction::DisableSource => "disable_source",
+    }
+}
+
+fn contingency_element_type_label(element_type: solver::ContingencyElementType) -> &'static str {
+    match element_type {
+        solver::ContingencyElementType::Compressor => "compressor",
+        solver::ContingencyElementType::Pipe => "pipe",
+        solver::ContingencyElementType::Source => "source",
+    }
+}
+
 fn build_zip_bundle(
     state: &super::SharedState,
     record: &ExportRecord,
@@ -808,18 +1111,21 @@ fn build_zip_bundle(
     Ok(cursor.into_inner())
 }
 
-fn now_iso8601_approx() -> String {
-    let ms = SystemTime::now()
+fn now_ms() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    format!("unix-ms-{ms}")
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn now_iso8601_approx() -> String {
+    format!("unix-ms-{}", now_ms())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{ConnectionKind, GasNetwork, Node, Pipe};
+    use crate::graph::{ConnectionKind, EquipmentSpec, GasNetwork, Node, Pipe};
     use rayon::ThreadPoolBuilder;
     use std::sync::{Arc, RwLock};
     use tokio::sync::Semaphore;
@@ -864,13 +1170,15 @@ mod tests {
             compressor_ratio_max: None,
             flow_min_m3s: None,
             flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
         });
 
         Arc::new(super::super::AppState {
             network: Arc::new(RwLock::new(Arc::new(network))),
             default_demands: Arc::new(RwLock::new(Arc::new(HashMap::new()))),
             active_dataset: Arc::new(RwLock::new("custom".to_string())),
-            available_datasets: Arc::new(vec!["custom".to_string()]),
+            available_datasets: Arc::new(RwLock::new(vec!["custom".to_string()])),
+            imported: Arc::new(RwLock::new(HashMap::new())),
             data_dir: Arc::new(std::path::PathBuf::from("dat")),
             simulation_slots: Arc::new(Semaphore::new(1)),
             simulation_capacity: 1,
@@ -881,7 +1189,68 @@ mod tests {
                     .expect("pool"),
             ),
             exports: Arc::new(RwLock::new(HashMap::new())),
+            gas_composition: Arc::new(RwLock::new(super::super::solver::GasComposition::default())),
+            scenario_stores: Arc::new(RwLock::new(HashMap::new())),
         })
+    }
+
+    #[test]
+    fn test_list_exports_returns_sorted_summaries() {
+        let state = fake_state();
+        let network = state
+            .network
+            .read()
+            .expect("network lock should not be poisoned");
+        let mut pressures = HashMap::new();
+        pressures.insert("A".to_string(), 70.0);
+        let mut flows = HashMap::new();
+        flows.insert("P1".to_string(), 1.0);
+
+        store_export_record(
+            &state,
+            new_export_record(
+                "sim-a".to_string(),
+                "custom".to_string(),
+                &network,
+                HashMap::new(),
+                SolverResult::from_core(pressures.clone(), flows.clone(), 1, 1e-4),
+                10,
+            ),
+        );
+        store_export_record(
+            &state,
+            new_constrained_export_record(
+                "sim-b".to_string(),
+                "custom".to_string(),
+                &network,
+                HashMap::new(),
+                crate::solver::ConstrainedSolverResult {
+                    pressures: pressures.clone(),
+                    flows: flows.clone(),
+                    iterations: 2,
+                    residual: 1e-4,
+                    adjusted_demands: HashMap::new(),
+                    active_bounds: Vec::new(),
+                    capacity_violations: Vec::new(),
+                    objective_value: 0.0,
+                    outer_iterations: 1,
+                    infeasibility_diagnostic: None,
+                },
+                20,
+            ),
+        );
+
+        let summaries = list_exports(&state);
+        assert_eq!(summaries.len(), 2);
+        let ids: std::collections::HashSet<_> = summaries.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains("sim-a"));
+        assert!(ids.contains("sim-b"));
+        assert!(summaries.iter().any(|s| s.kind == ExportKind::Steady));
+        assert!(summaries.iter().any(|s| s.kind == ExportKind::Constrained));
+        assert!(
+            summaries.windows(2).all(|w| w[0].created_ms >= w[1].created_ms),
+            "exports should be sorted by created_ms descending"
+        );
     }
 
     #[test]
@@ -900,12 +1269,7 @@ mod tests {
                 .read()
                 .expect("network lock should not be poisoned"),
             HashMap::new(),
-            SolverResult {
-                pressures,
-                flows,
-                iterations: 7,
-                residual: 1e-4,
-            },
+            SolverResult::from_core(pressures, flows, 7, 1e-4),
             42,
         );
 
@@ -932,12 +1296,7 @@ mod tests {
                 .read()
                 .expect("network lock should not be poisoned"),
             HashMap::new(),
-            SolverResult {
-                pressures,
-                flows,
-                iterations: 3,
-                residual: 1e-4,
-            },
+            SolverResult::from_core(pressures, flows, 3, 1e-4),
             12,
         );
         let csv = build_csv(&state, &record);
@@ -965,23 +1324,18 @@ mod tests {
             [("A".to_string(), 0.0), ("B".to_string(), -10.0)]
                 .into_iter()
                 .collect(),
-            SolverResult {
-                pressures,
-                flows,
-                iterations: 3,
-                residual: 1e-4,
-            },
+            SolverResult::from_core(pressures, flows, 3, 1e-4),
             12,
         );
         let csv = build_csv(&state, &record);
-        assert!(csv.contains("## Pressures"), "should have pressures section");
+        assert!(
+            csv.contains("## Pressures"),
+            "should have pressures section"
+        );
         assert!(csv.contains("## Flows"), "should have flows section");
         assert!(csv.contains("## Demands"), "should have demands section");
         assert!(csv.contains("node_id,pressure_bar"), "pressure header");
-        assert!(
-            csv.contains("pipe_id,from,to,flow_m3s"),
-            "flow header"
-        );
+        assert!(csv.contains("pipe_id,from,to,flow_m3s"), "flow header");
     }
 
     #[test]
@@ -997,12 +1351,7 @@ mod tests {
             "custom".to_string(),
             &state.network.read().expect("lock"),
             HashMap::new(),
-            SolverResult {
-                pressures,
-                flows,
-                iterations: 7,
-                residual: 1e-4,
-            },
+            SolverResult::from_core(pressures, flows, 7, 1e-4),
             42,
         );
         let xlsx = build_xlsx(&state, &record).expect("xlsx generation should succeed");

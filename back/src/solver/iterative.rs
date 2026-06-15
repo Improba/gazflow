@@ -80,7 +80,7 @@ pub(crate) fn solve_sparse_gmres_ilu0(
             h[j + 1][j] = 0.0;
 
             let g_next = -s * g[j];
-            g[j] = c * g[j];
+            g[j] *= c;
             g[j + 1] = g_next;
 
             let rel_res = g[j + 1].abs() / b_norm;

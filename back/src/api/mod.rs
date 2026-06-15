@@ -5,30 +5,70 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+use axum::{
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    routing::{get, patch, post, put},
+};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
 
+use crate::calibration;
 use crate::gaslib;
-use crate::graph::GasNetwork;
+use crate::graph::{ConnectionKind, EquipmentSpec, GasNetwork};
 use crate::solver;
 
 mod export;
+mod import;
+mod network_edit;
+mod scenarios;
 mod ws;
 
+pub(crate) struct ImportedDataset {
+    pub network: GasNetwork,
+    pub default_demands: HashMap<String, f64>,
+    pub gas_composition: solver::GasComposition,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct GasPropertiesDto {
+    pub composition: solver::GasComposition,
+    pub pcs_mj_per_nm3: f64,
+    pub pci_mj_per_nm3: f64,
+    pub wobbe_mj_per_nm3: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+impl GasPropertiesDto {
+    pub fn from_composition(composition: solver::GasComposition) -> Self {
+        Self {
+            pcs_mj_per_nm3: composition.pcs_mj_per_nm3(),
+            pci_mj_per_nm3: composition.pci_mj_per_nm3(),
+            wobbe_mj_per_nm3: composition.wobbe_mj_per_nm3(),
+            warnings: composition.physics_warnings(),
+            composition,
+        }
+    }
+}
+
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     network: Arc<RwLock<Arc<GasNetwork>>>,
     default_demands: Arc<RwLock<Arc<HashMap<String, f64>>>>,
     active_dataset: Arc<RwLock<String>>,
-    available_datasets: Arc<Vec<String>>,
+    available_datasets: Arc<RwLock<Vec<String>>>,
+    imported: Arc<RwLock<HashMap<String, ImportedDataset>>>,
+    gas_composition: Arc<RwLock<solver::GasComposition>>,
     data_dir: Arc<PathBuf>,
     simulation_slots: Arc<Semaphore>,
     simulation_capacity: usize,
     rayon_pool: Arc<ThreadPool>,
     exports: Arc<RwLock<HashMap<String, export::ExportRecord>>>,
+    scenario_stores: scenarios::ScenarioStores,
 }
 
 type SharedState = Arc<AppState>;
@@ -138,25 +178,70 @@ pub fn create_router_with_runtime_limits_and_datasets(
     let shared: SharedState = Arc::new(AppState {
         network: Arc::new(RwLock::new(Arc::new(network))),
         default_demands: Arc::new(RwLock::new(Arc::new(default_demands))),
-        active_dataset: Arc::new(RwLock::new(active_dataset)),
-        available_datasets: Arc::new(available_datasets),
+        active_dataset: Arc::new(RwLock::new(active_dataset.clone())),
+        available_datasets: Arc::new(RwLock::new(available_datasets)),
+        imported: Arc::new(RwLock::new(HashMap::new())),
+        gas_composition: Arc::new(RwLock::new(solver::GasComposition::default())),
         data_dir: Arc::new(data_dir),
         simulation_slots: Arc::new(Semaphore::new(simulation_capacity)),
         simulation_capacity,
         rayon_pool: Arc::new(rayon_pool),
         exports: Arc::new(RwLock::new(HashMap::new())),
+        scenario_stores: Arc::new(RwLock::new(HashMap::new())),
     });
+
+    let initial_network = shared
+        .network
+        .read()
+        .expect("network lock should not be poisoned")
+        .clone();
+    init_dataset_baseline(&shared, &active_dataset, initial_network.as_ref());
 
     Router::new()
         .route("/api/health", get(health))
         .route("/api/networks", get(list_networks))
         .route("/api/network", get(get_network).post(select_network))
+        .route(
+            "/api/network/gas-composition",
+            patch(update_gas_composition),
+        )
+        .route("/api/network/nodes", post(network_edit::post_node))
+        .route(
+            "/api/network/nodes/{id}",
+            put(network_edit::put_node).delete(network_edit::delete_node),
+        )
+        .route("/api/network/pipes", post(network_edit::post_pipe))
+        .route(
+            "/api/network/pipes/{id}",
+            put(network_edit::put_pipe).delete(network_edit::delete_pipe),
+        )
+        .route("/api/import", post(import::post_import_network))
         .route("/api/export/{simulation_id}", get(export::get_export))
+        .route("/api/exports", get(export::get_exports_list))
+        .route("/api/exports/{id}/download", get(export::download_export))
+        .route(
+            "/api/contingency/export",
+            post(export::post_contingency_export),
+        )
         .route("/api/ws/sim", get(ws::ws_simulation_handler))
         .route(
             "/api/simulate",
             get(run_simulation_default).post(run_simulation_custom),
         )
+        .route("/api/calibrate", post(post_calibrate))
+        .route("/api/simulate/timeseries", post(run_timeseries_simulation))
+        .route("/api/simulate/transient", post(run_transient_simulation))
+        .route("/api/contingency", post(run_contingency))
+        .route("/api/scenarios", get(scenarios::list_scenarios).post(scenarios::create_scenario))
+        .route(
+            "/api/scenarios/{id}",
+            get(scenarios::get_scenario).delete(scenarios::delete_scenario),
+        )
+        .route(
+            "/api/scenarios/{id}/apply",
+            post(scenarios::apply_scenario),
+        )
+        .route("/api/simulate/compare", post(scenarios::compare_scenarios))
         .layer(CorsLayer::permissive())
         .with_state(shared)
 }
@@ -196,6 +281,7 @@ struct NetworkResponse {
     active_dataset: String,
     node_count: usize,
     edge_count: usize,
+    gas: GasPropertiesDto,
     nodes: Vec<NodeDto>,
     pipes: Vec<PipeDto>,
 }
@@ -206,8 +292,8 @@ struct NetworksResponse {
     active: String,
 }
 
-#[derive(Serialize)]
-struct NodeDto {
+#[derive(Debug, Serialize)]
+pub(crate) struct NodeDto {
     id: String,
     x: f64,
     y: f64,
@@ -219,13 +305,16 @@ struct NodeDto {
     flow_max_m3s: Option<f64>,
 }
 
-#[derive(Serialize)]
-struct PipeDto {
+#[derive(Debug, Serialize)]
+pub(crate) struct PipeDto {
     id: String,
     from: String,
     to: String,
+    kind: ConnectionKind,
     length_km: f64,
     diameter_mm: f64,
+    #[serde(skip_serializing_if = "EquipmentSpec::is_empty")]
+    equipment: EquipmentSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +339,109 @@ struct SimulateRequest {
     mode: Option<SimulationMode>,
 }
 
+#[derive(Debug, Deserialize)]
+struct TimeseriesRequest {
+    profiles: HashMap<String, solver::DemandProfile>,
+    weather: Vec<solver::WeatherStep>,
+    #[serde(default = "default_timeseries_max_iter")]
+    max_iter: usize,
+    #[serde(default = "default_timeseries_tolerance")]
+    tolerance: f64,
+    #[serde(default = "default_true")]
+    warm_start: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TransientApiMode {
+    QuasiSteady,
+    Pde,
+}
+
+impl Default for TransientApiMode {
+    fn default() -> Self {
+        Self::QuasiSteady
+    }
+}
+
+impl From<TransientApiMode> for solver::TransientMode {
+    fn from(mode: TransientApiMode) -> Self {
+        match mode {
+            TransientApiMode::QuasiSteady => Self::QuasiSteady,
+            TransientApiMode::Pde => Self::Pde,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TransientRequest {
+    #[serde(default)]
+    initial_demands: Option<HashMap<String, f64>>,
+    #[serde(default)]
+    events: Vec<solver::TransientEvent>,
+    #[serde(default = "default_transient_duration_s")]
+    duration_s: f64,
+    #[serde(default = "default_transient_dt_s")]
+    dt_s: f64,
+    #[serde(default)]
+    gas_composition: Option<solver::GasComposition>,
+    #[serde(default)]
+    mode: TransientApiMode,
+    #[serde(default)]
+    n_cells_per_pipe: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ContingencyScope {
+    All,
+    SourcesOnly,
+    Custom,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ContingencyRequest {
+    #[serde(default)]
+    demands: Option<HashMap<String, f64>>,
+    scope: ContingencyScope,
+    #[serde(default)]
+    custom_cases: Option<Vec<solver::ContingencyCase>>,
+}
+
+fn default_timeseries_max_iter() -> usize {
+    800
+}
+
+fn default_timeseries_tolerance() -> f64 {
+    1e-3
+}
+
+fn default_transient_duration_s() -> f64 {
+    3600.0
+}
+
+fn default_transient_dt_s() -> f64 {
+    300.0
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Serialize)]
+struct TimeseriesResponse {
+    steps: Vec<solver::TimeseriesStepResult>,
+    total_iterations: usize,
+    failed_hours: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
+struct TransientResponse {
+    steps: Vec<solver::TransientStepResult>,
+    total_iterations: usize,
+    limitation: String,
+}
+
 #[derive(Debug, Serialize)]
 struct SimulationResponse {
     pressures: HashMap<String, f64>,
@@ -268,6 +460,10 @@ struct SimulationResponse {
     outer_iterations: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     infeasibility_diagnostic: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    equipment_states: Vec<solver::EquipmentState>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
 }
 
 impl From<solver::SolverResult> for SimulationResponse {
@@ -283,6 +479,8 @@ impl From<solver::SolverResult> for SimulationResponse {
             objective_value: None,
             outer_iterations: None,
             infeasibility_diagnostic: None,
+            equipment_states: r.equipment_states,
+            warnings: r.warnings,
         }
     }
 }
@@ -300,6 +498,8 @@ impl From<solver::ConstrainedSolverResult> for SimulationResponse {
             objective_value: Some(r.objective_value),
             outer_iterations: Some(r.outer_iterations),
             infeasibility_diagnostic: r.infeasibility_diagnostic,
+            equipment_states: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 }
@@ -307,6 +507,11 @@ impl From<solver::ConstrainedSolverResult> for SimulationResponse {
 #[derive(Debug, Deserialize)]
 struct SelectNetworkRequest {
     dataset_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateGasCompositionRequest {
+    gas_composition: solver::GasComposition,
 }
 
 #[derive(Debug, Serialize)]
@@ -317,13 +522,18 @@ struct SelectNetworkResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct ApiError {
+pub(crate) struct ApiError {
     error: String,
 }
 
 async fn list_networks(State(state): State<SharedState>) -> Json<NetworksResponse> {
+    let available = state
+        .available_datasets
+        .read()
+        .expect("available datasets lock should not be poisoned")
+        .clone();
     Json(NetworksResponse {
-        available: state.available_datasets.as_ref().clone(),
+        available,
         active: active_dataset_id(&state),
     })
 }
@@ -352,8 +562,10 @@ async fn get_network(State(state): State<SharedState>) -> Json<NetworkResponse> 
             id: p.id.clone(),
             from: p.from.clone(),
             to: p.to.clone(),
+            kind: p.kind,
             length_km: p.length_km,
             diameter_mm: p.diameter_mm,
+            equipment: p.equipment.clone(),
         })
         .collect();
 
@@ -361,6 +573,7 @@ async fn get_network(State(state): State<SharedState>) -> Json<NetworkResponse> 
         active_dataset,
         node_count: network.node_count(),
         edge_count: network.edge_count(),
+        gas: GasPropertiesDto::from_composition(active_gas_composition(&state)),
         nodes,
         pipes,
     })
@@ -370,7 +583,13 @@ async fn select_network(
     State(state): State<SharedState>,
     Json(payload): Json<SelectNetworkRequest>,
 ) -> Result<Json<SelectNetworkResponse>, (StatusCode, Json<ApiError>)> {
-    if !state.available_datasets.iter().any(|id| id == &payload.dataset_id) {
+    let known = state
+        .available_datasets
+        .read()
+        .expect("available datasets lock should not be poisoned")
+        .iter()
+        .any(|id| id == &payload.dataset_id);
+    if !known {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ApiError {
@@ -388,13 +607,36 @@ async fn select_network(
         ));
     }
 
-    let (network, default_demands) = load_dataset_from_disk(&state.data_dir, &payload.dataset_id)
-        .map_err(|err| {
+    if payload.dataset_id.starts_with("import-") {
+        let imported = state
+            .imported
+            .read()
+            .expect("imported lock should not be poisoned");
+        let dataset = imported.get(&payload.dataset_id).ok_or_else(|| {
             (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ApiError { error: err }),
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: format!("imported dataset not found: {}", payload.dataset_id),
+                }),
             )
         })?;
+        let node_count = dataset.network.node_count();
+        let edge_count = dataset.network.edge_count();
+        activate_imported_dataset(&state, &payload.dataset_id, dataset);
+        return Ok(Json(SelectNetworkResponse {
+            active: payload.dataset_id,
+            node_count,
+            edge_count,
+        }));
+    }
+
+    let (network, default_demands) = load_dataset_from_disk(&state.data_dir, &payload.dataset_id)
+        .map_err(|err| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError { error: err }),
+        )
+    })?;
     let node_count = network.node_count();
     let edge_count = network.edge_count();
 
@@ -419,12 +661,131 @@ async fn select_network(
             .expect("active dataset lock should not be poisoned");
         *guard = payload.dataset_id.clone();
     }
+    set_active_gas_composition(
+        &state,
+        if payload.dataset_id.starts_with("GasLib") {
+            solver::GasComposition::pure_ch4()
+        } else {
+            solver::GasComposition::default()
+        },
+    );
+    init_dataset_baseline(
+        &state,
+        &payload.dataset_id,
+        state
+            .network
+            .read()
+            .expect("network lock should not be poisoned")
+            .as_ref(),
+    );
 
     Ok(Json(SelectNetworkResponse {
         active: payload.dataset_id,
         node_count,
         edge_count,
     }))
+}
+
+pub(crate) fn activate_imported_dataset(
+    state: &SharedState,
+    network_id: &str,
+    dataset: &ImportedDataset,
+) {
+    {
+        let mut guard = state
+            .network
+            .write()
+            .expect("network lock should not be poisoned");
+        *guard = Arc::new(clone_network(&dataset.network));
+    }
+    {
+        let mut guard = state
+            .default_demands
+            .write()
+            .expect("default demands lock should not be poisoned");
+        *guard = Arc::new(dataset.default_demands.clone());
+    }
+    set_active_gas_composition(state, dataset.gas_composition);
+    {
+        let mut guard = state
+            .active_dataset
+            .write()
+            .expect("active dataset lock should not be poisoned");
+        *guard = network_id.to_string();
+    }
+    init_dataset_baseline(
+        state,
+        network_id,
+        state
+            .network
+            .read()
+            .expect("network lock should not be poisoned")
+            .as_ref(),
+    );
+}
+
+pub(crate) fn active_gas_composition(state: &SharedState) -> solver::GasComposition {
+    *state
+        .gas_composition
+        .read()
+        .expect("gas composition lock should not be poisoned")
+}
+
+pub(crate) fn set_active_gas_composition(state: &SharedState, composition: solver::GasComposition) {
+    *state
+        .gas_composition
+        .write()
+        .expect("gas composition lock should not be poisoned") = composition.normalize();
+}
+
+async fn update_gas_composition(
+    State(state): State<SharedState>,
+    Json(payload): Json<UpdateGasCompositionRequest>,
+) -> Result<Json<GasPropertiesDto>, (StatusCode, Json<ApiError>)> {
+    if state.simulation_slots.available_permits() != state.simulation_capacity {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "cannot update gas composition while simulations are running".to_string(),
+            }),
+        ));
+    }
+
+    let composition = payload.gas_composition.normalize();
+    set_active_gas_composition(&state, composition);
+
+    let active_id = active_dataset_id(&state);
+    if active_id.starts_with("import-") {
+        let mut imported = state
+            .imported
+            .write()
+            .expect("imported lock should not be poisoned");
+        if let Some(dataset) = imported.get_mut(&active_id) {
+            dataset.gas_composition = composition;
+        }
+    }
+
+    Ok(Json(GasPropertiesDto::from_composition(composition)))
+}
+
+fn clone_network(network: &GasNetwork) -> GasNetwork {
+    let mut cloned = GasNetwork::new();
+    for node in network.nodes() {
+        cloned.add_node(node.clone());
+    }
+    for pipe in network.pipes() {
+        cloned.add_pipe(pipe.clone());
+    }
+    cloned
+}
+
+fn init_dataset_baseline(state: &SharedState, dataset_id: &str, network: &GasNetwork) {
+    let mut stores = state
+        .scenario_stores
+        .write()
+        .expect("scenario stores lock should not be poisoned");
+    let store = stores.entry(dataset_id.to_string()).or_default();
+    scenarios::ensure_baseline(store, network);
 }
 
 fn api_bounds_to_solver(
@@ -437,11 +798,9 @@ fn api_bounds_to_solver(
         .collect();
     let pipe_bounds = network
         .pipes()
-        .filter_map(|p| {
-            match (p.flow_min_m3s, p.flow_max_m3s) {
-                (Some(min), Some(max)) => Some((p.id.clone(), (min, max))),
-                _ => None,
-            }
+        .filter_map(|p| match (p.flow_min_m3s, p.flow_max_m3s) {
+            (Some(min), Some(max)) => Some((p.id.clone(), (min, max))),
+            _ => None,
         })
         .collect();
     solver::CapacityBounds {
@@ -450,9 +809,7 @@ fn api_bounds_to_solver(
     }
 }
 
-async fn run_simulation_default(
-    State(state): State<SharedState>,
-) -> ApiResult<SimulationResponse> {
+async fn run_simulation_default(State(state): State<SharedState>) -> ApiResult<SimulationResponse> {
     let demands = (*active_default_demands(&state)).clone();
     run_simulation_with_demands(&state, demands, None, None).await
 }
@@ -468,6 +825,302 @@ async fn run_simulation_custom(
         payload.mode,
     )
     .await
+}
+
+async fn post_calibrate(
+    State(state): State<SharedState>,
+    Json(payload): Json<calibration::CalibrationRequest>,
+) -> ApiResult<calibration::CalibrationReport> {
+    let demands = payload
+        .demands
+        .unwrap_or_else(|| (*active_default_demands(&state)).clone());
+    let network = active_network(&state);
+    let network_for_calibration = network.clone();
+    let strategy = payload.strategy;
+    let measurements_csv = payload.measurements_csv;
+
+    let permit = state
+        .simulation_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: format!("calibration capacity semaphore closed: {err}"),
+                }),
+            )
+        })?;
+    let pool = state.rayon_pool.clone();
+
+    let report = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        pool.install(|| {
+            calibration::calibrate_from_csv(
+                &network_for_calibration,
+                &demands,
+                &measurements_csv,
+                strategy,
+            )
+        })
+    })
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: format!("calibration task join error: {err}"),
+            }),
+        )
+    })?
+    .map_err(|err| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError { error: err }),
+        )
+    })?;
+
+    Ok(Json(report))
+}
+
+async fn run_timeseries_simulation(
+    State(state): State<SharedState>,
+    Json(payload): Json<TimeseriesRequest>,
+) -> ApiResult<TimeseriesResponse> {
+    if payload.profiles.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "profiles must not be empty".to_string(),
+            }),
+        ));
+    }
+    if payload.weather.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "weather must not be empty".to_string(),
+            }),
+        ));
+    }
+
+    let network = active_network(&state);
+    let network_for_solve = network.clone();
+    let profiles = payload.profiles;
+    let weather = payload.weather;
+    let config = solver::TimeseriesConfig {
+        gas_composition: active_gas_composition(&state),
+        max_iter: payload.max_iter,
+        tolerance: payload.tolerance,
+        warm_start: payload.warm_start,
+        warm_start_max_demand_rel_change: 3.0,
+    };
+
+    let permit = state
+        .simulation_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: format!("simulation capacity semaphore closed: {err}"),
+                }),
+            )
+        })?;
+    let pool = state.rayon_pool.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        pool.install(|| {
+            solver::simulate_timeseries(&network_for_solve, &profiles, &weather, &config)
+        })
+    })
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: format!("timeseries task join error: {err}"),
+            }),
+        )
+    })?
+    .map_err(|err| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: err.to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(TimeseriesResponse {
+        steps: result.steps,
+        total_iterations: result.total_iterations,
+        failed_hours: result.failed_hours,
+    }))
+}
+
+async fn run_transient_simulation(
+    State(state): State<SharedState>,
+    Json(payload): Json<TransientRequest>,
+) -> ApiResult<TransientResponse> {
+    let demands = payload
+        .initial_demands
+        .unwrap_or_else(|| (*active_default_demands(&state)).clone());
+    let network = active_network(&state);
+    let network_for_solve = network.clone();
+    let events = payload.events;
+    let config = solver::TransientConfig {
+        duration_s: payload.duration_s,
+        dt_s: payload.dt_s,
+        gas_composition: payload
+            .gas_composition
+            .unwrap_or_else(|| active_gas_composition(&state)),
+        n_cells_per_pipe: payload.n_cells_per_pipe,
+    };
+    let mode = solver::TransientMode::from(payload.mode);
+
+    let permit = state
+        .simulation_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: format!("simulation capacity semaphore closed: {err}"),
+                }),
+            )
+        })?;
+    let pool = state.rayon_pool.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        pool.install(|| {
+            solver::simulate_transient_with_mode(
+                &network_for_solve,
+                &demands,
+                &events,
+                &config,
+                mode,
+            )
+        })
+    })
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: format!("transient task join error: {err}"),
+            }),
+        )
+    })?
+    .map_err(|err| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: err.to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(TransientResponse {
+        steps: result.steps,
+        total_iterations: result.total_iterations,
+        limitation: result.limitation,
+    }))
+}
+
+async fn run_contingency(
+    State(state): State<SharedState>,
+    Json(payload): Json<ContingencyRequest>,
+) -> ApiResult<solver::ContingencyReport> {
+    let report = compute_contingency_report(&state, payload).await?;
+    Ok(Json(report))
+}
+
+fn resolve_contingency_cases(
+    network: &GasNetwork,
+    scope: ContingencyScope,
+    custom_cases: Option<Vec<solver::ContingencyCase>>,
+) -> Result<Vec<solver::ContingencyCase>, (StatusCode, Json<ApiError>)> {
+    let cases = match scope {
+        ContingencyScope::All => solver::generate_n_minus_1_cases(network),
+        ContingencyScope::SourcesOnly => solver::generate_n_minus_1_cases(network)
+            .into_iter()
+            .filter(|case| case.element_type == solver::ContingencyElementType::Source)
+            .collect(),
+        ContingencyScope::Custom => {
+            let Some(custom) = custom_cases else {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError {
+                        error: "custom_cases is required when scope=custom".to_string(),
+                    }),
+                ));
+            };
+            custom
+        }
+    };
+    Ok(cases)
+}
+
+async fn compute_contingency_report(
+    state: &SharedState,
+    payload: ContingencyRequest,
+) -> Result<solver::ContingencyReport, (StatusCode, Json<ApiError>)> {
+    let demands = payload
+        .demands
+        .unwrap_or_else(|| (*active_default_demands(state)).clone());
+    let network = active_network(state);
+    let network_for_solve = network.clone();
+    let cases = resolve_contingency_cases(&network, payload.scope, payload.custom_cases)?;
+
+    let permit = state
+        .simulation_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: format!("simulation capacity semaphore closed: {err}"),
+                }),
+            )
+        })?;
+    let pool = state.rayon_pool.clone();
+    let gas_composition = active_gas_composition(state);
+
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        pool.install(|| {
+            solver::run_contingency_analysis(
+                &network_for_solve,
+                &demands,
+                &cases,
+                solver::SteadyStateConfig {
+                    gas_composition,
+                    max_iter: 1000,
+                    tolerance: 5e-4,
+                    ..solver::SteadyStateConfig::default()
+                },
+            )
+        })
+    })
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: format!("contingency task join error: {err}"),
+            }),
+        )
+    })
 }
 
 async fn run_simulation_with_demands(
@@ -494,6 +1147,8 @@ async fn run_simulation_with_demands(
             )
         })?;
     let pool = state.rayon_pool.clone();
+    let gas_composition = active_gas_composition(state);
+    let started = std::time::Instant::now();
 
     let mut export_stored = false;
     let response: SimulationResponse = match capacity_bounds {
@@ -508,7 +1163,10 @@ async fn run_simulation_with_demands(
                         &demands_clone,
                         &bounds,
                         None,
-                        solver::capacity::ConstrainedSolverConfig::default(),
+                        solver::capacity::ConstrainedSolverConfig {
+                            inner_gas_composition: gas_composition,
+                            ..Default::default()
+                        },
                         |_| solver::SolverControl::Continue,
                     )
                 })
@@ -546,7 +1204,7 @@ async fn run_simulation_with_demands(
                     &network,
                     demands_for_export.clone(),
                     constrained_result,
-                    0,
+                    started.elapsed().as_millis() as u64,
                 ),
             );
             export_stored = true;
@@ -558,7 +1216,13 @@ async fn run_simulation_with_demands(
             let result = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 pool.install(|| {
-                    solver::solve_steady_state(&network_for_solve, &demands_for_check, 1000, 5e-4)
+                    solver::solve_steady_state_with_composition(
+                        &network_for_solve,
+                        &demands_for_check,
+                        gas_composition,
+                        1000,
+                        5e-4,
+                    )
                 })
             })
             .await
@@ -578,9 +1242,8 @@ async fn run_simulation_with_demands(
                     }),
                 )
             })?;
-            let violations = solver::capacity::check_capacity_violations(
-                &network, &result, &demands, &bounds,
-            );
+            let violations =
+                solver::capacity::check_capacity_violations(&network, &result, &demands, &bounds);
             let mut resp: SimulationResponse = result.into();
             resp.capacity_violations = violations;
             resp
@@ -589,7 +1252,13 @@ async fn run_simulation_with_demands(
             let result = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 pool.install(|| {
-                    solver::solve_steady_state(&network_for_solve, &demands, 1000, 5e-4)
+                    solver::solve_steady_state_with_composition(
+                        &network_for_solve,
+                        &demands,
+                        gas_composition,
+                        1000,
+                        5e-4,
+                    )
                 })
             })
             .await
@@ -614,12 +1283,12 @@ async fn run_simulation_with_demands(
     };
 
     if !export_stored {
-        let export_result = solver::SolverResult {
-            pressures: response.pressures.clone(),
-            flows: response.flows.clone(),
-            iterations: response.iterations,
-            residual: response.residual,
-        };
+        let export_result = solver::SolverResult::from_core(
+            response.pressures.clone(),
+            response.flows.clone(),
+            response.iterations,
+            response.residual,
+        );
         let export_id = format!(
             "rest-{}",
             SystemTime::now()
@@ -702,7 +1371,7 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    use crate::graph::{ConnectionKind, Node, Pipe};
+    use crate::graph::{ConnectionKind, EquipmentSpec, Node, Pipe};
 
     fn test_router() -> Router {
         let mut net = GasNetwork::new();
@@ -744,6 +1413,7 @@ mod tests {
             compressor_ratio_max: None,
             flow_min_m3s: None,
             flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
         });
 
         let mut defaults = HashMap::new();
@@ -826,6 +1496,116 @@ mod tests {
         assert!(
             err.contains("unknown demand node id"),
             "unexpected error message: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_api_timeseries_returns_24_steps() {
+        let app = test_router();
+        let weather: Vec<_> = (0u8..24)
+            .map(|hour| serde_json::json!({ "hour": hour, "t_ext_c": -3.0 }))
+            .collect();
+        let payload = serde_json::json!({
+            "profiles": {
+                "sink": {
+                    "q0_m3h": 45.0,
+                    "alpha_m3h_per_c": 7.5,
+                    "t_threshold_c": 17.0,
+                    "category": "residential"
+                }
+            },
+            "weather": weather,
+            "warm_start": true
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/simulate/timeseries")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("request");
+
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json: Value = serde_json::from_slice(&body).expect("json body");
+        let steps = json.get("steps").and_then(Value::as_array).expect("steps");
+        assert_eq!(steps.len(), 24);
+        assert!(
+            json.get("failed_hours")
+                .and_then(Value::as_array)
+                .is_some_and(|a| a.is_empty())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_api_transient_returns_steps_with_linepack() {
+        let app = test_router();
+        let payload = serde_json::json!({
+            "duration_s": 1800.0,
+            "dt_s": 600.0,
+            "initial_demands": {
+                "sink": -6.0
+            },
+            "events": [
+                {
+                    "type": "demand_change",
+                    "time_s": 600.0,
+                    "node_id": "sink",
+                    "demand_m3s": -8.0
+                }
+            ]
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/simulate/transient")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("request");
+
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json: Value = serde_json::from_slice(&body).expect("json body");
+        let steps = json.get("steps").and_then(Value::as_array).expect("steps");
+        assert_eq!(steps.len(), 4);
+        assert!(steps.iter().all(|step| {
+            step.get("linepack_kg")
+                .and_then(Value::as_f64)
+                .is_some_and(|v| v > 0.0)
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_api_contingency_scope_all_returns_report() {
+        let app = test_router();
+        let payload = serde_json::json!({
+            "scope": "all"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/contingency")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("request");
+
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json: Value = serde_json::from_slice(&body).expect("json body");
+        assert!(json.get("results").is_some(), "results field missing");
+        assert!(json.get("red_cases").is_some(), "red_cases field missing");
+        assert!(
+            json.get("green_cases").is_some(),
+            "green_cases field missing"
         );
     }
 }

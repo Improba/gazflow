@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::Serialize;
 
 use crate::graph::GasNetwork;
 
-use super::{SolverControl, SolverProgress, SolverResult, solve_steady_state_with_progress};
+use super::{
+    GasComposition, SolverControl, SolverProgress, SolverResult, SteadyStateConfig,
+    solve_steady_state_with_progress,
+};
 
 /// Bounds on node flow capacity: (min_m3s, max_m3s).
 #[derive(Debug, Clone)]
@@ -19,10 +22,10 @@ impl CapacityBounds {
     pub fn from_network(network: &GasNetwork) -> Self {
         let mut node_bounds = HashMap::new();
         for node in network.nodes() {
-            if let (Some(min), Some(max)) = (node.flow_min_m3s, node.flow_max_m3s) {
-                if (max - min).abs() > 1e-12 || min.abs() > 1e-12 {
-                    node_bounds.insert(node.id.clone(), (min, max));
-                }
+            if let (Some(min), Some(max)) = (node.flow_min_m3s, node.flow_max_m3s)
+                && ((max - min).abs() > 1e-12 || min.abs() > 1e-12)
+            {
+                node_bounds.insert(node.id.clone(), (min, max));
             }
         }
         let mut pipe_bounds = HashMap::new();
@@ -164,6 +167,7 @@ pub struct ConstrainedSolverConfig {
     pub inner_max_iter: usize,
     pub inner_tolerance: f64,
     pub inner_snapshot_every: usize,
+    pub inner_gas_composition: GasComposition,
     pub relaxation_factor: f64,
 }
 
@@ -175,6 +179,7 @@ impl Default for ConstrainedSolverConfig {
             inner_max_iter: 1000,
             inner_tolerance: 5e-4,
             inner_snapshot_every: 5,
+            inner_gas_composition: GasComposition::default(),
             relaxation_factor: 0.9,
         }
     }
@@ -332,10 +337,10 @@ fn find_active_bounds(demands: &HashMap<String, f64>, bounds: &CapacityBounds) -
     let eps = 1e-4;
     let mut active = Vec::new();
     for (node_id, &(min, max)) in &bounds.node_bounds {
-        if let Some(&d) = demands.get(node_id) {
-            if (d - min).abs() < eps || (d - max).abs() < eps {
-                active.push(node_id.clone());
-            }
+        if let Some(&d) = demands.get(node_id)
+            && ((d - min).abs() < eps || (d - max).abs() < eps)
+        {
+            active.push(node_id.clone());
         }
     }
     active
@@ -369,6 +374,9 @@ pub fn solve_steady_state_constrained<F>(
 where
     F: FnMut(ConstrainedProgress) -> SolverControl,
 {
+    if config.max_outer_iter == 0 {
+        bail!("max_outer_iter must be >= 1");
+    }
     let free_ids = free_bounded_node_ids(network, bounds);
     let slack_ids = slack_bounded_node_ids(network, bounds);
 
@@ -383,9 +391,12 @@ where
             network,
             &demands,
             warm_pressures.as_ref(),
-            config.inner_max_iter,
-            config.inner_tolerance,
-            config.inner_snapshot_every,
+            SteadyStateConfig {
+                gas_composition: config.inner_gas_composition,
+                max_iter: config.inner_max_iter,
+                tolerance: config.inner_tolerance,
+                snapshot_every: config.inner_snapshot_every,
+            },
             |progress| {
                 let cp = ConstrainedProgress {
                     outer_iter: outer_iter + 1,
@@ -483,8 +494,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{ConnectionKind, GasNetwork, Node, Pipe};
+    use crate::graph::{ConnectionKind, EquipmentSpec, GasNetwork, Node, Pipe};
     use crate::solver::solve_steady_state;
+    use serial_test::serial;
 
     fn make_two_node_network() -> GasNetwork {
         let mut net = GasNetwork::new();
@@ -526,6 +538,7 @@ mod tests {
             compressor_ratio_max: None,
             flow_min_m3s: None,
             flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
         });
         net
     }
@@ -596,6 +609,7 @@ mod tests {
             compressor_ratio_max: None,
             flow_min_m3s: None,
             flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
         });
         net.add_pipe(Pipe {
             id: "P_JA".into(),
@@ -609,6 +623,7 @@ mod tests {
             compressor_ratio_max: None,
             flow_min_m3s: None,
             flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
         });
         net.add_pipe(Pipe {
             id: "P_JB".into(),
@@ -622,6 +637,7 @@ mod tests {
             compressor_ratio_max: None,
             flow_min_m3s: None,
             flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
         });
         net
     }
@@ -729,8 +745,9 @@ mod tests {
     fn test_constrained_reduces_demand_on_slack_violation() {
         let net = make_y_network();
         let bounds = CapacityBounds::from_network(&net);
-        let demands: HashMap<String, f64> =
-            [("A".into(), -20.0), ("B".into(), -20.0)].into_iter().collect();
+        let demands: HashMap<String, f64> = [("A".into(), -20.0), ("B".into(), -20.0)]
+            .into_iter()
+            .collect();
         let result = solve_steady_state_constrained(
             &net,
             &demands,
@@ -757,12 +774,9 @@ mod tests {
     fn test_constrained_vs_unconstrained_wide_bounds() {
         let net = make_two_node_network();
         let bounds = CapacityBounds {
-            node_bounds: [
-                ("S".into(), (0.0, 1000.0)),
-                ("D".into(), (-1000.0, 0.0)),
-            ]
-            .into_iter()
-            .collect(),
+            node_bounds: [("S".into(), (0.0, 1000.0)), ("D".into(), (-1000.0, 0.0))]
+                .into_iter()
+                .collect(),
             pipe_bounds: HashMap::new(),
         };
         let demands: HashMap<String, f64> = [("D".into(), -10.0)].into_iter().collect();
@@ -798,8 +812,9 @@ mod tests {
             .collect(),
             pipe_bounds: HashMap::new(),
         };
-        let demands: HashMap<String, f64> =
-            [("A".into(), -20.0), ("B".into(), -20.0)].into_iter().collect();
+        let demands: HashMap<String, f64> = [("A".into(), -20.0), ("B".into(), -20.0)]
+            .into_iter()
+            .collect();
         let result = solve_steady_state_constrained(
             &net,
             &demands,
@@ -822,8 +837,9 @@ mod tests {
     fn test_constrained_mass_conservation() {
         let net = make_y_network();
         let bounds = CapacityBounds::from_network(&net);
-        let demands: HashMap<String, f64> =
-            [("A".into(), -20.0), ("B".into(), -20.0)].into_iter().collect();
+        let demands: HashMap<String, f64> = [("A".into(), -20.0), ("B".into(), -20.0)]
+            .into_iter()
+            .collect();
         let result = solve_steady_state_constrained(
             &net,
             &demands,
@@ -836,7 +852,11 @@ mod tests {
 
         let mut node_balance: HashMap<String, f64> = HashMap::new();
         for node in net.nodes() {
-            let d = result.adjusted_demands.get(&node.id).copied().unwrap_or(0.0);
+            let d = result
+                .adjusted_demands
+                .get(&node.id)
+                .copied()
+                .unwrap_or(0.0);
             *node_balance.entry(node.id.clone()).or_default() += d;
         }
         for pipe in net.pipes() {
@@ -845,7 +865,10 @@ mod tests {
             *node_balance.entry(pipe.to.clone()).or_default() += q;
         }
         for (id, bal) in &node_balance {
-            if net.nodes().any(|n| n.id == *id && n.pressure_fixed_bar.is_some()) {
+            if net
+                .nodes()
+                .any(|n| n.id == *id && n.pressure_fixed_bar.is_some())
+            {
                 continue;
             }
             assert!(
@@ -859,22 +882,44 @@ mod tests {
     fn test_constrained_clamp_narrow_bounds() {
         let mut net = GasNetwork::new();
         net.add_node(Node {
-            id: "S".into(), x: 0.0, y: 0.0, lon: None, lat: None, height_m: 0.0,
-            pressure_lower_bar: None, pressure_upper_bar: None,
+            id: "S".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: None,
+            lat: None,
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
             pressure_fixed_bar: Some(70.0),
-            flow_min_m3s: None, flow_max_m3s: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
         });
         net.add_node(Node {
-            id: "D".into(), x: 1.0, y: 0.0, lon: None, lat: None, height_m: 0.0,
-            pressure_lower_bar: None, pressure_upper_bar: None,
+            id: "D".into(),
+            x: 1.0,
+            y: 0.0,
+            lon: None,
+            lat: None,
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
             pressure_fixed_bar: None,
-            flow_min_m3s: Some(-10.0), flow_max_m3s: Some(-10.0),
+            flow_min_m3s: Some(-10.0),
+            flow_max_m3s: Some(-10.0),
         });
         net.add_pipe(Pipe {
-            id: "P1".into(), from: "S".into(), to: "D".into(),
-            kind: ConnectionKind::Pipe, is_open: true,
-            length_km: 50.0, diameter_mm: 500.0, roughness_mm: 0.012,
-            compressor_ratio_max: None, flow_min_m3s: None, flow_max_m3s: None,
+            id: "P1".into(),
+            from: "S".into(),
+            to: "D".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 50.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
         });
 
         let bounds = CapacityBounds::from_network(&net);
@@ -897,6 +942,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_constrained_gaslib11_wide_bounds() {
         let path = std::path::Path::new("dat/GasLib-11.net");
         if !path.exists() {
@@ -904,10 +950,8 @@ mod tests {
             return;
         }
         let net = crate::gaslib::load_network(path).unwrap();
-        let scn = crate::gaslib::load_scenario_demands(std::path::Path::new(
-            "dat/GasLib-11.scn",
-        ))
-        .unwrap();
+        let scn = crate::gaslib::load_scenario_demands(std::path::Path::new("dat/GasLib-11.scn"))
+            .unwrap();
         let bounds = CapacityBounds::from_network(&net);
 
         let unconstrained = solve_steady_state(&net, &scn.demands, 1000, 5e-4).unwrap();
@@ -916,7 +960,11 @@ mod tests {
             &scn.demands,
             &bounds,
             None,
-            ConstrainedSolverConfig::default(),
+            ConstrainedSolverConfig {
+                // GasLib-11 = CH₄ pur (référence académique), aligné sur solve_steady_state().
+                inner_gas_composition: GasComposition::pure_ch4(),
+                ..ConstrainedSolverConfig::default()
+            },
             |_| SolverControl::Continue,
         )
         .unwrap();
@@ -931,5 +979,30 @@ mod tests {
                 "pressure mismatch at {id}: {p_unc} vs {p_con}"
             );
         }
+    }
+
+    #[test]
+    fn test_constrained_rejects_zero_outer_iterations() {
+        let net = make_y_network();
+        let bounds = CapacityBounds::from_network(&net);
+        let demands: HashMap<String, f64> = [("A".into(), -5.0), ("B".into(), -5.0)]
+            .into_iter()
+            .collect();
+        let err = solve_steady_state_constrained(
+            &net,
+            &demands,
+            &bounds,
+            None,
+            ConstrainedSolverConfig {
+                max_outer_iter: 0,
+                ..Default::default()
+            },
+            |_| SolverControl::Continue,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("max_outer_iter"),
+            "expected validation error, got {err}"
+        );
     }
 }

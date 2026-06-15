@@ -30,7 +30,8 @@ fn build_chain_network(pipe_count: usize) -> GasNetwork {
             is_open: true,
             length_km: 5.0,
             diameter_mm: 500.0,
-            roughness_mm: 0.05,
+            flow_max_m3s: None,
+            equipment: gazflow_back::graph::EquipmentSpec::default(),
         });
     }
     net

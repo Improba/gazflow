@@ -7,6 +7,6 @@ mod parser;
 mod scenario;
 mod solution;
 
-pub use parser::load_network;
+pub use parser::{load_network, load_network_raw};
 pub use scenario::{ScenarioDemands, load_scenario_demands};
 pub use solution::{ReferenceSolution, load_reference_solution};

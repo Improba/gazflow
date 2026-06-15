@@ -20,7 +20,7 @@ use tokio::{sync::mpsc, task};
 
 use crate::solver::{self, SolverControl, SolverProgress, SolverResult};
 
-use super::{CapacityBoundDto, SimulationMode};
+use super::{CapacityBoundDto, ContingencyScope, SimulationMode};
 
 const CANCEL_NONE: u8 = 0;
 const CANCEL_CLIENT_REQUEST: u8 = 1;
@@ -32,9 +32,24 @@ enum ClientMessage {
     StartSimulation {
         run_id: Option<String>,
         demands: Option<HashMap<String, f64>>,
-        options: Option<StartOptions>,
+        options: Option<Box<StartOptions>>,
         capacity_bounds: Option<HashMap<String, CapacityBoundDto>>,
         mode: Option<SimulationMode>,
+        equipment_overrides: Option<HashMap<String, crate::graph::EquipmentSpec>>,
+    },
+    StartTimeseriesSimulation {
+        run_id: Option<String>,
+        profiles: HashMap<String, solver::DemandProfile>,
+        weather: Vec<solver::WeatherStep>,
+        options: Option<Box<TimeseriesOptions>>,
+    },
+    StartContingencySimulation {
+        run_id: Option<String>,
+        scope: ContingencyScope,
+        #[serde(default)]
+        demands: Option<HashMap<String, f64>>,
+        #[serde(default)]
+        custom_cases: Option<Vec<solver::ContingencyCase>>,
     },
     CancelSimulation {
         run_id: Option<String>,
@@ -52,9 +67,23 @@ struct StartOptions {
     #[serde(default = "default_snapshot_every")]
     snapshot_every: usize,
     #[serde(default = "default_timeout_ms")]
+    /// 0 = pas de limite de durée.
     timeout_ms: u64,
     #[serde(default)]
     initial_pressures: Option<HashMap<String, f64>>,
+    #[serde(default)]
+    gas_composition: Option<solver::GasComposition>,
+}
+
+impl StartOptions {
+    fn steady_state_config(&self) -> solver::SteadyStateConfig {
+        solver::SteadyStateConfig {
+            gas_composition: self.gas_composition.unwrap_or_default(),
+            max_iter: self.max_iter,
+            tolerance: self.tolerance,
+            snapshot_every: self.snapshot_every,
+        }
+    }
 }
 
 impl Default for StartOptions {
@@ -66,6 +95,42 @@ impl Default for StartOptions {
             snapshot_every: default_snapshot_every(),
             timeout_ms: default_timeout_ms(),
             initial_pressures: None,
+            gas_composition: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TimeseriesOptions {
+    #[serde(default = "default_ts_warm_start")]
+    warm_start: bool,
+    #[serde(default = "default_ts_max_iter")]
+    max_iter: usize,
+    #[serde(default = "default_ts_tolerance")]
+    tolerance: f64,
+    #[serde(default)]
+    gas_composition: Option<solver::GasComposition>,
+}
+
+impl TimeseriesOptions {
+    fn to_config(&self) -> solver::TimeseriesConfig {
+        solver::TimeseriesConfig {
+            gas_composition: self.gas_composition.unwrap_or_default(),
+            max_iter: self.max_iter,
+            tolerance: self.tolerance,
+            warm_start: self.warm_start,
+            warm_start_max_demand_rel_change: 3.0,
+        }
+    }
+}
+
+impl Default for TimeseriesOptions {
+    fn default() -> Self {
+        Self {
+            warm_start: default_ts_warm_start(),
+            max_iter: default_ts_max_iter(),
+            tolerance: default_ts_tolerance(),
+            gas_composition: None,
         }
     }
 }
@@ -120,6 +185,38 @@ enum ServerMessage {
         message: String,
         fatal: bool,
     },
+    TimeseriesStarted {
+        run_id: String,
+        seq: u64,
+        total_hours: usize,
+    },
+    TimeseriesStep {
+        run_id: String,
+        seq: u64,
+        step: solver::TimeseriesStepResult,
+    },
+    TimeseriesFinished {
+        run_id: String,
+        seq: u64,
+        result: solver::TimeseriesResult,
+        total_ms: u64,
+    },
+    ContingencyStarted {
+        run_id: String,
+        seq: u64,
+        total_cases: usize,
+    },
+    ContingencyCase {
+        run_id: String,
+        seq: u64,
+        index: usize,
+        result: solver::ContingencyResult,
+    },
+    ContingencyFinished {
+        run_id: String,
+        seq: u64,
+        report: solver::ContingencyReport,
+    },
 }
 
 pub(super) async fn ws_simulation_handler(
@@ -151,7 +248,7 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                 match message {
                     Message::Text(text) => {
                         match serde_json::from_str::<ClientMessage>(&text) {
-                            Ok(ClientMessage::StartSimulation { run_id, demands, options, capacity_bounds, mode }) => {
+                            Ok(ClientMessage::StartSimulation { run_id, demands, options, capacity_bounds, mode, equipment_overrides }) => {
                                 if active_run_id.is_some() {
                                     let run_id_for_error = run_id.unwrap_or_else(|| "active-run".to_string());
                                     let _ = tx.send(ServerMessage::Error {
@@ -164,11 +261,12 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                 }
 
                                 let run_id = run_id.unwrap_or_else(default_run_id);
-                                let (network, network_id, default_demands) = {
+                                let (mut network, network_id, default_demands) = {
                                     let network = state
                                         .network
                                         .read()
                                         .expect("network lock should not be poisoned")
+                                        .as_ref()
                                         .clone();
                                     let network_id = state
                                         .active_dataset
@@ -182,8 +280,16 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                         .clone();
                                     (network, network_id, default_demands)
                                 };
+                                if let Some(ref overrides) = equipment_overrides {
+                                    network.apply_equipment_overrides(overrides);
+                                }
+                                let network = Arc::new(network);
                                 let demands = demands.unwrap_or_else(|| (*default_demands).clone());
-                                let options = options.unwrap_or_default();
+                                let mut options = options.map(|o| *o).unwrap_or_default();
+                                if options.gas_composition.is_none() {
+                                    options.gas_composition =
+                                        Some(super::active_gas_composition(&state));
+                                }
                                 let permit = match state.simulation_slots.clone().try_acquire_owned() {
                                     Ok(permit) => permit,
                                     Err(_) => {
@@ -212,33 +318,215 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                 let state_for_solver = state.clone();
                                 task::spawn_blocking(move || {
                                     let _permit = permit;
-                                    run_solver_stream(
-                                        state_for_solver,
+                                    run_solver_stream(SolverStreamContext {
+                                        state: state_for_solver,
                                         network,
                                         network_id,
                                         demands,
                                         options,
                                         run_id,
-                                        run_cancel,
-                                        run_cancel_reason,
-                                        tx_for_solver,
+                                        cancel_flag: run_cancel,
+                                        cancel_reason: run_cancel_reason,
+                                        tx: tx_for_solver,
                                         capacity_bounds,
                                         mode,
-                                    );
+                                    });
+                                });
+                            }
+                            Ok(ClientMessage::StartTimeseriesSimulation {
+                                run_id,
+                                profiles,
+                                weather,
+                                options,
+                            }) => {
+                                if active_run_id.is_some() {
+                                    let run_id_for_error =
+                                        run_id.unwrap_or_else(|| "active-run".to_string());
+                                    let _ = tx
+                                        .send(ServerMessage::Error {
+                                            run_id: run_id_for_error,
+                                            seq: 0,
+                                            message: "a simulation is already running".to_string(),
+                                            fatal: false,
+                                        })
+                                        .await;
+                                    continue;
+                                }
+
+                                let run_id = run_id.unwrap_or_else(default_run_id);
+                                let network = {
+                                    state
+                                        .network
+                                        .read()
+                                        .expect("network lock should not be poisoned")
+                                        .as_ref()
+                                        .clone()
+                                };
+                                let network = Arc::new(network);
+                                let mut options = options.map(|o| *o).unwrap_or_default();
+                                if options.gas_composition.is_none() {
+                                    options.gas_composition =
+                                        Some(super::active_gas_composition(&state));
+                                }
+                                let total_hours = weather.len();
+                                let permit = match state.simulation_slots.clone().try_acquire_owned() {
+                                    Ok(permit) => permit,
+                                    Err(_) => {
+                                        let _ = tx
+                                            .send(ServerMessage::Error {
+                                                run_id: run_id.clone(),
+                                                seq: 0,
+                                                message:
+                                                    "simulation capacity reached, retry later"
+                                                        .to_string(),
+                                                fatal: false,
+                                            })
+                                            .await;
+                                        continue;
+                                    }
+                                };
+                                let run_cancel = Arc::new(AtomicBool::new(false));
+                                let run_cancel_reason = Arc::new(AtomicU8::new(CANCEL_NONE));
+
+                                active_run_id = Some(run_id.clone());
+                                cancel_flag = Some(run_cancel.clone());
+                                cancel_reason = Some(run_cancel_reason.clone());
+
+                                let _ = tx
+                                    .send(ServerMessage::TimeseriesStarted {
+                                        run_id: run_id.clone(),
+                                        seq: 1,
+                                        total_hours,
+                                    })
+                                    .await;
+
+                                let tx_for_solver = tx.clone();
+                                let state_for_solver = state.clone();
+                                task::spawn_blocking(move || {
+                                    let _permit = permit;
+                                    run_timeseries_stream(TimeseriesStreamContext {
+                                        state: state_for_solver,
+                                        network,
+                                        profiles,
+                                        weather,
+                                        options,
+                                        run_id,
+                                        cancel_flag: run_cancel,
+                                        cancel_reason: run_cancel_reason,
+                                        tx: tx_for_solver,
+                                    });
+                                });
+                            }
+                            Ok(ClientMessage::StartContingencySimulation {
+                                run_id,
+                                scope,
+                                demands,
+                                custom_cases,
+                            }) => {
+                                if active_run_id.is_some() {
+                                    let run_id_for_error =
+                                        run_id.unwrap_or_else(|| "active-run".to_string());
+                                    let _ = tx
+                                        .send(ServerMessage::Error {
+                                            run_id: run_id_for_error,
+                                            seq: 0,
+                                            message: "a simulation is already running".to_string(),
+                                            fatal: false,
+                                        })
+                                        .await;
+                                    continue;
+                                }
+
+                                let run_id = run_id.unwrap_or_else(default_run_id);
+                                let network = {
+                                    state
+                                        .network
+                                        .read()
+                                        .expect("network lock should not be poisoned")
+                                        .as_ref()
+                                        .clone()
+                                };
+                                let default_demands = state
+                                    .default_demands
+                                    .read()
+                                    .expect("default demands lock should not be poisoned")
+                                    .clone();
+                                let demands = demands.unwrap_or_else(|| (*default_demands).clone());
+                                let cases =
+                                    match super::resolve_contingency_cases(&network, scope, custom_cases)
+                                    {
+                                        Ok(cases) => cases,
+                                        Err((_, api_error)) => {
+                                            let _ = tx
+                                                .send(ServerMessage::Error {
+                                                    run_id: run_id.clone(),
+                                                    seq: 0,
+                                                    message: api_error.0.error,
+                                                    fatal: false,
+                                                })
+                                                .await;
+                                            continue;
+                                        }
+                                    };
+
+                                let total_cases = cases.len();
+                                let permit = match state.simulation_slots.clone().try_acquire_owned() {
+                                    Ok(permit) => permit,
+                                    Err(_) => {
+                                        let _ = tx
+                                            .send(ServerMessage::Error {
+                                                run_id: run_id.clone(),
+                                                seq: 0,
+                                                message:
+                                                    "simulation capacity reached, retry later"
+                                                        .to_string(),
+                                                fatal: false,
+                                            })
+                                            .await;
+                                        continue;
+                                    }
+                                };
+                                let run_cancel = Arc::new(AtomicBool::new(false));
+                                let run_cancel_reason = Arc::new(AtomicU8::new(CANCEL_NONE));
+
+                                active_run_id = Some(run_id.clone());
+                                cancel_flag = Some(run_cancel.clone());
+                                cancel_reason = Some(run_cancel_reason.clone());
+
+                                let _ = tx
+                                    .send(ServerMessage::ContingencyStarted {
+                                        run_id: run_id.clone(),
+                                        seq: 1,
+                                        total_cases,
+                                    })
+                                    .await;
+
+                                let tx_for_solver = tx.clone();
+                                let state_for_solver = state.clone();
+                                task::spawn_blocking(move || {
+                                    let _permit = permit;
+                                    run_contingency_stream(ContingencyStreamContext {
+                                        state: state_for_solver,
+                                        network: Arc::new(network),
+                                        demands,
+                                        cases,
+                                        run_id,
+                                        cancel_flag: run_cancel,
+                                        cancel_reason: run_cancel_reason,
+                                        tx: tx_for_solver,
+                                    });
                                 });
                             }
                             Ok(ClientMessage::CancelSimulation { run_id }) => {
                                 if let (Some(active_id), Some(flag), Some(reason)) =
                                     (&active_run_id, &cancel_flag, &cancel_reason)
-                                {
-                                    if run_id
+                                    && run_id
                                         .as_deref()
                                         .map(|rid| rid == active_id)
                                         .unwrap_or(true)
-                                    {
-                                        reason.store(CANCEL_CLIENT_REQUEST, Ordering::Relaxed);
-                                        flag.store(true, Ordering::Relaxed);
-                                    }
+                                {
+                                    reason.store(CANCEL_CLIENT_REQUEST, Ordering::Relaxed);
+                                    flag.store(true, Ordering::Relaxed);
                                 }
                             }
                             Err(err) => {
@@ -264,6 +552,8 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                     ServerMessage::Converged { .. }
                         | ServerMessage::Cancelled { .. }
                         | ServerMessage::Error { fatal: true, .. }
+                        | ServerMessage::TimeseriesFinished { .. }
+                        | ServerMessage::ContingencyFinished { .. }
                 );
 
                 let Ok(text) = serde_json::to_string(&outbound) else {
@@ -283,7 +573,7 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
     }
 }
 
-fn run_solver_stream(
+struct SolverStreamContext {
     state: super::SharedState,
     network: Arc<crate::graph::GasNetwork>,
     network_id: String,
@@ -295,15 +585,29 @@ fn run_solver_stream(
     tx: mpsc::Sender<ServerMessage>,
     capacity_bounds: Option<HashMap<String, CapacityBoundDto>>,
     mode: Option<SimulationMode>,
-) {
+}
+
+fn run_solver_stream(ctx: SolverStreamContext) {
+    let SolverStreamContext {
+        state,
+        network,
+        network_id,
+        demands,
+        options,
+        run_id,
+        cancel_flag,
+        cancel_reason,
+        tx,
+        capacity_bounds,
+        mode,
+    } = ctx;
+    let steady_config = options.steady_state_config();
     let started = Instant::now();
     let timeout = Duration::from_millis(options.timeout_ms);
     let seq = std::sync::atomic::AtomicU64::new(1);
 
     let progress_cb = |progress: SolverProgress| -> SolverControl {
-        if options.timeout_ms == 0
-            || (options.timeout_ms > 0 && started.elapsed() >= timeout)
-        {
+        if options.timeout_ms > 0 && started.elapsed() >= timeout {
             cancel_reason.store(CANCEL_TIMEOUT, Ordering::Relaxed);
             cancel_flag.store(true, Ordering::Relaxed);
         }
@@ -311,7 +615,7 @@ fn run_solver_stream(
             return SolverControl::Cancel;
         }
 
-        if progress.iter == 1 || progress.iter % options.iteration_every.max(1) == 0 {
+        if progress.iter == 1 || progress.iter.is_multiple_of(options.iteration_every.max(1)) {
             let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
             let _ = tx.blocking_send(ServerMessage::Iteration {
                 run_id: run_id.clone(),
@@ -359,6 +663,7 @@ fn run_solver_stream(
                         inner_max_iter: options.max_iter,
                         inner_tolerance: options.tolerance,
                         inner_snapshot_every: options.snapshot_every,
+                        inner_gas_composition: steady_config.gas_composition,
                         ..Default::default()
                     },
                     |cp| progress_cb(cp.inner_progress),
@@ -373,9 +678,7 @@ fn run_solver_stream(
                     &network,
                     &demands,
                     options.initial_pressures.as_ref(),
-                    options.max_iter,
-                    options.tolerance,
-                    options.snapshot_every,
+                    steady_config,
                     &progress_cb,
                 )
             });
@@ -387,9 +690,7 @@ fn run_solver_stream(
                     &network,
                     &demands,
                     options.initial_pressures.as_ref(),
-                    options.max_iter,
-                    options.tolerance,
-                    options.snapshot_every,
+                    steady_config,
                     &progress_cb,
                 )
             });
@@ -461,12 +762,12 @@ fn run_solver_stream(
         }
         SolveOutcome::Constrained(Ok(constrained)) => {
             let total_ms = started.elapsed().as_millis() as u64;
-            let ws_result = SolverResult {
-                pressures: constrained.pressures.clone(),
-                flows: constrained.flows.clone(),
-                iterations: constrained.iterations,
-                residual: constrained.residual,
-            };
+            let ws_result = SolverResult::from_core(
+                constrained.pressures.clone(),
+                constrained.flows.clone(),
+                constrained.iterations,
+                constrained.residual,
+            );
             let ws_violations = constrained.capacity_violations.clone();
             let ws_adjusted = constrained.adjusted_demands.clone();
             let ws_active = constrained.active_bounds.clone();
@@ -533,6 +834,161 @@ fn run_solver_stream(
     }
 }
 
+struct TimeseriesStreamContext {
+    state: super::SharedState,
+    network: Arc<crate::graph::GasNetwork>,
+    profiles: HashMap<String, solver::DemandProfile>,
+    weather: Vec<solver::WeatherStep>,
+    options: TimeseriesOptions,
+    run_id: String,
+    cancel_flag: Arc<AtomicBool>,
+    cancel_reason: Arc<AtomicU8>,
+    tx: mpsc::Sender<ServerMessage>,
+}
+
+fn run_timeseries_stream(ctx: TimeseriesStreamContext) {
+    let TimeseriesStreamContext {
+        state,
+        network,
+        profiles,
+        weather,
+        options,
+        run_id,
+        cancel_flag,
+        cancel_reason,
+        tx,
+    } = ctx;
+    let started = Instant::now();
+    let config = options.to_config();
+    let seq = std::sync::atomic::AtomicU64::new(1);
+
+    let progress_cb = |step: &solver::TimeseriesStepResult| -> solver::TimeseriesControl {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return solver::TimeseriesControl::Cancel;
+        }
+        let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = tx.blocking_send(ServerMessage::TimeseriesStep {
+            run_id: run_id.clone(),
+            seq: s,
+            step: step.clone(),
+        });
+        solver::TimeseriesControl::Continue
+    };
+
+    let result = state.rayon_pool.install(|| {
+        solver::simulate_timeseries_with_progress(
+            &network,
+            &profiles,
+            &weather,
+            &config,
+            Some(&progress_cb),
+        )
+    });
+
+    match result {
+        Ok(final_result) => {
+            let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
+            let _ = tx.blocking_send(ServerMessage::TimeseriesFinished {
+                run_id,
+                seq: s,
+                result: final_result,
+                total_ms: started.elapsed().as_millis() as u64,
+            });
+        }
+        Err(err) => {
+            let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
+            if cancel_flag.load(Ordering::Relaxed) {
+                let reason = match cancel_reason.load(Ordering::Relaxed) {
+                    CANCEL_CLIENT_REQUEST => "client_request",
+                    CANCEL_TIMEOUT => "timeout",
+                    _ => "cancelled",
+                };
+                let _ = tx.blocking_send(ServerMessage::Cancelled {
+                    run_id,
+                    seq: s,
+                    reason: reason.to_string(),
+                });
+            } else {
+                let _ = tx.blocking_send(ServerMessage::Error {
+                    run_id,
+                    seq: s,
+                    message: err.to_string(),
+                    fatal: true,
+                });
+            }
+        }
+    }
+}
+
+struct ContingencyStreamContext {
+    state: super::SharedState,
+    network: Arc<crate::graph::GasNetwork>,
+    demands: HashMap<String, f64>,
+    cases: Vec<solver::ContingencyCase>,
+    run_id: String,
+    cancel_flag: Arc<AtomicBool>,
+    cancel_reason: Arc<AtomicU8>,
+    tx: mpsc::Sender<ServerMessage>,
+}
+
+fn run_contingency_stream(ctx: ContingencyStreamContext) {
+    let ContingencyStreamContext {
+        state,
+        network,
+        demands,
+        cases,
+        run_id,
+        cancel_flag,
+        cancel_reason,
+        tx,
+    } = ctx;
+    let seq = std::sync::atomic::AtomicU64::new(1);
+    let config = solver::SteadyStateConfig {
+        gas_composition: super::active_gas_composition(&state),
+        max_iter: default_max_iter(),
+        tolerance: default_tolerance(),
+        ..solver::SteadyStateConfig::default()
+    };
+
+    let mut results = Vec::with_capacity(cases.len());
+    for (idx, case) in cases.iter().enumerate() {
+        if cancel_flag.load(Ordering::Relaxed) {
+            let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
+            let reason = match cancel_reason.load(Ordering::Relaxed) {
+                CANCEL_CLIENT_REQUEST => "client_request",
+                CANCEL_TIMEOUT => "timeout",
+                _ => "cancelled",
+            };
+            let _ = tx.blocking_send(ServerMessage::Cancelled {
+                run_id,
+                seq: s,
+                reason: reason.to_string(),
+            });
+            return;
+        }
+
+        let result = state
+            .rayon_pool
+            .install(|| solver::evaluate_contingency_case(&network, &demands, case, config));
+        results.push(result.clone());
+        let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = tx.blocking_send(ServerMessage::ContingencyCase {
+            run_id: run_id.clone(),
+            seq: s,
+            index: idx + 1,
+            result,
+        });
+    }
+
+    let report = solver::finalize_contingency_report(results);
+    let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
+    let _ = tx.blocking_send(ServerMessage::ContingencyFinished {
+        run_id,
+        seq: s,
+        report,
+    });
+}
+
 fn default_max_iter() -> usize {
     1000
 }
@@ -553,6 +1009,18 @@ fn default_timeout_ms() -> u64 {
     30_000
 }
 
+fn default_ts_warm_start() -> bool {
+    true
+}
+
+fn default_ts_max_iter() -> usize {
+    800
+}
+
+fn default_ts_tolerance() -> f64 {
+    1e-3
+}
+
 fn default_run_id() -> String {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -570,7 +1038,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
-    use crate::graph::{ConnectionKind, GasNetwork, Node, Pipe};
+    use crate::graph::{ConnectionKind, EquipmentSpec, GasNetwork, Node, Pipe};
 
     fn test_router_with_capacity(max_concurrent_simulations: usize) -> axum::Router {
         let mut net = GasNetwork::new();
@@ -612,6 +1080,7 @@ mod tests {
             compressor_ratio_max: None,
             flow_min_m3s: None,
             flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
         });
 
         let mut defaults = HashMap::new();
@@ -666,6 +1135,7 @@ mod tests {
             compressor_ratio_max: None,
             flow_min_m3s: None,
             flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
         });
 
         let mut defaults = HashMap::new();
@@ -731,6 +1201,7 @@ mod tests {
             compressor_ratio_max: None,
             flow_min_m3s: None,
             flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
         });
 
         let mut defaults = HashMap::new();
@@ -834,7 +1305,7 @@ mod tests {
         let start = serde_json::json!({
             "type": "start_simulation",
             "run_id": "r3",
-            "options": {"max_iter": 10_000, "tolerance": 1e-12, "iteration_every": 1000, "snapshot_every": 1, "timeout_ms": 0}
+            "options": {"max_iter": 10_000, "tolerance": 1e-12, "iteration_every": 1000, "snapshot_every": 1, "timeout_ms": 1}
         });
         ws.send(WsMessage::Text(start.to_string()))
             .await
@@ -971,5 +1442,187 @@ mod tests {
 
         assert!(conv1, "first run should converge");
         assert!(conv2, "second run should converge");
+    }
+
+    #[test]
+    fn test_parse_start_timeseries_simulation_message() {
+        let weather: Vec<_> = (0u8..3)
+            .map(|hour| serde_json::json!({ "hour": hour, "t_ext_c": -3.0 }))
+            .collect();
+        let raw = serde_json::json!({
+            "type": "start_timeseries_simulation",
+            "run_id": "ts-1",
+            "profiles": {
+                "sink": {
+                    "q0_m3h": 45.0,
+                    "alpha_m3h_per_c": 7.5,
+                    "t_threshold_c": 17.0,
+                    "category": "residential"
+                }
+            },
+            "weather": weather,
+            "options": {
+                "warm_start": true,
+                "max_iter": 400,
+                "tolerance": 1e-3
+            }
+        });
+        let msg: ClientMessage =
+            serde_json::from_value(raw).expect("parse start_timeseries_simulation");
+        match msg {
+            ClientMessage::StartTimeseriesSimulation {
+                run_id,
+                profiles,
+                weather,
+                options,
+            } => {
+                assert_eq!(run_id.as_deref(), Some("ts-1"));
+                assert_eq!(profiles.len(), 1);
+                assert_eq!(weather.len(), 3);
+                let opts = options.expect("options present").to_config();
+                assert!(opts.warm_start);
+                assert_eq!(opts.max_iter, 400);
+            }
+            _ => panic!("expected StartTimeseriesSimulation"),
+        }
+    }
+
+    #[test]
+    fn test_parse_start_contingency_simulation_message() {
+        let raw = serde_json::json!({
+            "type": "start_contingency_simulation",
+            "run_id": "ct-1",
+            "scope": "sources_only",
+            "demands": { "sink": -8.0 }
+        });
+        let msg: ClientMessage =
+            serde_json::from_value(raw).expect("parse start_contingency_simulation");
+        match msg {
+            ClientMessage::StartContingencySimulation {
+                run_id,
+                scope,
+                demands,
+                custom_cases,
+            } => {
+                assert_eq!(run_id.as_deref(), Some("ct-1"));
+                assert!(matches!(scope, super::ContingencyScope::SourcesOnly));
+                assert_eq!(
+                    demands.as_ref().and_then(|d| d.get("sink")).copied(),
+                    Some(-8.0)
+                );
+                assert!(custom_cases.is_none());
+            }
+            _ => panic!("expected StartContingencySimulation"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ws_start_timeseries_simulation() {
+        let (addr, _server) = spawn_test_server(test_router()).await;
+        let url = format!("ws://{addr}/api/ws/sim");
+        let (mut ws, _) = connect_async(url).await.expect("connect ws");
+
+        let weather: Vec<_> = (0u8..4)
+            .map(|hour| serde_json::json!({ "hour": hour, "t_ext_c": -3.0 }))
+            .collect();
+        let start = serde_json::json!({
+            "type": "start_timeseries_simulation",
+            "run_id": "ts-ws-1",
+            "profiles": {
+                "sink": {
+                    "q0_m3h": 45.0,
+                    "alpha_m3h_per_c": 7.5,
+                    "t_threshold_c": 17.0,
+                    "category": "residential"
+                }
+            },
+            "weather": weather,
+            "options": {"warm_start": true, "max_iter": 400, "tolerance": 1e-3}
+        });
+        ws.send(WsMessage::Text(start.to_string()))
+            .await
+            .expect("send start");
+
+        let mut got_started = false;
+        let mut step_count = 0;
+        let mut got_finished = false;
+        for _ in 0..100 {
+            let Some(Ok(WsMessage::Text(txt))) = ws.next().await else {
+                continue;
+            };
+            let v: serde_json::Value = serde_json::from_str(&txt).expect("json");
+            match v.get("type").and_then(|x| x.as_str()) {
+                Some("timeseries_started") => {
+                    got_started = true;
+                    assert_eq!(v.get("total_hours").and_then(|x| x.as_u64()), Some(4));
+                }
+                Some("timeseries_step") => step_count += 1,
+                Some("timeseries_finished") => {
+                    got_finished = true;
+                    let steps = v
+                        .pointer("/result/steps")
+                        .and_then(|x| x.as_array())
+                        .expect("result.steps");
+                    assert_eq!(steps.len(), 4);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(got_started, "should receive timeseries_started");
+        assert_eq!(step_count, 4, "should receive one step per hour");
+        assert!(got_finished, "should receive timeseries_finished");
+    }
+
+    #[tokio::test]
+    async fn test_ws_cancel_timeseries_simulation() {
+        let (addr, _server) = spawn_test_server(test_router()).await;
+        let url = format!("ws://{addr}/api/ws/sim");
+        let (mut ws, _) = connect_async(url).await.expect("connect ws");
+
+        let weather: Vec<_> = (0u8..24)
+            .map(|hour| serde_json::json!({ "hour": hour, "t_ext_c": -3.0 }))
+            .collect();
+        let start = serde_json::json!({
+            "type": "start_timeseries_simulation",
+            "run_id": "ts-cancel",
+            "profiles": {
+                "sink": {
+                    "q0_m3h": 45.0,
+                    "alpha_m3h_per_c": 7.5,
+                    "t_threshold_c": 17.0,
+                    "category": "residential"
+                }
+            },
+            "weather": weather,
+            "options": {"warm_start": true, "max_iter": 400, "tolerance": 1e-3}
+        });
+        ws.send(WsMessage::Text(start.to_string()))
+            .await
+            .expect("send start");
+
+        let mut got_cancelled = false;
+        for _ in 0..200 {
+            let Some(Ok(WsMessage::Text(txt))) = ws.next().await else {
+                continue;
+            };
+            let v: serde_json::Value = serde_json::from_str(&txt).expect("json");
+            if v.get("type").and_then(|x| x.as_str()) == Some("timeseries_started") {
+                ws.send(WsMessage::Text(
+                    serde_json::json!({"type":"cancel_simulation","run_id":"ts-cancel"})
+                        .to_string(),
+                ))
+                .await
+                .expect("send cancel");
+                continue;
+            }
+            if v.get("type").and_then(|x| x.as_str()) == Some("cancelled") {
+                let reason = v.get("reason").and_then(|x| x.as_str()).unwrap_or("");
+                got_cancelled = reason == "client_request";
+                break;
+            }
+        }
+        assert!(got_cancelled, "should receive cancelled(client_request)");
     }
 }

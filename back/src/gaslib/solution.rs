@@ -196,15 +196,15 @@ fn handle_xml_start(
         flows.insert(id, value);
     }
 
-    if is_pressure_element(&name) {
-        if let (Some(id), Some(value)) = (current_node_id.as_ref(), pressure_attr.or(value_attr)) {
-            pressures.insert(id.clone(), value);
-        }
+    if is_pressure_element(&name)
+        && let (Some(id), Some(value)) = (current_node_id.as_ref(), pressure_attr.or(value_attr))
+    {
+        pressures.insert(id.clone(), value);
     }
-    if is_flow_element(&name) {
-        if let (Some(id), Some(value)) = (current_pipe_id.as_ref(), flow_attr.or(value_attr)) {
-            flows.insert(id.clone(), value);
-        }
+    if is_flow_element(&name)
+        && let (Some(id), Some(value)) = (current_pipe_id.as_ref(), flow_attr.or(value_attr))
+    {
+        flows.insert(id.clone(), value);
     }
 
     Ok(())

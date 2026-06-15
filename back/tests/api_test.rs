@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 use futures_util::{SinkExt, StreamExt};
 use gazflow_back::api;
-use gazflow_back::graph::{ConnectionKind, GasNetwork, Node, Pipe};
+use gazflow_back::graph::{ConnectionKind, EquipmentSpec, GasNetwork, Node, Pipe};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
@@ -63,6 +63,7 @@ fn build_test_network(with_isolated: bool) -> GasNetwork {
         compressor_ratio_max: None,
         flow_min_m3s: None,
         flow_max_m3s: None,
+        equipment: EquipmentSpec::default(),
     });
     net
 }
@@ -91,6 +92,50 @@ async fn test_api_network_count() {
         .expect("json");
     assert_eq!(json.get("node_count").and_then(Value::as_u64), Some(2));
     assert_eq!(json.get("edge_count").and_then(Value::as_u64), Some(1));
+    let gas = json.get("gas").expect("gas field on /api/network");
+    assert!(gas.get("composition").is_some());
+    assert!(gas.get("pcs_mj_per_nm3").and_then(Value::as_f64).is_some());
+    assert!(
+        gas.get("wobbe_mj_per_nm3")
+            .and_then(Value::as_f64)
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn test_api_patch_gas_composition() {
+    let (addr, _server) = spawn_server(false).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/network/gas-composition");
+    let resp = client
+        .patch(&url)
+        .json(&serde_json::json!({
+            "gas_composition": {
+                "ch4": 1.0,
+                "c2h6": 0.0,
+                "co2": 0.0,
+                "n2": 0.0,
+                "h2": 0.0
+            }
+        }))
+        .send()
+        .await
+        .expect("patch gas");
+    assert_eq!(resp.status(), 200);
+    let gas: Value = resp.json().await.expect("gas json");
+    let pcs = gas
+        .get("pcs_mj_per_nm3")
+        .and_then(Value::as_f64)
+        .expect("pcs");
+    assert!(
+        (pcs - 39.82).abs() < 0.05,
+        "pure CH4 PCS expected ~39.82, got {pcs}"
+    );
+    let ch4 = gas
+        .pointer("/composition/ch4")
+        .and_then(Value::as_f64)
+        .expect("ch4");
+    assert!((ch4 - 1.0).abs() < 1e-9);
 }
 
 #[tokio::test]

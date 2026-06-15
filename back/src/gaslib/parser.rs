@@ -6,7 +6,9 @@ use quick_xml::de::from_str;
 use serde::Deserialize;
 
 use super::compressor::load_compressor_ratios;
-use crate::graph::{ConnectionKind, GasNetwork};
+use crate::graph::{
+    ConnectionKind, EquipmentSpec, GasNetwork, RawNetwork, RawNode, RawNodeRole, RawPipe,
+};
 
 // ---------------------------------------------------------------------------
 // Structures XML miroir du schéma GasLib (.net)
@@ -177,7 +179,7 @@ impl XmlConnection {
             Self::Resistor(_) => ConnectionKind::Resistor,
             // MVP: les controlValve GasLib sont traitées comme liaisons quasi-passantes
             // (évite de couper le réseau sur des états partiels de contrôle).
-            Self::ControlValve(_) => ConnectionKind::ShortPipe,
+            Self::ControlValve(_) => ConnectionKind::ControlValve,
             Self::CompressorStation(_) => ConnectionKind::CompressorStation,
         }
     }
@@ -190,7 +192,10 @@ fn connection_defaults(kind: ConnectionKind) -> (f64, f64, f64) {
         ConnectionKind::Valve
         | ConnectionKind::ShortPipe
         | ConnectionKind::CompressorStation
-        | ConnectionKind::Resistor => (0.001, 1000.0, 0.012),
+        | ConnectionKind::Resistor
+        | ConnectionKind::PressureRegulator
+        | ConnectionKind::ControlValve
+        | ConnectionKind::DeliveryStation => (0.001, 1000.0, 0.012),
     }
 }
 
@@ -245,13 +250,14 @@ fn valve_is_open(kind: ConnectionKind, raw: &XmlConnectionRaw) -> bool {
 // Chargement
 // ---------------------------------------------------------------------------
 
-/// Charge un fichier réseau GasLib (.net) et construit le `GasNetwork`.
-pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
-    let xml = std::fs::read_to_string(path.as_ref())
-        .with_context(|| format!("lecture de {:?}", path.as_ref()))?;
+/// Charge un fichier réseau GasLib (.net) en modèle intermédiaire.
+pub fn load_network_raw<P: AsRef<Path>>(path: P) -> Result<RawNetwork> {
+    let path_ref = path.as_ref();
+    let xml =
+        std::fs::read_to_string(path_ref).with_context(|| format!("lecture de {:?}", path_ref))?;
 
-    let raw: XmlNetwork = from_str(&xml).with_context(|| "parsing XML GasLib")?;
-    let cs_path = path.as_ref().with_extension("cs");
+    let raw_xml: XmlNetwork = from_str(&xml).with_context(|| "parsing XML GasLib")?;
+    let cs_path = path_ref.with_extension("cs");
     let compressor_ratios = if cs_path.exists() {
         match load_compressor_ratios(&cs_path) {
             Ok(map) => map,
@@ -267,10 +273,15 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
         HashMap::new()
     };
 
-    let mut net = GasNetwork::new();
-
-    for entry in &raw.nodes.entries {
+    let mut nodes = Vec::new();
+    for entry in &raw_xml.nodes.entries {
         let node = entry.inner();
+        let role = match entry {
+            XmlNodeEntry::Source(_) => RawNodeRole::Source,
+            XmlNodeEntry::Sink(_) => RawNodeRole::Sink,
+            XmlNodeEntry::Innode(_) => RawNodeRole::Innode,
+            XmlNodeEntry::Node(_) => RawNodeRole::Innode,
+        };
         let pressure_lower_bar = node
             .pressure
             .as_ref()
@@ -288,12 +299,13 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
             )
         } else {
             (
-                node.flow_min.as_ref().map(|v| convert_flow_to_m3s(v)),
-                node.flow_max.as_ref().map(|v| convert_flow_to_m3s(v)),
+                node.flow_min.as_ref().map(convert_flow_to_m3s),
+                node.flow_max.as_ref().map(convert_flow_to_m3s),
             )
         };
-        net.add_node(crate::graph::Node {
+        nodes.push(RawNode {
             id: node.id.clone(),
+            role,
             x: node.x,
             y: node.y,
             lon: node.lon,
@@ -312,7 +324,8 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
         });
     }
 
-    for conn in &raw.connections.entries {
+    let mut pipes = Vec::new();
+    for conn in &raw_xml.connections.entries {
         let src = conn.raw();
         let kind = conn.kind();
         let is_open = valve_is_open(kind, src);
@@ -323,7 +336,7 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
         } else {
             None
         };
-        net.add_pipe(crate::graph::Pipe {
+        pipes.push(RawPipe {
             id: src.id.clone(),
             from: src.from.clone(),
             to: src.to.clone(),
@@ -352,10 +365,20 @@ pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
             compressor_ratio_max,
             flow_min_m3s: src.flow_min.as_ref().map(convert_flow_to_m3s),
             flow_max_m3s: src.flow_max.as_ref().map(convert_flow_to_m3s),
+            equipment: EquipmentSpec::default(),
         });
     }
 
-    Ok(net)
+    Ok(RawNetwork {
+        nodes,
+        pipes,
+        source: Some(format!("gaslib:{}", path_ref.display())),
+    })
+}
+
+/// Charge un fichier réseau GasLib (.net) et construit le `GasNetwork`.
+pub fn load_network<P: AsRef<Path>>(path: P) -> Result<GasNetwork> {
+    GasNetwork::from_raw(load_network_raw(path)?)
 }
 
 #[cfg(test)]
@@ -442,6 +465,9 @@ mod tests {
             ConnectionKind::ShortPipe => 2,
             ConnectionKind::Resistor => 3,
             ConnectionKind::CompressorStation => 4,
+            ConnectionKind::PressureRegulator
+            | ConnectionKind::ControlValve
+            | ConnectionKind::DeliveryStation => 5,
         });
         assert_eq!(
             kinds,
@@ -636,6 +662,9 @@ mod tests {
                 ConnectionKind::Valve => valves += 1,
                 ConnectionKind::CompressorStation => compressors += 1,
                 ConnectionKind::ShortPipe | ConnectionKind::Resistor => {}
+                ConnectionKind::PressureRegulator
+                | ConnectionKind::ControlValve
+                | ConnectionKind::DeliveryStation => {}
             }
         }
         assert_eq!(pipes, 8, "GasLib-11 should contain 8 pipes");
