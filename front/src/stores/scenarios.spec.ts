@@ -19,6 +19,19 @@ const apiSpies = vi.hoisted(() => ({
     nodes: [{ id: 'A', x: 0, y: 0, lon: null, lat: null, height_m: 0, pressure_fixed_bar: 60, flow_min_m3s: null, flow_max_m3s: null }],
     pipes: [{ id: 'P1', from: 'A', to: 'B', kind: 'pipe', length_km: 1, diameter_mm: 300 }],
   })),
+  getNetwork: vi.fn(async () => ({
+    active_dataset: 'test',
+    node_count: 1,
+    edge_count: 1,
+    gas: {
+      composition: { ch4: 0.78, c2h6: 0.115, co2: 0.025, n2: 0.08, h2: 0 },
+      pcs_mj_per_nm3: 40,
+      pci_mj_per_nm3: 36,
+      wobbe_mj_per_nm3: 50,
+    },
+    nodes: [{ id: 'A', x: 0, y: 0, lon: null, lat: null, height_m: 0, pressure_fixed_bar: 60, flow_min_m3s: null, flow_max_m3s: null }],
+    pipes: [{ id: 'P1', from: 'A', to: 'B', kind: 'pipe', length_km: 1, diameter_mm: 300 }],
+  })),
   compareScenarios: vi.fn(async () => ({
     scenario_a_id: null,
     scenario_b_id: 'scn-1',
@@ -71,6 +84,8 @@ describe('useScenariosStore', () => {
     const scenarios = useScenariosStore();
     const network = useNetworkStore();
     await scenarios.applyScenario('scn-1');
+    expect(apiSpies.applyScenario).toHaveBeenCalledWith('scn-1');
+    expect(apiSpies.getNetwork).toHaveBeenCalled();
     expect(network.nodes).toHaveLength(1);
     expect(network.pipes).toHaveLength(1);
   });

@@ -126,5 +126,7 @@ async function commitPipeFields() {
 .property-panel {
   background: rgba(18, 18, 18, 0.92);
   border-color: rgba(120, 180, 220, 0.35);
+  width: 100%;
+  box-sizing: border-box;
 }
 </style>

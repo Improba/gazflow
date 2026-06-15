@@ -4,7 +4,7 @@
 > Complète `production-sprint-plan.md` (vagues A–C ✅) et remplace le backlog D–G par un découpage exécutable.
 
 **Date** : 2026-06-15  
-**Référence état code** : `cargo test --lib` 237/237 · `npm test` 62/62 · commits `da95752`–`8132a14` sur `main`
+**Référence état code** : `cargo test --lib` 240/240 · `npm test` 64/64 · commits `da95752`–`8132a14` sur `main`
 
 ---
 

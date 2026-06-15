@@ -99,6 +99,20 @@ export const useNetworkStore = defineStore('network', () => {
     calibrationPressureResiduals.value = {};
   }
 
+  /** Charge jeux de données + réseau actif (à appeler au démarrage de l'app). */
+  async function bootstrap() {
+    try {
+      await fetchAvailableNetworks();
+    } catch {
+      // API peut être indisponible au démarrage.
+    }
+    try {
+      await fetchNetwork();
+    } catch {
+      // Réseau vide ou backend arrêté.
+    }
+  }
+
   return {
     nodes,
     pipes,
@@ -116,5 +130,6 @@ export const useNetworkStore = defineStore('network', () => {
     updateGasComposition,
     setCalibrationPressureResiduals,
     clearCalibrationPressureResiduals,
+    bootstrap,
   };
 });

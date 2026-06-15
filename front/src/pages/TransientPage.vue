@@ -2,12 +2,30 @@
   <q-page class="q-pa-md">
     <q-card flat bordered class="bg-dark text-white">
       <q-card-section>
-        <div class="text-h6">Simulation transitoire (MVP)</div>
+        <div class="text-h6">Simulation transitoire</div>
         <div class="text-caption text-grey-5">
           Quasi-stationnaire : chaque pas résout un régime permanent et suit le linepack agrégé.
-          Mode PDE : propagation d'ondes simplifiée (maillage par conduite configurable).
+          Mode PDE : propagation d'ondes simplifiée sur conduites en série (réseaux ramifiés :
+          repli quasi-stationnaire).
+        </div>
+        <div v-if="networkStore.activeNetwork" class="text-caption text-grey-4 q-mt-xs">
+          Réseau actif : {{ networkStore.activeNetwork }}
+          ({{ networkStore.nodes.length }} nœuds, {{ networkStore.pipes.length }} conduites)
         </div>
       </q-card-section>
+
+      <q-banner
+        v-if="networkStore.nodes.length === 0 && !networkStore.loading"
+        dense
+        rounded
+        class="bg-orange-10 text-orange-2 q-mx-md q-mb-sm"
+      >
+        Aucun réseau chargé. Importez un réseau ou sélectionnez GasLib-11 sur la carte.
+        <template #action>
+          <q-btn flat color="white" label="Importer" :to="{ name: 'import' }" />
+          <q-btn flat color="white" label="Carte" :to="{ name: 'map' }" />
+        </template>
+      </q-banner>
 
       <q-card-section class="row q-col-gutter-md items-end">
         <div class="col-12 col-sm-4">
@@ -61,6 +79,7 @@
             icon="timeline"
             label="Lancer"
             :loading="loading"
+            :disable="networkStore.nodes.length === 0"
             @click="run"
           />
         </div>
@@ -105,7 +124,10 @@ import { ref } from 'vue';
 import { Notify } from 'quasar';
 import TransientPlayer from 'src/components/TransientPlayer.vue';
 import { api, type TransientMode, type TransientResultDto, type TransientStepDto } from 'src/services/api';
+import { useNetworkStore } from 'src/stores/network';
 import { formatApiError } from 'src/utils/importError';
+
+const networkStore = useNetworkStore();
 
 const durationS = ref(3600);
 const dtS = ref(300);
@@ -132,6 +154,10 @@ function onStepChange(_step: TransientStepDto) {
 }
 
 async function run() {
+  if (networkStore.nodes.length === 0) {
+    Notify.create({ type: 'warning', message: 'Chargez un réseau avant de lancer le transitoire' });
+    return;
+  }
   loading.value = true;
   result.value = null;
   try {
@@ -140,6 +166,7 @@ async function run() {
       dt_s: dtS.value,
       events: [],
       mode: mode.value,
+      gas_composition: { ...networkStore.gas.composition },
       ...(mode.value === 'pde' ? { n_cells_per_pipe: nCellsPerPipe.value } : {}),
     });
     Notify.create({ type: 'positive', message: 'Transitoire terminé' });

@@ -3,6 +3,7 @@ import {
   dailyShare,
   heatingDemandM3h,
   hourlyMultiplier,
+  normalizeDailyWeights,
   profileFromCategory,
   referenceDemandM3h,
   resolveDemands,
@@ -79,6 +80,19 @@ describe('demandProfiles', () => {
     expect(hourlyMultiplier(p, 5)).toBe(0);
     const sum = p.daily_weights.reduce((a, b) => a + b, 0);
     expect(hourlyMultiplier(p, 6)).toBeCloseTo(1 / (sum / 24), 6);
+    expect(hourlyMultiplier(p, 6)).not.toBeCloseTo(24 * dailyShare(p, 6), 6);
+  });
+
+  it('normalizeDailyWeights sums to 24 and preserves hourly multipliers', () => {
+    const raw = Array.from({ length: 24 }, (_, i) => 2 + (i % 8));
+    const normalized = normalizeDailyWeights(raw);
+    expect(normalized.reduce((a, b) => a + b, 0)).toBeCloseTo(24, 9);
+    const pRaw = { ...profileFromCategory('residential'), daily_weights: raw };
+    const pNorm = { ...profileFromCategory('residential'), daily_weights: normalized };
+    for (let h = 0; h < 24; h += 1) {
+      expect(hourlyMultiplier(pNorm, h)).toBeCloseTo(hourlyMultiplier(pRaw, h), 9);
+      expect(hourlyMultiplier(pNorm, h)).toBeCloseTo(24 * dailyShare(pNorm, h), 9);
+    }
   });
 
   it('validateDemandProfiles rejects wrong daily_weights length', () => {

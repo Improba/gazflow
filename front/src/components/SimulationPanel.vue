@@ -3,6 +3,22 @@
     <div class="text-h6 q-mb-sm">Simulation</div>
 
     <q-btn
+      label="Charger le cas démo"
+      icon="auto_awesome"
+      color="primary"
+      outline
+      dense
+      class="q-mb-sm full-width"
+      :loading="demoLoading"
+      :disable="simulateStore.loading || demoLoading"
+      @click="loadDemo"
+    >
+      <q-tooltip>
+        GasLib-11, 7 h, −5 °C, profils résidentiels — charge le réseau et lance la simulation
+      </q-tooltip>
+    </q-btn>
+
+    <q-btn
       label="Importer un réseau"
       icon="upload_file"
       color="accent"
@@ -17,7 +33,7 @@
         <q-select
           v-model="selectedNetwork"
           :options="networkStore.availableNetworks"
-          label="Jeu de données"
+          label="Réseau"
           dense
           outlined
           dark
@@ -163,7 +179,7 @@
       </div>
       <div class="col">
         <q-btn
-          label="Stop"
+          label="Arrêter"
           color="negative"
           icon="stop"
           class="full-width"
@@ -362,6 +378,8 @@ import type { WsStartOptions } from 'src/services/ws';
 import { G20_NOMINAL, PURE_CH4, type GasCompositionDto, type PipeEquipmentDto } from 'src/services/api';
 import { SIMULATION_MODE_HELP } from 'src/utils/simulationStatus';
 import { equipmentKindLabel, regulatorModeLabel } from 'src/utils/equipmentLabels';
+import { runDemoCase } from 'src/utils/demoCase';
+import { formatApiError } from 'src/utils/importError';
 
 const networkStore = useNetworkStore();
 const simulateStore = useSimulateStore();
@@ -373,6 +391,7 @@ const selectedNetwork = ref<string | null>(null);
 const simulationMode = ref<'free' | 'check' | 'optimize'>('free');
 const gasDraft = ref<GasCompositionDto>({ ...G20_NOMINAL });
 const gasApplying = ref(false);
+const demoLoading = ref(false);
 const lastRunDemandKey = ref('');
 
 const exportFormats = [
@@ -496,6 +515,12 @@ function startSimulation() {
   lastRunDemandKey.value = demandKey(demandOverrides.value);
   lastRunEquipmentKey.value = equipmentKey(equipmentOverrides.value);
 
+  simulateStore.setRunScenarioSummary(
+    demands
+      ? { description: 'Demandes manuelles (panneau Simulation)' }
+      : { description: 'Régime nominal du réseau' },
+  );
+
   const opts: WsStartOptions = {
     gas_composition: { ...networkStore.gas.composition },
   };
@@ -526,5 +551,18 @@ async function loadSelectedNetwork() {
   equipmentOverrides.value = {};
   lastRunDemandKey.value = '';
   simulateStore.resetSimulation();
+}
+
+async function loadDemo() {
+  demoLoading.value = true;
+  try {
+    await runDemoCase();
+    selectedNetwork.value = networkStore.activeNetwork;
+    Notify.create({ type: 'positive', message: 'Cas démo chargé et simulé' });
+  } catch (err) {
+    Notify.create({ type: 'negative', message: formatApiError(err) });
+  } finally {
+    demoLoading.value = false;
+  }
 }
 </script>

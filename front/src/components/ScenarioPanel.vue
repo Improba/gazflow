@@ -3,7 +3,7 @@
     dense
     dense-toggle
     icon="schedule"
-    label="Scénario temporel (P9)"
+    label="Scénario temporel"
     class="q-mb-sm"
   >
     <q-card flat bordered class="q-pa-sm bg-grey-10">
@@ -113,7 +113,7 @@
         v-model="timeseriesStore.useWebSocket"
         dense
         dark
-        label="Streaming WebSocket (pas par pas)"
+        label="Calcul en direct (pas à pas)"
         class="q-mb-sm"
       />
 
@@ -124,7 +124,8 @@
           color="secondary"
           label="Pas unique"
           icon="play_arrow"
-          :disable="sinkNodes.length === 0 || loading"
+          :disable="sinkNodes.length === 0 || simulateStore.loading"
+          :loading="simulateStore.loading"
           @click="runSingleStep"
         />
         <q-btn
@@ -142,7 +143,7 @@
           flat
           color="negative"
           icon="stop"
-          label="Stop"
+          label="Arrêter"
           @click="timeseriesStore.cancelTimeseries()"
         />
       </div>
@@ -198,7 +199,7 @@ const weatherFile = ref<File | null>(null);
 const weatherFileName = ref('');
 const categories = reactive<Record<string, ClientCategory>>({});
 
-const loading = computed(() => simulateStore.loading);
+const loading = computed(() => simulateStore.loading || timeseriesStore.loading);
 
 const sinkNodes = computed(() =>
   networkStore.nodes.filter((n) => n.pressure_fixed_bar == null),
@@ -349,16 +350,37 @@ function runSingleStep() {
   }
   const demands = resolveDemands(currentProfiles(), tExtC.value, h);
   hour.value = h;
-  emit('demands-resolved', demands);
-  Notify.create({
-    type: 'info',
-    message: `Demandes calculées pour ${h}h, T_ext=${tExtC.value} °C`,
+  simulateStore.setRunScenarioSummary({
+    tExtC: tExtC.value,
+    hour: h,
+    dayType: dayType.value,
   });
+  emit('demands-resolved', demands);
+  void (async () => {
+    try {
+      await simulateStore.runSimulation(demands, {
+        gas_composition: { ...networkStore.gas.composition },
+      });
+      Notify.create({
+        type: 'positive',
+        message: `Simulation ${h}h, T_ext=${tExtC.value} °C`,
+      });
+    } catch (err) {
+      Notify.create({
+        type: 'negative',
+        message: formatApiError(err),
+      });
+    }
+  })();
 }
 
 async function runTimeseries() {
   try {
     validateDemandProfiles(currentProfiles());
+    simulateStore.setRunScenarioSummary({
+      dayType: dayType.value,
+      description: `Série horaire 24 h (${dayType.value === 'weekend' ? 'week-end' : 'jour semaine'})`,
+    });
     await timeseriesStore.runTimeseries({
       profiles: currentProfiles(),
       weather: weather.value,

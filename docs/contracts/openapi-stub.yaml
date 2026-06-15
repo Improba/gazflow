@@ -39,7 +39,7 @@ paths:
   /api/contingency/export:
     post:
       summary: Export rapport N-1
-  /api/calibration:
+  /api/calibrate:
     post:
       summary: Calage SCADA
   /api/exports:

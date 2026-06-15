@@ -11,6 +11,13 @@ import {
 
 type SimulationStatus = 'idle' | 'running' | 'converged' | 'cancelled' | 'error';
 
+export type RunScenarioSummary = {
+  description?: string;
+  tExtC?: number;
+  hour?: number;
+  dayType?: 'weekday' | 'weekend';
+};
+
 type LastRunParams = {
   demands?: Record<string, number>;
   equipmentOverrides?: Record<string, PipeEquipmentDto>;
@@ -38,6 +45,7 @@ export const useSimulateStore = defineStore('simulate', () => {
   const activeBounds = ref<string[]>([]);
   const equipmentStates = ref<EquipmentState[]>([]);
   const warnings = ref<string[]>([]);
+  const runScenarioSummary = ref<RunScenarioSummary | null>(null);
 
   let wsClient: SimulationWsClient | null = null;
   let lastSnapshotAt = 0;
@@ -134,6 +142,14 @@ export const useSimulateStore = defineStore('simulate', () => {
       lastRunParams.options,
       lastRunParams.equipmentOverrides,
     );
+  }
+
+  function lastInputDemands(): Record<string, number> | undefined {
+    return lastRunParams?.demands ? { ...lastRunParams.demands } : undefined;
+  }
+
+  function setRunScenarioSummary(summary: RunScenarioSummary | null) {
+    runScenarioSummary.value = summary;
   }
 
   function cancelSimulation() {
@@ -312,8 +328,11 @@ export const useSimulateStore = defineStore('simulate', () => {
     activeBounds,
     equipmentStates,
     warnings,
+    runScenarioSummary,
     runSimulation,
     rerunLastSimulation,
+    lastInputDemands,
+    setRunScenarioSummary,
     cancelSimulation,
     resetSimulation,
     exportResult,

@@ -1,11 +1,13 @@
 <template>
   <q-page class="q-pa-md calibration-page">
+    <ScenarioContextBanner show-map-action />
     <q-card flat bordered class="bg-dark text-white">
       <q-card-section>
         <div class="text-h6">Calage SCADA</div>
         <div class="text-caption text-grey-5">
           Importez des mesures de terrain (pressions, débits) et ajustez les rugosités du réseau
-          actif pour rapprocher la simulation des observations.
+          actif pour rapprocher la simulation des observations. Résultat indicatif — ne remplace
+          pas une validation terrain certifiée.
         </div>
       </q-card-section>
 
@@ -19,7 +21,7 @@
             dark
             autogrow
             :input-style="{ minHeight: '180px', fontFamily: 'monospace' }"
-            hint="Colonnes : id, measurement_type, value, timestamp, uncertainty"
+            hint="Colonnes : id, measurement_type (pressure/flow), value, timestamp, uncertainty"
           />
         </div>
         <div class="col-12 col-md-4 column q-gutter-md">
@@ -33,6 +35,24 @@
             clearable
             @update:model-value="onCsvFileSelected"
           />
+          <div class="row q-gutter-xs">
+            <q-btn
+              dense
+              flat
+              color="secondary"
+              icon="download"
+              label="Exemple CSV"
+              @click="downloadExampleCsv"
+            />
+            <q-btn
+              dense
+              flat
+              color="secondary"
+              icon="upload_file"
+              label="Charger l'exemple"
+              @click="loadExampleCsv"
+            />
+          </div>
           <q-select
             v-model="strategy"
             :options="strategyOptions"
@@ -131,7 +151,12 @@
       </q-card-section>
 
       <q-card-section v-else-if="!loading" class="text-caption text-grey-5">
-        Saisissez ou importez des mesures SCADA, choisissez une stratégie puis lancez le calage.
+        <template v-if="networkStore.nodes.length === 0">
+          Chargez un réseau (carte ou import) avant de lancer le calage.
+        </template>
+        <template v-else>
+          Saisissez ou importez des mesures SCADA, choisissez une stratégie puis lancez le calage.
+        </template>
       </q-card-section>
     </q-card>
   </q-page>
@@ -147,6 +172,8 @@ import {
   type CalibrationStrategy,
 } from 'src/services/api';
 import { useNetworkStore } from 'src/stores/network';
+import { useSimulateStore } from 'src/stores/simulate';
+import ScenarioContextBanner from 'src/components/ScenarioContextBanner.vue';
 import {
   buildPressureResidualRows,
   buildPressureScatterPoints,
@@ -155,8 +182,12 @@ import {
   type PressureScatterPoint,
 } from 'src/utils/scadaCsv';
 import { formatApiError } from 'src/utils/importError';
+import { downloadPublicAsset, fetchPublicText } from 'src/utils/downloadFile';
+
+const EXAMPLE_SCADA_PATH = '/examples/scada-measurements.csv';
 
 const networkStore = useNetworkStore();
+const simulateStore = useSimulateStore();
 
 const DEFAULT_CSV = `id,measurement_type,value,timestamp,uncertainty
 `;
@@ -234,6 +265,21 @@ async function onCsvFileSelected(file: File | null) {
   }
 }
 
+function downloadExampleCsv() {
+  downloadPublicAsset(EXAMPLE_SCADA_PATH, 'scada-measurements.csv');
+}
+
+async function loadExampleCsv() {
+  try {
+    measurementsCsv.value = await fetchPublicText(EXAMPLE_SCADA_PATH);
+    report.value = null;
+    networkStore.clearCalibrationPressureResiduals();
+    Notify.create({ type: 'info', message: 'Exemple SCADA chargé — adaptez les identifiants à votre réseau.' });
+  } catch (err) {
+    Notify.create({ type: 'negative', message: formatApiError(err) });
+  }
+}
+
 function buildParamRows(
   before: CalibrationParameter,
   after: CalibrationParameter,
@@ -257,6 +303,16 @@ function buildParamRows(
         before: before.multipliers[id] ?? 1,
         after: after.multipliers[id] ?? 1,
       }));
+  }
+
+  if (before.kind === 'demand_scale' && after.kind === 'demand_scale') {
+    return [
+      {
+        id: `Échelle demande (${after.node_id})`,
+        before: before.factor,
+        after: after.factor,
+      },
+    ];
   }
 
   return [];
@@ -336,6 +392,7 @@ async function runCalibration() {
     report.value = await api.calibrate({
       measurements_csv: measurementsCsv.value,
       strategy: strategy.value,
+      demands: simulateStore.lastInputDemands(),
     });
     Notify.create({
       type: 'positive',

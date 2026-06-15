@@ -82,4 +82,22 @@ mod tests {
         let predicted = vec![1.0, 2.0, 3.0];
         assert!((r_squared(&observed, &predicted) - 1.0).abs() < 1e-12);
     }
+
+    #[test]
+    fn r_squared_uses_observed_minus_predicted_residuals() {
+        let observed = vec![10.0, 20.0];
+        let predicted = vec![8.0, 18.0];
+        let ss_res: f64 = observed
+            .iter()
+            .zip(&predicted)
+            .map(|(y, y_hat)| {
+                let r = y - y_hat;
+                r * r
+            })
+            .sum();
+        let mean = observed.iter().sum::<f64>() / observed.len() as f64;
+        let ss_tot: f64 = observed.iter().map(|y| (y - mean).powi(2)).sum();
+        let expected = 1.0 - ss_res / ss_tot;
+        assert!((r_squared(&observed, &predicted) - expected).abs() < 1e-12);
+    }
 }

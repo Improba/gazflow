@@ -56,7 +56,8 @@ const maxPressure = computed(() => {
 
 <style scoped>
 .legend-card {
-  min-width: 220px;
+  width: 100%;
+  box-sizing: border-box;
   background: rgba(26, 32, 42, 0.88);
   backdrop-filter: blur(8px);
 }

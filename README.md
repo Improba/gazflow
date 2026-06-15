@@ -105,12 +105,12 @@ The `Cargo.toml` and `package.json` files are on the shared volume: changes are 
 ## Tests
 
 ```bash
-./scripts/back-test.sh     # Rust tests (237 lib tests)
-./scripts/front-test.sh    # Frontend tests (62 tests)
+./scripts/back-test.sh     # Rust tests (240 lib tests)
+./scripts/front-test.sh    # Frontend tests (64 tests)
 ./scripts/ci.sh            # Full CI (+ corpus verification step)
 ```
 
-Current baseline (2026-06-15): `cargo test --lib` 237/237, `npm test` 62/62.
+Current baseline (2026-06-15): `cargo test --lib` 240/240, `npm test` 64/64.
 
 ## Documentation
 

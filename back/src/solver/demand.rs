@@ -275,6 +275,13 @@ pub fn flat_daily_weights() -> [f64; 24] {
 mod tests {
     use super::*;
 
+    fn sample_unnormalized_daily_weights() -> [f64; 24] {
+        [
+            2.0, 4.0, 6.0, 8.0, 1.0, 3.0, 5.0, 7.0, 2.0, 4.0, 6.0, 8.0, 1.0, 3.0, 5.0, 7.0,
+            2.0, 4.0, 6.0, 8.0, 1.0, 3.0, 5.0, 7.0,
+        ]
+    }
+
     #[test]
     fn test_summer_hourly_demand_modulates_base_only() {
         let p = DemandProfile::from_category(ClientCategory::Residential);
@@ -341,10 +348,7 @@ mod tests {
 
     #[test]
     fn test_normalize_daily_weights_sum_to_24() {
-        let raw = [
-            2.0, 4.0, 6.0, 8.0, 1.0, 3.0, 5.0, 7.0, 2.0, 4.0, 6.0, 8.0, 1.0, 3.0, 5.0, 7.0, 2.0,
-            4.0, 6.0, 8.0, 1.0, 3.0, 5.0, 7.0,
-        ];
+        let raw = sample_unnormalized_daily_weights();
         let normalized = normalize_daily_weights(&raw);
         let sum: f64 = normalized.iter().sum();
         assert!(
@@ -367,8 +371,60 @@ mod tests {
     }
 
     #[test]
+    fn test_hourly_multiplier_invariant_under_positive_scaling() {
+        let base = weekday_winter_weights();
+        let scaled: [f64; 24] = std::array::from_fn(|i| base[i] * 3.0);
+        let profile_base = DemandProfile {
+            q0_m3h: 10.0,
+            alpha_m3h_per_c: 1.0,
+            t_threshold_c: 17.0,
+            max_heating_m3h: None,
+            category: None,
+            day_type: DayType::Weekday,
+            daily_weights: Some(base),
+        };
+        let profile_scaled = DemandProfile {
+            daily_weights: Some(scaled),
+            ..profile_base.clone()
+        };
+        for h in 0u8..24 {
+            assert!(
+                (profile_base.hourly_multiplier(h) - profile_scaled.hourly_multiplier(h)).abs()
+                    < 1e-9,
+                "m_h(w) = m_h(c w) pour c > 0, h={h}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_negative_weight_clamped_in_hourly_multiplier() {
+        let mut weights = [1.0; 24];
+        weights[5] = -2.0;
+        let profile = DemandProfile {
+            q0_m3h: 10.0,
+            alpha_m3h_per_c: 0.0,
+            t_threshold_c: 17.0,
+            max_heating_m3h: None,
+            category: None,
+            day_type: DayType::Weekday,
+            daily_weights: Some(weights),
+        };
+        assert!(profile.hourly_multiplier(5).abs() < 1e-12);
+        let sum: f64 = weights.iter().sum();
+        assert!(
+            (profile.hourly_multiplier(6) - 1.0 / (sum / 24.0)).abs() < 1e-9,
+            "hors validation API : m_h = w_h^+ / (Σ w_k / 24)"
+        );
+        assert!(
+            (profile.hourly_multiplier(6) - 24.0 * profile.daily_share(6)).abs() > 1e-6,
+            "avec poids négatifs m_h ≠ 24 s_h (Σ w_k ≠ Σ w_k^+)"
+        );
+    }
+
+    #[test]
     fn test_normalize_daily_weights_preserves_hourly_multipliers() {
-        let raw = weekday_winter_weights();
+        // Σ w_h = 108 ≠ 24 : vérifie l'invariance m_h, pas seulement le cas corpus.
+        let raw = sample_unnormalized_daily_weights();
         let normalized = normalize_daily_weights(&raw);
         let profile_raw = DemandProfile {
             q0_m3h: 10.0,

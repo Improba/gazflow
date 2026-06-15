@@ -7,6 +7,7 @@ import {
   type WsTimeseriesOptions,
 } from 'src/services/ws';
 import { formatApiError } from 'src/utils/importError';
+import { useNetworkStore } from 'src/stores/network';
 import {
   validateDemandProfiles,
   type DemandProfileDto,
@@ -178,11 +179,13 @@ export const useTimeseriesStore = defineStore('timeseries', () => {
     tolerance?: number;
   }): Promise<TimeseriesResultDto> {
     await ensureWs();
+    const networkStore = useNetworkStore();
     currentRunId.value = `ts-${Date.now()}`;
     const options: WsTimeseriesOptions = {
       warm_start: payload.warm_start ?? true,
       max_iter: payload.max_iter,
       tolerance: payload.tolerance,
+      gas_composition: { ...networkStore.gas.composition },
     };
     return new Promise<TimeseriesResultDto>((resolve, reject) => {
       wsResolve = resolve;

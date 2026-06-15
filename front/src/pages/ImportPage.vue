@@ -11,7 +11,46 @@
             </div>
           </q-card-section>
 
-          <q-card-section class="q-gutter-md">
+          <q-card-section class="q-pt-none">
+            <q-banner dense rounded class="bg-blue-grey-10 text-blue-grey-2">
+              <template #avatar>
+                <q-icon name="map" color="blue-grey-4" />
+              </template>
+              <div class="text-caption">
+                Convention SIG type exploitant : <strong>ALIM</strong> (source),
+                <strong>LIVR</strong> / <strong>PDL</strong> (livraison),
+                <strong>JONC</strong> (jonction). Téléchargez un jeu d'exemple GeoJSON + mapping.
+              </div>
+              <template #action>
+                <q-btn
+                  flat
+                  dense
+                  color="secondary"
+                  icon="download"
+                  label="Mapping"
+                  @click="downloadExample('mapping.yaml')"
+                />
+                <q-btn
+                  flat
+                  dense
+                  color="secondary"
+                  icon="download"
+                  label="Nœuds"
+                  @click="downloadExample('nodes.geojson')"
+                />
+                <q-btn
+                  flat
+                  dense
+                  color="secondary"
+                  icon="download"
+                  label="Conduites"
+                  @click="downloadExample('pipes.geojson')"
+                />
+              </template>
+            </q-banner>
+          </q-card-section>
+
+          <q-card-section class="q-gutter-md q-pt-none">
             <q-input
               v-model="networkName"
               label="Nom du réseau (optionnel, visible dans la liste)"
@@ -181,6 +220,7 @@ import { useNetworkStore } from 'src/stores/network';
 import { useSimulateStore } from 'src/stores/simulate';
 import { readFileAsBase64 } from 'src/utils/fileBase64';
 import { formatImportError } from 'src/utils/importError';
+import { downloadPublicAsset } from 'src/utils/downloadFile';
 
 type ImportFormat = ImportNetworkRequest['format'];
 
@@ -314,6 +354,10 @@ async function runImport(validateOnly: boolean) {
   } finally {
     loading.value = false;
   }
+}
+
+function downloadExample(filename: string) {
+  downloadPublicAsset(`/examples/${filename}`, filename);
 }
 </script>
 

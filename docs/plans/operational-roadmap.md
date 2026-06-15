@@ -15,7 +15,7 @@
 | **P11** Transitoire | 🟨 **~55 %** | PDE 1D scaffold + mode API ; réseaux branchés → fallback |
 | **P12** Édition | 🟨 **~85 %** | Scénarios diffs, compare ΔP/ΔQ, export GeoJSON restant |
 | **P13** Calage SCADA | 🟨 **~90 %** | LM multi-param (≤5), demand scale ; GERG calage restant |
-| Corpus tests | ✅ | `docs/testing/corpus/` + CI ; **237** tests back, **62** front |
+| Corpus tests | ✅ | `docs/testing/corpus/` + CI ; **240** tests back, **64** front |
 
 Plan complétion : `docs/plans/completion-plan.md`.
 

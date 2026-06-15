@@ -1,0 +1,44 @@
+{
+  "type": "FeatureCollection",
+  "name": "minimal-line-pipes",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "ID_CANA": "P01",
+        "NOEUD_AMONT": "SRC01",
+        "NOEUD_AVAL": "JNC01",
+        "LONGUEUR_M": 5000.0,
+        "DIAMETRE_MM": 700.0,
+        "RUGOSITE_MM": 0.05,
+        "MATERIAU": "acier"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [2.3522, 48.8566],
+          [2.3622, 48.8566]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "ID_CANA": "P02",
+        "NOEUD_AMONT": "JNC01",
+        "NOEUD_AVAL": "LVR01",
+        "LONGUEUR_M": 5000.0,
+        "DIAMETRE_MM": 500.0,
+        "RUGOSITE_MM": 0.05,
+        "MATERIAU": "acier"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [2.3622, 48.8566],
+          [2.3722, 48.8566]
+        ]
+      }
+    }
+  ]
+}

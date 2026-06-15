@@ -5,6 +5,16 @@
   --scada-panel: rgba(14, 28, 38, 0.9);
   --scada-border: rgba(84, 182, 206, 0.35);
   --scada-text: #d8edf3;
+
+  /* Carte : zones réservées pour éviter les superpositions */
+  --map-app-header-height: 50px;
+  --map-editor-toolbar-height: 40px;
+  --map-sidebar-width: 360px;
+  --map-sidebar-inset: 16px;
+  --map-property-width: 240px;
+  --map-legend-width: 240px;
+  --map-timeseries-band-height: 76px;
+  --map-overlay-z: 100;
 }
 
 html,
@@ -25,14 +35,26 @@ body {
   min-height: 0;
 }
 
+.q-page-container {
+  height: calc(100dvh - var(--map-app-header-height));
+}
+
+.q-page-container > .q-page {
+  height: 100%;
+}
+
 .sidebar-panel {
   position: absolute;
-  top: 60px;
-  left: 16px;
-  width: 360px;
-  max-height: min(calc(100vh - 92px), 85vh);
+  top: calc(var(--map-sidebar-inset) + var(--map-editor-toolbar-height));
+  left: var(--map-sidebar-inset);
+  width: var(--map-sidebar-width);
+  max-height: calc(
+    100dvh - var(--map-app-header-height) - var(--map-editor-toolbar-height) -
+      (2 * var(--map-sidebar-inset))
+  );
+  overflow-x: hidden;
   overflow-y: auto;
-  z-index: 100;
+  z-index: var(--map-overlay-z);
   background: var(--scada-panel);
   border: 1px solid var(--scada-border);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
@@ -40,15 +62,76 @@ body {
   border-radius: 12px;
   color: var(--scada-text);
   padding: 16px;
+  box-sizing: border-box;
+}
+
+.sidebar-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sidebar-panel::-webkit-scrollbar-thumb {
+  background: rgba(84, 182, 206, 0.35);
+  border-radius: 3px;
 }
 
 .legend-panel {
   position: absolute;
-  right: 16px;
-  bottom: 16px;
-  z-index: 101;
+  right: var(--map-sidebar-inset);
+  bottom: var(--map-sidebar-inset);
+  width: var(--map-legend-width);
+  z-index: calc(var(--map-overlay-z) + 1);
+  pointer-events: auto;
+}
+
+.map-page--timeseries .legend-panel {
+  bottom: calc(var(--map-timeseries-band-height) + var(--map-sidebar-inset));
+}
+
+.property-panel-slot {
+  position: absolute;
+  top: calc(var(--map-sidebar-inset) + var(--map-editor-toolbar-height) + 8px);
+  right: var(--map-sidebar-inset);
+  width: var(--map-property-width);
+  max-height: calc(
+    100dvh - var(--map-app-header-height) - var(--map-editor-toolbar-height) -
+      (3 * var(--map-sidebar-inset))
+  );
+  overflow-y: auto;
+  z-index: calc(var(--map-overlay-z) - 5);
+  pointer-events: auto;
+}
+
+.map-page--timeseries .property-panel-slot {
+  max-height: calc(
+    100dvh - var(--map-app-header-height) - var(--map-editor-toolbar-height) -
+      var(--map-timeseries-band-height) - (4 * var(--map-sidebar-inset))
+  );
 }
 
 .cesium-credit-logoContainer {
   display: none !important;
+}
+
+@media (max-width: 960px) {
+  :root {
+    --map-sidebar-width: min(360px, calc(100vw - 2 * var(--map-sidebar-inset)));
+    --map-legend-width: min(240px, calc(100vw - 2 * var(--map-sidebar-inset)));
+    --map-property-width: min(240px, calc(100vw - 2 * var(--map-sidebar-inset)));
+  }
+
+  .sidebar-panel {
+    max-height: min(52dvh, calc(100dvh - var(--map-app-header-height) - 80px));
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --map-sidebar-width: calc(100vw - 2 * var(--map-sidebar-inset));
+    --map-timeseries-band-height: 88px;
+  }
+
+  .legend-panel {
+    width: calc(100vw - 2 * var(--map-sidebar-inset));
+    max-width: 280px;
+  }
 }

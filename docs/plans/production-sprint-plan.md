@@ -109,7 +109,7 @@ Voir `operational-roadmap.md` sections P12, P8, P7, P11 pour détail tâches.
 | C1 Levenberg-Marquardt global (`calibration/lm.rs`) | ✅ |
 | C2 Carte résidus SCADA (CalibrationPage + CesiumViewer) | ✅ |
 
-**Vérification (2026-06-15)** : `cargo test --lib` → 237/237 ; `npm test` → 62/62 ; `npm run build` OK.
+**Vérification (2026-06-15)** : `cargo test --lib` → 240/240 ; `npm test` → 64/64 ; `npm run build` OK.
 
 ### Vagues D–I (2026-06-15)
 

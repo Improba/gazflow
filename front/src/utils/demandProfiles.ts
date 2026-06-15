@@ -1,4 +1,5 @@
-/** Profils de demande P9 (miroir du backend `solver/demand.rs`). Débits en Nm³/h et Nm³/s. */
+/** Profils de demande P9 (miroir du backend `solver/demand.rs`). Débits en Nm³/h et Nm³/s.
+ *  Poids corpus : `docs/testing/corpus/synthetic/demand/daily-profiles.yaml`. */
 
 export type ClientCategory = 'residential' | 'tertiary' | 'industrial';
 export type DayType = 'weekday' | 'weekend';

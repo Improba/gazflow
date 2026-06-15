@@ -101,6 +101,21 @@ def main() -> int:
     if not {"SRC01", "JNC01", "LVR01", "P01"} <= scada_ids:
         err("scada: IDs non alignés avec minimal-line")
 
+    # daily profiles (Σ w_h = 24 par preset)
+    profiles_path = CORPUS / "synthetic/demand/daily-profiles.yaml"
+    if profiles_path.exists():
+        text = profiles_path.read_text()
+        for preset in re.findall(r"^([a-z_]+):\s*$", text, re.M):
+            block = re.search(rf"^{preset}:(.*?)(?:\n[a-z_]+:|$)", text, re.S)
+            if not block:
+                continue
+            weights = [float(v) for _, v in re.findall(r"(\d+):\s*([\d.]+)", block.group(1))]
+            if len(weights) != 24:
+                err(f"daily-profiles {preset}: attendu 24 poids, got {len(weights)}")
+            total = sum(weights)
+            if abs(total - 24.0) > 1e-6:
+                err(f"daily-profiles {preset}: Σ w_h = {total}, attendu 24")
+
     # SciGRID snippet
     meta = json.loads((CORPUS / "external/scigrid/fr-snippet/snippet-meta.json").read_text())
     if meta.get("pipe_count", 0) < 50:

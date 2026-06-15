@@ -73,15 +73,13 @@ Common alternative:
 npx vitest run
 ```
 
-Current minimal frontend coverage:
-- `src/services/ws.spec.ts` (WS URL mapping)
-- `src/stores/network.spec.ts` (network load + error handling)
-- `src/stores/simulate.spec.ts` (warm-start + export)
-- `src/config/dev-integration.spec.ts` (dev config safeguards: Pinia boot + WS proxy `/api`)
+Current baseline (2026-06-15): **240** Rust lib tests, **64** frontend tests (`vitest`).
 
-Interface/websocket non-regression:
-- this test guards against a blank screen (Pinia store used without booting `pinia`);
-- it also guards against `websocket failed to open` in dev (proxy `/api` without `ws: true`).
+Current frontend coverage includes:
+- `src/services/ws.spec.ts`, `apiContracts.spec.ts`, `gas-presets.spec.ts`
+- `src/stores/network.spec.ts`, `simulate.spec.ts`, `scenarios.spec.ts`, `editor.spec.ts`, `demandProfiles.spec.ts`
+- `src/utils/*` (demand profiles, weather CSV, import errors, equipment labels)
+- `src/config/dev-integration.spec.ts` (Pinia boot + WS proxy)
 
 ## Good practices
 

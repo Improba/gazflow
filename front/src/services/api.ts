@@ -248,7 +248,8 @@ export type CalibrationStrategy = 'global' | 'per_pipe';
 
 export type CalibrationParameter =
   | { kind: 'global_roughness_factor'; factor: number }
-  | { kind: 'per_pipe_roughness_multiplier'; multipliers: Record<string, number> };
+  | { kind: 'per_pipe_roughness_multiplier'; multipliers: Record<string, number> }
+  | { kind: 'demand_scale'; node_id: string; factor: number };
 
 export interface CalibrationRequest {
   measurements_csv: string;

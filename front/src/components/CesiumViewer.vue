@@ -1,5 +1,8 @@
 <template>
-  <div class="viewer-root">
+  <div
+    class="viewer-root"
+    :class="{ 'viewer-root--edit-mode': editorStore.editMode }"
+  >
     <div ref="canvasArea" class="canvas-area">
       <div ref="cesiumContainer" class="canvas-element cesium-container" />
       <div v-if="positioningWarningVisible" class="positioning-warning">
@@ -20,10 +23,10 @@
         @click="debugOverlayEnabled = !debugOverlayEnabled"
       />
       <div v-if="debugOverlayEnabled" class="perf-overlay">
-        <div><b>Debug perf</b></div>
-        <div>FPS: {{ fps.toFixed(1) }}</div>
-        <div>Maj couleurs: {{ renderUpdateMs.toFixed(2) }} ms</div>
-        <div>Entites: {{ entityCount }}</div>
+        <div><b>Performance</b></div>
+        <div>Images/s : {{ fps.toFixed(1) }}</div>
+        <div>Mise à jour couleurs : {{ renderUpdateMs.toFixed(2) }} ms</div>
+        <div>Entités : {{ entityCount }}</div>
       </div>
       <div v-if="timeseriesStore.hasResult" class="timeseries-slider">
         <div class="text-caption text-grey-3 q-mb-xs">
@@ -488,10 +491,10 @@ function renderNetwork() {
     positioningWarningDetail.value =
       approxCount > 0
         ? [
-            `${approxCount}/${nodes.length} noeud(s) sont places via une projection locale depuis x/y.`,
-            `${gpsExactCount}/${nodes.length} noeud(s) ont des coordonnees GPS exactes (lon/lat).`,
+            `${approxCount}/${nodes.length} nœud(s) sont placés via une projection locale depuis x/y.`,
+            `${gpsExactCount}/${nodes.length} nœud(s) ont des coordonnées GPS exactes (lon/lat).`,
             partialGpsCount > 0
-              ? `${partialGpsCount} noeud(s) ont une coordonnee GPS partielle (lon ou lat manquant).`
+              ? `${partialGpsCount} nœud(s) ont une coordonnée GPS partielle (lon ou lat manquant).`
               : null,
             'Projection utilisee: repere local centre a 50N, 10E (approximation).',
           ]
@@ -751,8 +754,9 @@ function updateNodeLod() {
 .positioning-warning {
   position: absolute;
   top: 12px;
-  left: 12px;
+  left: calc(var(--map-sidebar-width) + var(--map-sidebar-inset) + 8px);
   z-index: 10;
+  max-width: min(360px, calc(100% - var(--map-sidebar-width) - 3 * var(--map-sidebar-inset)));
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -764,6 +768,7 @@ function updateNodeLod() {
   font-size: 12px;
   line-height: 1.2;
   cursor: help;
+  pointer-events: auto;
 }
 
 .positioning-warning-tooltip {
@@ -780,11 +785,16 @@ function updateNodeLod() {
   z-index: 10;
 }
 
+.viewer-root--edit-mode .perf-toggle {
+  right: calc(var(--map-property-width) + var(--map-sidebar-inset) + 8px);
+}
+
 .perf-overlay {
   position: absolute;
-  top: 56px;
+  top: 52px;
   right: 12px;
   min-width: 170px;
+  max-width: calc(100% - var(--map-sidebar-width) - 3 * var(--map-sidebar-inset));
   padding: 8px 10px;
   border-radius: 6px;
   background: rgba(18, 18, 18, 0.88);
@@ -793,17 +803,36 @@ function updateNodeLod() {
   line-height: 1.5;
   z-index: 10;
   border: 1px solid rgba(120, 180, 220, 0.45);
+  pointer-events: auto;
+}
+
+.viewer-root--edit-mode .perf-overlay {
+  right: calc(var(--map-property-width) + var(--map-sidebar-inset) + 8px);
 }
 
 .timeseries-slider {
   position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
+  left: calc(var(--map-sidebar-width) + (2 * var(--map-sidebar-inset)));
+  right: calc(var(--map-legend-width) + (2 * var(--map-sidebar-inset)));
+  bottom: var(--map-sidebar-inset);
   z-index: 10;
   padding: 10px 14px;
   border-radius: 8px;
   background: rgba(18, 18, 18, 0.88);
   border: 1px solid rgba(120, 180, 220, 0.35);
+  pointer-events: auto;
+  box-sizing: border-box;
+}
+
+@media (max-width: 960px) {
+  .timeseries-slider {
+    left: var(--map-sidebar-inset);
+    right: var(--map-sidebar-inset);
+  }
+
+  .positioning-warning {
+    left: var(--map-sidebar-inset);
+    max-width: calc(100% - 2 * var(--map-sidebar-inset));
+  }
 }
 </style>

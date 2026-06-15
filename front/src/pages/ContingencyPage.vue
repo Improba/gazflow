@@ -1,11 +1,12 @@
 <template>
   <q-page class="q-pa-md contingency-page">
+    <ScenarioContextBanner show-map-action />
     <q-card flat bordered class="bg-dark text-white">
       <q-card-section>
         <div class="text-h6">Analyse de contingence N-1</div>
         <div class="text-caption text-grey-5">
           Analyse N-1 : retrait successif de chaque source, vanne ou compresseur. Cas verts = régime
-          convergé sans violation de $P_{\min}$ aux points de livraison et soutirages. Cas rouges =
+          convergé sans violation de P minimale aux points de livraison et soutirages. Cas rouges =
           non-convergence ou pression sous le seuil contractuel / technique.
         </div>
       </q-card-section>
@@ -26,7 +27,7 @@
         <div class="col-12 col-sm-3">
           <q-toggle
             v-model="contingencyStore.useWebSocket"
-            label="Streaming WebSocket"
+            label="Calcul en direct"
             color="primary"
             dark
           />
@@ -41,11 +42,19 @@
             @click="runAnalysis"
           />
         </div>
+        <div v-if="contingencyStore.selectedCase" class="col-12 col-sm-auto">
+          <q-btn
+            color="secondary"
+            icon="map"
+            label="Voir sur la carte"
+            :to="{ name: 'map' }"
+          />
+        </div>
         <div class="col-12 col-sm-auto">
           <q-btn
             color="negative"
             icon="stop"
-            label="Stop"
+            label="Arrêter"
             :disable="!contingencyStore.loading || !contingencyStore.useWebSocket"
             @click="contingencyStore.cancelContingency()"
           />
@@ -146,7 +155,7 @@
       </q-card-section>
 
       <q-card-section v-else-if="!loading && !report" class="text-caption text-grey-5">
-        Lancez une analyse pour afficher le tableau des cas N-1.
+        Chargez un réseau (carte ou import) puis lancez une analyse N-1.
       </q-card-section>
     </q-card>
   </q-page>
@@ -163,10 +172,13 @@ import {
 } from 'src/services/api';
 import { useContingencyStore } from 'src/stores/contingency';
 import { useNetworkStore } from 'src/stores/network';
+import { useSimulateStore } from 'src/stores/simulate';
+import ScenarioContextBanner from 'src/components/ScenarioContextBanner.vue';
 import { formatApiError } from 'src/utils/importError';
 
 const networkStore = useNetworkStore();
 const contingencyStore = useContingencyStore();
+const simulateStore = useSimulateStore();
 
 const scope = ref<ContingencyScope>('all');
 const exporting = ref(false);
@@ -241,7 +253,10 @@ function formatAction(action: ContingencyAction): string {
 
 async function runAnalysis() {
   try {
-    const nextReport = await contingencyStore.runContingency({ scope: scope.value });
+    const nextReport = await contingencyStore.runContingency({
+      scope: scope.value,
+      demands: simulateStore.lastInputDemands(),
+    });
     Notify.create({
       type: nextReport.red_cases.length === 0 ? 'positive' : 'warning',
       message: `${nextReport.results.length} cas analysés - ${nextReport.red_cases.length} rouge(s)`,
@@ -266,7 +281,10 @@ function onRowClick(_evt: Event, row: { raw: { case: ContingencyCase } }) {
 async function exportReport(format: 'xlsx' | 'csv') {
   exporting.value = true;
   try {
-    const blob = await api.exportContingency({ scope: scope.value }, format);
+    const blob = await api.exportContingency(
+      { scope: scope.value, demands: simulateStore.lastInputDemands() },
+      format,
+    );
     const href = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = href;

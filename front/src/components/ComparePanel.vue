@@ -3,7 +3,7 @@
     dense
     dense-toggle
     icon="compare_arrows"
-    label="Comparaison de scénarios (P12)"
+    label="Comparaison de scénarios"
     class="q-mb-sm"
     :default-opened="defaultOpened"
   >
@@ -64,6 +64,43 @@
         />
       </div>
 
+      <q-list
+        v-if="scenariosStore.scenarios.length > 0"
+        dense
+        dark
+        bordered
+        class="rounded-borders q-mb-sm scenario-list"
+      >
+        <q-item v-for="scenario in scenariosStore.scenarios" :key="scenario.id" class="scenario-list__item">
+          <q-item-section>
+            <q-item-label class="ellipsis">{{ scenario.name }}</q-item-label>
+            <q-item-label caption class="ellipsis">
+              Δ {{ scenario.node_delta }} nœuds / {{ scenario.pipe_delta }} conduites
+            </q-item-label>
+          </q-item-section>
+          <q-item-section side class="scenario-list__actions">
+            <q-btn
+              dense
+              flat
+              color="secondary"
+              icon="play_circle"
+              label="Appliquer"
+              :loading="applyingId === scenario.id"
+              @click="applyScenario(scenario.id)"
+            />
+            <q-btn
+              dense
+              flat
+              color="negative"
+              icon="delete"
+              aria-label="Supprimer"
+              :loading="deletingId === scenario.id"
+              @click="confirmDeleteScenario(scenario.id, scenario.name)"
+            />
+          </q-item-section>
+        </q-item>
+      </q-list>
+
       <q-banner
         v-if="scenariosStore.compareResult"
         dense
@@ -112,9 +149,10 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { Notify } from 'quasar';
+import { Notify, useQuasar } from 'quasar';
 import { useNetworkStore } from 'src/stores/network';
 import { useScenariosStore } from 'src/stores/scenarios';
+import { useSimulateStore } from 'src/stores/simulate';
 import { formatApiError } from 'src/utils/importError';
 
 withDefaults(
@@ -126,9 +164,13 @@ withDefaults(
 
 const networkStore = useNetworkStore();
 const scenariosStore = useScenariosStore();
+const simulateStore = useSimulateStore();
+const $q = useQuasar();
 
 const scenarioAId = ref<string | null>(null);
 const scenarioBId = ref<string | null>(null);
+const applyingId = ref<string | null>(null);
+const deletingId = ref<string | null>(null);
 
 const scenarioOptions = computed(() =>
   scenariosStore.scenarios.map((s) => ({
@@ -209,17 +251,17 @@ const columns = [
   { name: 'delta_p', label: 'ΔP (bar)', field: 'delta_p', align: 'right' as const },
   {
     name: 'q_a',
-    label: 'Q_A',
+    label: 'Q_A (Nm³/s)',
     field: (r: CompareRow) => (r.q_a != null ? r.q_a.toFixed(4) : '—'),
     align: 'right' as const,
   },
   {
     name: 'q_b',
-    label: 'Q_B',
+    label: 'Q_B (Nm³/s)',
     field: (r: CompareRow) => (r.q_b != null ? r.q_b.toFixed(4) : '—'),
     align: 'right' as const,
   },
-  { name: 'delta_q', label: 'ΔQ', field: 'delta_q', align: 'right' as const },
+  { name: 'delta_q', label: 'ΔQ (Nm³/s)', field: 'delta_q', align: 'right' as const },
 ];
 
 function formatDelta(value: number | null, decimals: number): string {
@@ -246,11 +288,48 @@ async function runCompare() {
     await scenariosStore.compare({
       scenario_a_id: scenarioAId.value ?? undefined,
       scenario_b_id: scenarioBId.value ?? undefined,
+      demands: simulateStore.lastInputDemands(),
     });
     Notify.create({ type: 'positive', message: 'Comparaison terminée' });
   } catch (err) {
     Notify.create({ type: 'negative', message: formatApiError(err) });
   }
+}
+
+async function applyScenario(id: string) {
+  applyingId.value = id;
+  try {
+    await scenariosStore.applyScenario(id);
+    simulateStore.resetSimulation();
+    Notify.create({ type: 'positive', message: 'Scénario appliqué sur la carte' });
+  } catch (err) {
+    Notify.create({ type: 'negative', message: formatApiError(err) });
+  } finally {
+    applyingId.value = null;
+  }
+}
+
+function confirmDeleteScenario(id: string, name: string) {
+  $q.dialog({
+    title: 'Supprimer le scénario',
+    message: `Supprimer « ${name} » ?`,
+    cancel: true,
+    persistent: true,
+  }).onOk(() => {
+    void (async () => {
+      deletingId.value = id;
+      try {
+        await scenariosStore.deleteScenario(id);
+        if (scenarioAId.value === id) scenarioAId.value = null;
+        if (scenarioBId.value === id) scenarioBId.value = null;
+        Notify.create({ type: 'positive', message: 'Scénario supprimé' });
+      } catch (err) {
+        Notify.create({ type: 'negative', message: formatApiError(err) });
+      } finally {
+        deletingId.value = null;
+      }
+    })();
+  });
 }
 
 onMounted(() => {
@@ -261,5 +340,25 @@ onMounted(() => {
 <style scoped>
 .compare-table {
   max-height: 320px;
+}
+
+.scenario-list__item {
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.scenario-list__actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 </style>

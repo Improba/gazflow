@@ -1,0 +1,29 @@
+# Mapping minimal-line → modèle GazFlow (P6)
+# Conventions SIG type exploitant français : ALIM (source), LIVR/PDL (livraison), JONC (jonction)
+format: geojson
+nodes:
+  id_field: ID_NOEUD
+  type_field: TYPE
+  type_mapping:
+    ALIM: source
+    LIVR: sink
+    PDL: sink
+    JONC: innode
+  pressure_fixed_field: P_CONSIGNE_BAR
+  lat_field: geometry.coordinates[1]
+  lon_field: geometry.coordinates[0]
+  elevation_field: ALTITUDE_M
+pipes:
+  id_field: ID_CANA
+  from_field: NOEUD_AMONT
+  to_field: NOEUD_AVAL
+  length_field: LONGUEUR_M
+  diameter_field: DIAMETRE_MM
+  diameter_unit: mm
+  roughness_field: RUGOSITE_MM
+  roughness_unit: mm
+  material_field: MATERIAU
+
+# Débit de livraison par défaut sur les nœuds LIVR/PDL uniquement (m³/s, consommateur négatif)
+defaults:
+  sink_demand_m3s: -50.0

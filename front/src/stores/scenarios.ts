@@ -64,10 +64,9 @@ export const useScenariosStore = defineStore('scenarios', () => {
     error.value = null;
     const networkStore = useNetworkStore();
     try {
-      const data = await api.applyScenario(id);
-      networkStore.nodes = data.nodes;
-      networkStore.pipes = data.pipes;
-      return data;
+      await api.applyScenario(id);
+      await networkStore.fetchNetwork();
+      return networkStore.nodes;
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Échec application scénario';
       throw err;

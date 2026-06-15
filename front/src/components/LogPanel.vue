@@ -1,6 +1,6 @@
 <template>
   <div>
-    <div class="text-subtitle1 q-mb-xs">Logs</div>
+    <div class="text-subtitle1 q-mb-xs">Journal de calcul</div>
     <q-virtual-scroll
       v-if="simulateStore.logs.length > 0"
       :items="simulateStore.logs"

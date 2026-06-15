@@ -18,6 +18,9 @@
             @click="loadExports"
           />
         </div>
+        <div class="col text-caption text-grey-5">
+          Les exports apparaissent après une simulation convergée depuis le panneau Carte.
+        </div>
       </q-card-section>
 
       <q-card-section>

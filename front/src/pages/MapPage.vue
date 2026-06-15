@@ -1,5 +1,11 @@
 <template>
-  <q-page class="map-page">
+  <q-page
+    class="map-page"
+    :class="{
+      'map-page--timeseries': timeseriesStore.hasResult,
+      'map-page--edit-mode': editorStore.editMode,
+    }"
+  >
     <EditorToolbar class="editor-toolbar-slot" />
     <div class="canvas-wrapper">
       <CesiumViewer :contingency-violation-node-ids="contingencyStore.selectedCaseViolationNodeIds" />
@@ -8,7 +14,7 @@
         <div class="text-h6 q-mb-sm">Aucun réseau chargé</div>
         <p class="text-body2 text-grey-4 q-mb-lg empty-state__hint">
           Importez une topologie (GeoJSON, CSV ou Shapefile) ou sélectionnez un jeu de
-          données GasLib dans le panneau de gauche.
+          données dans le panneau de gauche.
         </p>
         <div class="row q-gutter-sm justify-center">
           <q-btn
@@ -36,10 +42,12 @@ import SimulationPanel from 'src/components/SimulationPanel.vue';
 import { useContingencyStore } from 'src/stores/contingency';
 import { useEditorStore } from 'src/stores/editor';
 import { useNetworkStore } from 'src/stores/network';
+import { useTimeseriesStore } from 'src/stores/timeseries';
 
 const networkStore = useNetworkStore();
 const editorStore = useEditorStore();
 const contingencyStore = useContingencyStore();
+const timeseriesStore = useTimeseriesStore();
 
 const showEmptyState = computed(
   () => !networkStore.loading && networkStore.nodes.length === 0,
@@ -57,16 +65,8 @@ const showEmptyState = computed(
 
 .editor-toolbar-slot {
   flex: 0 0 auto;
-  z-index: 60;
-}
-
-.property-panel-slot {
-  position: absolute;
-  top: 72px;
-  right: 12px;
-  z-index: 55;
-  width: 240px;
-  pointer-events: auto;
+  z-index: calc(var(--map-overlay-z) + 5);
+  min-height: var(--map-editor-toolbar-height);
 }
 
 .canvas-wrapper {
