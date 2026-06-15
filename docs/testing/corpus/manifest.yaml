@@ -1,0 +1,74 @@
+# Inventaire du corpus de validation opérationnelle.
+# synthetic/ = versionné ; external/ = ./scripts/fetch_test_corpus.sh
+
+version: 1
+
+paths:
+  root_env: GAZFLOW_TEST_CORPUS
+  root_default: docs/testing/corpus
+
+synthetic:
+  - id: minimal-line
+    phase: [P6]
+    files:
+      - synthetic/minimal-line/nodes.geojson
+      - synthetic/minimal-line/pipes.geojson
+      - synthetic/minimal-line/mapping.yaml
+    tests: [T6-1, T6-2, T6-7]
+
+  - id: gravity-pipe
+    phase: [P7]
+    files:
+      - synthetic/gravity-pipe/nodes.csv
+      - synthetic/gravity-pipe/nodes-flat.csv
+      - synthetic/gravity-pipe/nodes-downhill.csv
+      - synthetic/gravity-pipe/pipes.csv
+      - synthetic/gravity-pipe/mapping.yaml
+    tests: [T7-1, T7-2, T7-3]
+
+  - id: topo-errors
+    phase: [P6]
+    files:
+      - synthetic/topo-errors/orphan-node.geojson
+      - synthetic/topo-errors/no-slack.geojson
+      - synthetic/topo-errors/disconnected.geojson
+    tests: [T6-3, T6-4, T6-5]
+
+  - id: demand-profiles
+    phase: [P9]
+    files:
+      - synthetic/demand/profiles.csv
+      - synthetic/demand/daily-profiles.yaml
+    tests: [T9-1, T9-2, T9-4]
+
+  - id: scada-synthetic
+    phase: [P13]
+    files:
+      - synthetic/scada/measurements.csv
+      - synthetic/scada/calibration-config.yaml
+    tests: [T13-1, T13-2, T13-4]
+
+mapping:
+  - id: scigrid-fr
+    phase: [P6]
+    file: mapping/scigrid-fr.mapping.yaml
+    requires: external/scigrid/fr-snippet/
+
+external:
+  - id: gaslib-39
+    phase: [P8, P10]
+    script: fetch_test_corpus.sh
+    dir: external/gaslib-39/
+    source: https://gaslib.zib.de/download/testData/GasLib-39-v1-20231119.zip
+
+  - id: transient-gaslib-11
+    phase: [P11]
+    script: fetch_test_corpus.sh
+    dir: external/transient/gaslib-11/
+    source: https://www.trr154.fau.de/transient-data/
+
+  - id: scigrid-fr-snippet
+    phase: [P6, P7]
+    script: fetch_test_corpus.sh
+    dir: external/scigrid/fr-snippet/
+    source: https://zenodo.org/records/4767098/files/IGGIELGN.zip

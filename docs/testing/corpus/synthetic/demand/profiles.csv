@@ -1,0 +1,4 @@
+node_id,category,q0_m3h,alpha_m3h_per_c,t_threshold_c,daily_profile_id
+LVR01,residential,12.0,2.5,17.0,weekday_winter
+LVR01,industrial,800.0,0.0,17.0,flat
+JNC01,tertiary,45.0,1.2,17.0,weekday_winter

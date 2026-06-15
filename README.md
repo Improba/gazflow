@@ -4,24 +4,12 @@ Natural gas network flow simulator, inspired by SIMONE.
 
 ## Visual overview
 
-<table>
-  <tr>
-    <td align="center" width="33%">
-      <img src="docs/assets/overview-3d-network.png" alt="3D view of the transport network in GazFlow" />
-    </td>
-    <td align="center" width="33%">
-      <img src="docs/assets/scenario-control-panel.png" alt="GazFlow simulation control panel" />
-    </td>
-    <td align="center" width="33%">
-      <img src="docs/assets/simulation-results-convergence.png" alt="Hydraulic results and convergence in GazFlow" />
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><em>3D network map</em></td>
-    <td align="center"><em>Scenario control</em></td>
-    <td align="center"><em>Reading results</em></td>
-  </tr>
-</table>
+
+|                  |                    |                   |
+| ---------------- | ------------------ | ----------------- |
+|                  |                    |                   |
+| *3D network map* | *Scenario control* | *Reading results* |
+
 
 ## What GazFlow does (business vision)
 
@@ -44,8 +32,8 @@ The steady-state hydraulic core still solves for pressures and pipe flows from *
 
 - **From GasLib (`.net`)**: optional `flow_min` / `flow_max` on nodes and pipes are parsed into the graph. Node bounds appear on `GET /api/network` as `flow_min_m3s` / `flow_max_m3s`. Pipe bounds are kept on the backend and used whenever you run a capacity-aware solve.
 - **From the client**: `POST /api/simulate` and the WebSocket `start_simulation` message accept optional `capacity_bounds` (`{ "nodeId": { "min", "max" } }`, m³/s) and optional `mode`:
-  - **`check`** — Run the usual solve with your demands, then return **`capacity_violations`** where effective node net flows or pipe flows fall outside bounds.
-  - **`optimize`** — Iterative **projection**: bounded free-node demands are clamped and the hydraulic solve is repeated; if a **slack** node (fixed pressure) would exceed its bounds, bounded free-node demands are adjusted proportionally until slack is feasible or an infeasibility / stagnation diagnostic is returned. The response includes **adjusted demands**, **active bounds**, and a simple squared-distance **objective** vs the target scenario.
+  - `**check*`* — Run the usual solve with your demands, then return `**capacity_violations**` where effective node net flows or pipe flows fall outside bounds.
+  - `**optimize**` — Iterative **projection**: bounded free-node demands are clamped and the hydraulic solve is repeated; if a **slack** node (fixed pressure) would exceed its bounds, bounded free-node demands are adjusted proportionally until slack is feasible or an infeasibility / stagnation diagnostic is returned. The response includes **adjusted demands**, **active bounds**, and a simple squared-distance **objective** vs the target scenario.
 
 This supports operational questions such as “does this nomination respect entry/exit-style envelopes?” and “what feasible demands are closest if the source is capped?”. It is **not** full market or contract optimisation (products, time slices, tariffs) unless you encode them yourself as static min/max.
 
@@ -79,16 +67,18 @@ That’s it. Rust and Node toolchains live inside the containers.
 
 ## Scripts
 
-| Script | Description |
-|--------|-------------|
-| `./scripts/dev.sh` | Starts back + front via Docker Compose |
-| `./scripts/stop.sh` | Stops all containers |
-| `./scripts/back-shell.sh` | Shell in the back container (`cargo add`, etc.) |
-| `./scripts/front-shell.sh` | Shell in the front container (`npm install`, etc.) |
-| `./scripts/back-test.sh` | Runs `cargo test` in the container |
-| `./scripts/front-test.sh` | Runs `npm test` in the container |
-| `./scripts/ci.sh` | Full CI (build + back & front tests) |
-| `./scripts/fetch_gaslib.sh` | Downloads GasLib data |
+
+| Script                      | Description                                        |
+| --------------------------- | -------------------------------------------------- |
+| `./scripts/dev.sh`          | Starts back + front via Docker Compose             |
+| `./scripts/stop.sh`         | Stops all containers                               |
+| `./scripts/back-shell.sh`   | Shell in the back container (`cargo add`, etc.)    |
+| `./scripts/front-shell.sh`  | Shell in the front container (`npm install`, etc.) |
+| `./scripts/back-test.sh`    | Runs `cargo test` in the container                 |
+| `./scripts/front-test.sh`   | Runs `npm test` in the container                   |
+| `./scripts/ci.sh`           | Full CI (build + back & front tests)               |
+| `./scripts/fetch_gaslib.sh` | Downloads GasLib data                              |
+
 
 ## Adding a dependency
 
@@ -123,3 +113,4 @@ The `Cargo.toml` and `package.json` files are on the shared volume: changes are 
 - [Capacity constraints plan](docs/plans/capacity-constraints-plan.md)
 - [Implementation plan (shared)](docs/plans/implementation-plan.md)
 - [MVP features](docs/features/mvp.md)
+

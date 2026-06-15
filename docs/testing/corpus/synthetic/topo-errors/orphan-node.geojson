@@ -1,0 +1,36 @@
+{
+  "type": "FeatureCollection",
+  "name": "orphan-node",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "ID_NOEUD": "SRC01", "TYPE": "ALIM", "P_CONSIGNE_BAR": 70.0, "ALTITUDE_M": 0 },
+      "geometry": { "type": "Point", "coordinates": [2.35, 48.85] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "ID_NOEUD": "ORPHAN", "TYPE": "JONC", "ALTITUDE_M": 0 },
+      "geometry": { "type": "Point", "coordinates": [2.36, 48.86] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "ID_CANA": "P01",
+        "NOEUD_AMONT": "SRC01",
+        "NOEUD_AVAL": "LVR01",
+        "LONGUEUR_M": 1000,
+        "DIAMETRE_MM": 500,
+        "RUGOSITE_MM": 0.05
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[2.35, 48.85], [2.37, 48.85]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "ID_NOEUD": "LVR01", "TYPE": "LIVR", "ALTITUDE_M": 0 },
+      "geometry": { "type": "Point", "coordinates": [2.37, 48.85] }
+    }
+  ]
+}

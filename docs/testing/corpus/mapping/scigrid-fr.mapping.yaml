@@ -1,0 +1,30 @@
+# Mapping SciGRID_gas IGGIELGN (extrait FR) → GazFlow
+# Fichiers attendus après ./scripts/fetch_test_corpus.sh :
+#   external/scigrid/fr-snippet/IGGIELGN_PipeSegments.geojson
+#   external/scigrid/fr-snippet/IGGIELGN_Nodes.geojson (nœuds dérivés)
+
+format: geojson
+source: scigrid_iggielgn
+
+nodes:
+  id_field: id
+  lat_field: geometry.coordinates[1]
+  lon_field: geometry.coordinates[0]
+  # SciGRID nœuds dérivés : type inféré depuis connexions (production → source, consumer → sink)
+
+pipes:
+  file: IGGIELGN_PipeSegments.geojson
+  id_field: id
+  from_field: _derived_from  # extrait au fetch depuis géométrie + nœuds proches
+  to_field: _derived_to
+  length_field: param.length_km
+  length_unit: km
+  diameter_field: param.diameter_mm
+  diameter_unit: mm
+  roughness_default_mm: 0.05
+  pressure_max_field: param.max_pressure_bar
+
+notes: |
+  SciGRID ne fournit pas d'altitude ni de rugosité par pipe.
+  Les tests P6 valident l'import et la topologie ; la simulation P7+ peut
+  utiliser roughness_default et altitudes nulles sur cet extrait.

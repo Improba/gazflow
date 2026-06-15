@@ -13,23 +13,39 @@ echo "  GazFlow CI (Docker)"
 echo "========================================="
 
 echo ""
-echo "--- [1/5] Build des images ---"
+echo "--- [0/8] Corpus de test (local) ---"
+if [[ -x "$SCRIPT_DIR/verify_test_corpus.sh" ]]; then
+  "$SCRIPT_DIR/verify_test_corpus.sh"
+else
+  echo "  skip verify_test_corpus.sh (absent ou non exécutable)"
+fi
+
+echo ""
+echo "--- [1/8] Build des images ---"
 docker compose build
 
 echo ""
-echo "--- [2/5] Rust : cargo check ---"
+echo "--- [2/8] Rust : cargo check ---"
 docker compose run --rm back cargo check
 
 echo ""
-echo "--- [3/5] Rust : cargo test ---"
+echo "--- [3/8] Rust : clippy ---"
+docker compose run --rm back cargo clippy -- -D warnings
+
+echo ""
+echo "--- [4/8] Rust : cargo test ---"
 docker compose run --rm back cargo test
 
 echo ""
-echo "--- [4/5] Frontend : npm install ---"
+echo "--- [5/8] Frontend : npm install ---"
 docker compose run --rm front npm install
 
 echo ""
-echo "--- [5/5] Frontend : build ---"
+echo "--- [6/8] Frontend : npm test ---"
+docker compose run --rm front npm test
+
+echo ""
+echo "--- [7/8] Frontend : build ---"
 docker compose run --rm front npx quasar build
 
 echo ""

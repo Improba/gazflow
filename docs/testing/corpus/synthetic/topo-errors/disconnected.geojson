@@ -1,0 +1,56 @@
+{
+  "type": "FeatureCollection",
+  "name": "disconnected",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "ID_NOEUD": "S1", "TYPE": "ALIM", "P_CONSIGNE_BAR": 70.0, "ALTITUDE_M": 0 },
+      "geometry": { "type": "Point", "coordinates": [2.35, 48.85] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "ID_NOEUD": "D1", "TYPE": "LIVR", "ALTITUDE_M": 0 },
+      "geometry": { "type": "Point", "coordinates": [2.36, 48.85] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "ID_CANA": "P01",
+        "NOEUD_AMONT": "S1",
+        "NOEUD_AVAL": "D1",
+        "LONGUEUR_M": 3000,
+        "DIAMETRE_MM": 500,
+        "RUGOSITE_MM": 0.05
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[2.35, 48.85], [2.36, 48.85]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "ID_NOEUD": "S2", "TYPE": "ALIM", "P_CONSIGNE_BAR": 60.0, "ALTITUDE_M": 0 },
+      "geometry": { "type": "Point", "coordinates": [2.40, 48.90] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "ID_NOEUD": "D2", "TYPE": "LIVR", "ALTITUDE_M": 0 },
+      "geometry": { "type": "Point", "coordinates": [2.41, 48.90] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "ID_CANA": "P02",
+        "NOEUD_AMONT": "S2",
+        "NOEUD_AVAL": "D2",
+        "LONGUEUR_M": 2000,
+        "DIAMETRE_MM": 400,
+        "RUGOSITE_MM": 0.05
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[2.40, 48.90], [2.41, 48.90]]
+      }
+    }
+  ]
+}

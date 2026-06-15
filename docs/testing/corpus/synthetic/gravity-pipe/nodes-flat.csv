@@ -1,0 +1,3 @@
+id,type,lon,lat,altitude_m,pressure_fixed_bar
+UP,source,1.0,45.0,100.0,65.0
+DOWN,sink,1.01,45.0,100.0,

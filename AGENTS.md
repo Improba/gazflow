@@ -6,6 +6,7 @@ This file defines contribution rules for agents/assistants only. Detailed execut
 
 - Setup and scripts: `README.md`
 - Test execution: `docs/testing/README.md`
+- Operational test corpus (P6–P13): `docs/testing/corpus/README.md`
 - Project priorities and detailed scientific protocol (shared): `docs/plans/implementation-plan.md`
 - Local unversioned plans/drafts: `docs/temps/`
 - Physical model / equations: `docs/science/equations.md`

@@ -111,6 +111,7 @@ Define a **stable, versioned and testable** export contract for simulation resul
 - `flows` sorted by `pipe_id` (lexicographic order).
 - Numbers exported as `f64` (no locale format with comma).
 - Dates in ISO-8601 UTC format.
+- `units.flow` : clé historique `m3/s` = débit **normal** (Nm³/s aux conditions normales 15 °C / 1,01325 bar), aligné sur le solveur et GasLib.
 
 ---
 

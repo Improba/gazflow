@@ -1,0 +1,26 @@
+# Réseau 2 nœuds en pente (Δz = 150 m) pour tests gravité P7
+format: csv
+nodes:
+  id_field: id
+  type_field: type
+  type_mapping:
+    source: source
+    sink: sink
+    innode: innode
+  lon_field: lon
+  lat_field: lat
+  elevation_field: altitude_m
+  pressure_fixed_field: pressure_fixed_bar
+pipes:
+  id_field: id
+  from_field: from
+  to_field: to
+  length_field: length_m
+  diameter_field: diameter_mm
+  diameter_unit: mm
+  roughness_field: roughness_mm
+  roughness_unit: mm
+defaults:
+  sink_demand_m3s: -30.0
+
+# Variantes pour T7-1 / T7-2 : dupliquer nodes.csv avec altitude_m inversée (descente)

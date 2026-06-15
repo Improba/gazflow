@@ -1,0 +1,27 @@
+# Configuration calage synthétique (P13) — à associer à synthetic/minimal-line
+network_fixture: synthetic/minimal-line
+reference_network: gaslib  # vérité générée par simu sans bruit
+
+parameters:
+  - id: P01_roughness_mm
+    element: P01
+    kind: roughness
+    initial: 0.05
+    min: 0.01
+    max: 0.5
+    free: true
+  - id: LVR01_demand
+    element: LVR01
+    kind: demand
+    initial: -50.0
+    min: -120.0
+    max: -10.0
+    free: true
+
+objective:
+  weights_from_uncertainty: true
+  regularization: 0.01
+
+expected_metrics:
+  rmse_max_bar: 0.5
+  r2_min: 0.95

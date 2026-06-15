@@ -1,0 +1,53 @@
+openapi: 3.0.3
+info:
+  title: GazFlow API
+  version: 0.2.0
+  description: Stub OpenAPI — routes principales post-MVP. Génération complète via utoipa prévue.
+paths:
+  /api/network:
+    get:
+      summary: Réseau actif (nœuds, pipes, gaz)
+  /api/network/gas-composition:
+    patch:
+      summary: Met à jour la composition gaz
+  /api/import:
+    post:
+      summary: Import réseau (GeoJSON, CSV, Shapefile)
+  /api/simulate:
+    post:
+      summary: Simulation steady-state
+  /api/simulate/timeseries:
+    post:
+      summary: Série temporelle 24h
+  /api/simulate/transient:
+    post:
+      summary: Transitoire (mode quasi_steady ou pde)
+  /api/simulate/compare:
+    post:
+      summary: Compare deux scénarios topologiques (ΔP, ΔQ)
+  /api/scenarios:
+    get:
+      summary: Liste scénarios du dataset actif
+    post:
+      summary: Crée un scénario (diff vs baseline)
+  /api/scenarios/{id}/apply:
+    post:
+      summary: Applique un scénario → réseau modifié
+  /api/contingency:
+    post:
+      summary: Analyse N-1
+  /api/contingency/export:
+    post:
+      summary: Export rapport N-1
+  /api/calibration:
+    post:
+      summary: Calage SCADA
+  /api/exports:
+    get:
+      summary: Historique des exports
+  /api/exports/{id}/download:
+    get:
+      summary: Télécharge un export archivé
+  /api/ws/sim:
+    get:
+      summary: WebSocket simulation steady / timeseries / contingency

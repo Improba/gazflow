@@ -1,0 +1,2 @@
+id,from,to,length_m,diameter_mm,roughness_mm
+G01,UP,DOWN,10000.0,800.0,0.05

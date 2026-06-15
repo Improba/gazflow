@@ -2,6 +2,17 @@
 
 This document complements `README.md` with a focus on test execution. Environment setup (Docker, service startup, scripts) remains in `README.md`.
 
+## Operational test corpus (P6–P13)
+
+Fixtures for the post-MVP roadmap live in `docs/testing/corpus/`:
+
+```bash
+./scripts/fetch_test_corpus.sh   # GasLib-39, TRR154 transient, SciGRID FR snippet
+./scripts/verify_test_corpus.sh
+```
+
+Synthetic fixtures (GeoJSON, CSV, mapping YAML, SCADA) are versioned under `corpus/synthetic/`. Downloaded assets go to `corpus/external/` (gitignored). See `corpus/README.md` and `corpus/manifest.yaml`.
+
 ## Scientific validation
 
 The detailed scientific validation protocol is maintained in `docs/plans/implementation-plan.md` (Phase 2).

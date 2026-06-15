@@ -11,6 +11,7 @@ GASLIB_BASE="https://gaslib.zib.de"
 declare -A DATASET_URLS=(
     ["GasLib-11"]="$GASLIB_BASE/download/testData/GasLib-11-v1-20211130.zip"
     ["GasLib-24"]="$GASLIB_BASE/download/testData/GasLib-24-v1-20211130.zip"
+    ["GasLib-39"]="$GASLIB_BASE/download/testData/GasLib-39-v1-20231119.zip"
     ["GasLib-40"]="$GASLIB_BASE/download/testData/GasLib-40-v1-20211130.zip"
     ["GasLib-135"]="$GASLIB_BASE/download/testData/GasLib-135-v1-20211130.zip"
     ["GasLib-582"]="$GASLIB_BASE/download/data/GasLib-582-v2-20211129.zip"
@@ -26,7 +27,7 @@ REQUESTED="${1:-GasLib-11}"
 
 if [[ -z "${DATASET_URLS[$REQUESTED]+x}" ]]; then
     echo "Dataset inconnu : $REQUESTED"
-    echo "Disponibles : ${!DATASET_URLS[*]}"
+    echo "Disponibles : ${!DATASET_URLS[*]} (GasLib-39 aussi via ./scripts/fetch_test_corpus.sh dans docs/testing/corpus/)"
     exit 1
 fi
 

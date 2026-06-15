@@ -1,0 +1,5 @@
+element_id,measurement_type,value,unit,timestamp,uncertainty
+SRC01,pressure,69.8,bar,2025-01-15T08:00:00Z,0.2
+JNC01,pressure,62.1,bar,2025-01-15T08:00:00Z,0.3
+LVR01,pressure,58.4,bar,2025-01-15T08:00:00Z,0.3
+P01,flow,45.2,m3s,2025-01-15T08:00:00Z,1.5

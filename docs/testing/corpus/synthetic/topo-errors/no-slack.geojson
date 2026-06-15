@@ -1,0 +1,31 @@
+{
+  "type": "FeatureCollection",
+  "name": "no-slack",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "ID_NOEUD": "A", "TYPE": "JONC", "ALTITUDE_M": 0 },
+      "geometry": { "type": "Point", "coordinates": [2.35, 48.85] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "ID_NOEUD": "B", "TYPE": "LIVR", "ALTITUDE_M": 0 },
+      "geometry": { "type": "Point", "coordinates": [2.36, 48.85] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "ID_CANA": "P01",
+        "NOEUD_AMONT": "A",
+        "NOEUD_AVAL": "B",
+        "LONGUEUR_M": 2000,
+        "DIAMETRE_MM": 400,
+        "RUGOSITE_MM": 0.05
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[2.35, 48.85], [2.36, 48.85]]
+      }
+    }
+  ]
+}
