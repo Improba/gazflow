@@ -3,8 +3,8 @@
 > Document maître pour terminer le post-MVP P6–P13. Mode équipe, exécution autonome par vagues parallélisables.
 > Complète `production-sprint-plan.md` (vagues A–C ✅) et remplace le backlog D–G par un découpage exécutable.
 
-**Date** : 2026-06-14  
-**Référence état code** : `cargo test --lib` 227/227 · `npm test` 56/56 · ~60 fichiers modifiés non commités sur `main`
+**Date** : 2026-06-15  
+**Référence état code** : `cargo test --lib` 237/237 · `npm test` 62/62 · commits `da95752`–`8132a14` sur `main`
 
 ---
 
@@ -19,15 +19,15 @@ Un phase est **100 %** quand :
 
 | Phase | Avancement réel | Reste pour 100 % |
 |-------|-----------------|------------------|
-| P6 Import | ~100 % | Fixture Shapefile corpus, doc |
-| P7 Physique | ~78 % | GERG/PR-78, thermique (option prod), Re–Q Jacobien |
-| P8 Régulation | ~92 % | Cv ISA, Jacobien analytique (remplace FD) |
-| P9 Profils | ~96 % | Linepack couplé (via P11), météo spatiale (option) |
-| P10 N-1 | ~98 % | Roadmap doc seulement — code complet |
-| P11 Transitoire | ~42 % | **PDE 1D + WS + player UI** (goulot XL) |
-| P12 Édition | ~65 % | Scénarios diffs, compare ΔP/ΔQ, export GeoJSON édité |
-| P13 Calage | ~82 % | LM multi-param, calage demandes, perf LM |
-| Transversal | ~70 % | Commit, CI corpus, OpenAPI, export history API |
+| P6 Import | ~100 % | Fixture Shapefile corpus |
+| P7 Physique | ~88 % | GERG-2008, thermique conduites, Re–Q Jacobien |
+| P8 Régulation | ~92 % | Cv ISA complet, Jacobien analytique |
+| P9 Profils | ~98 % | Linepack couplé entre pas horaires (P11), météo spatiale |
+| P10 N-1 | ~100 % | — |
+| P11 Transitoire | ~55 % | PDE réseaux branchés, WS, TransientChart, CFL adaptatif |
+| P12 Édition | ~85 % | Export GeoJSON édité, édition carte avancée |
+| P13 Calage | ~90 % | LM >5 params, scatter plot, perf LM |
+| Transversal | ~85 % | OpenAPI généré, validation externe débits |
 
 **Estimation globale** : ~3 à 4 mois calendaires en parallèle (2 agents backend + 1 front + revues), dont **6–10 semaines** sur P11 seul.
 
@@ -359,7 +359,7 @@ Phase 4  Revue Bugbot + Security + mise à jour roadmap 100 %
 | F | ✅ | 2026-06-14 | PR-78 auto |
 | G | 🟡 | — | PDE scaffold + UI player ; réseaux complexes restants |
 | H | ✅ | 2026-06-14 | LM ≤5 params |
-| I | 🟡 | — | export list API ✅ ; OpenAPI stub restant |
+| I | 🟡 | 2026-06-15 | export list ✅ ; OpenAPI stub ✅ ; utoipa restant |
 
 ---
 

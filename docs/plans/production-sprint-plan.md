@@ -109,13 +109,15 @@ Voir `operational-roadmap.md` sections P12, P8, P7, P11 pour détail tâches.
 | C1 Levenberg-Marquardt global (`calibration/lm.rs`) | ✅ |
 | C2 Carte résidus SCADA (CalibrationPage + CesiumViewer) | ✅ |
 
-**Vérification** : `cargo test --lib` → 219/219 ; `npm test` → 50/50 ; `npm run build` OK.
+**Vérification (2026-06-15)** : `cargo test --lib` → 237/237 ; `npm test` → 62/62 ; `npm run build` OK.
 
-### Prochaine vague (D–G)
+### Vagues D–I (2026-06-15)
 
-| Vague | Cible | Priorité |
-|-------|-------|----------|
-| D | P12 scénarios diffs, compare ΔP/ΔQ, export GeoJSON | M |
-| E | P8 Cv ISA + Jacobien analytique | M |
-| F | P7 ΔP H₂, thermique conduites, GERG | M |
-| G | P11 PDE 1D implicite + TransientPlayer | XL |
+| Vague | Cible | Statut |
+|-------|-------|--------|
+| D | P12 scénarios + compare | ✅ |
+| E | P8 Cv ISA + Jacobien analytique | 🟡 MVP (Cv diamètre effectif, FD régulateur) |
+| F | P7 PR-78 auto H₂ | ✅ |
+| G | P11 PDE scaffold + TransientPlayer | 🟡 MVP |
+| H | P13 LM multi-param | ✅ MVP |
+| I | Export history + OpenAPI stub | 🟡 |

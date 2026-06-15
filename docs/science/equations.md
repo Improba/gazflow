@@ -152,7 +152,7 @@ Two reference states coexist in the solver; they must not be conflated:
 
 Hydraulic and calorific quantities are therefore reported at different standard temperatures by design. Comparing PCS (0 °C basis) with a volumetric delivery forecast (15 °C basis) requires an explicit conversion if energy balances are needed.
 
-**H₂ blends:** Papay + Kay is validated for classical natural gas (H₂ ≲ 10–20 %). Above ~20 % H₂, the API returns a physics warning; prefer GERG-2008 or PR-78 for accurate $Z$ and $\rho$.
+**H₂ blends:** Papay + Kay is validated for classical natural gas (H₂ ≲ 10–20 %). Above ~20 % H₂, the solver **automatically switches to PR-78** for $Z$ and $\rho$ (`GasComposition::compressibility()`); the API still returns an informational warning. GERG-2008 remains a future upgrade for highest accuracy.
 
 At fixed normal flow $Q_n$, Reynolds based on $\rho_{\mathrm{std}}$ and $\mu(P_{\mathrm{ligne}})$ **decreases** when H₂ is added (lower standard density dominates over lower viscosity); turbulent regime is nevertheless maintained and total $\Delta P_{\mathrm{friction}}$ still drops because $\rho(P_{\mathrm{moy}})$ in the resistance term decreases faster than $f(Re)$ adjusts.
 

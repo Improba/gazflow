@@ -39,7 +39,7 @@ From the project root:
 ```bash
 ./scripts/back-test.sh     # Rust backend tests
 ./scripts/front-test.sh    # Frontend tests
-./scripts/ci.sh            # Full build + tests
+./scripts/ci.sh            # Full build + tests (+ verify_test_corpus.sh)
 ./scripts/validation-pack.sh # Backend scientific protocol T1→T10
 ```
 

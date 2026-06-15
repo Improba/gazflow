@@ -42,13 +42,13 @@ Un exploitant gaz (type Natran) a besoin de simuler **son propre réseau** (pas 
 | Phase | Nom | Objectif métier | Prérequis | Statut |
 |-------|-----|----------------|-----------|--------|
 | **P6** | Import réseau réel | Charger un réseau depuis GeoJSON/Shapefile/CSV | — | ✅ ~100 % |
-| **P7** | Modèle physique étendu | Gravité, gaz multi-composant, H₂, viscosité dynamique | — | 🟨 ~65 % |
+| **P7** | Modèle physique étendu | Gravité, gaz multi-composant, H₂, viscosité dynamique | — | 🟨 ~88 % |
 | **P8** | Organes de régulation | Détendeurs, régulateurs PID, postes de livraison | P6 | 🟨 ~92 % |
-| **P9** | Profils de demande | Courbes horaires, thermosensibilité, catégories clients | P6 | 🟨 ~95 % |
-| **P10** | Analyse N-1 | Simulation automatique de contingences | P8, P9 | 🟨 ~90 % |
-| **P11** | Simulation transitoire | Résolution PDE instationnaire (linepack, propagation) | P7, P8 | 🟨 ~40 % |
-| **P12** | Édition topologique | Création/modification du réseau dans l'UI | P6 | 🟨 ~65 % |
-| **P13** | Calage SCADA | Comparaison mesures/simulation, calibration inverse | P6, P9 | 🟨 ~80 % |
+| **P9** | Profils de demande | Courbes horaires, thermosensibilité, catégories clients | P6 | ✅ ~98 % |
+| **P10** | Analyse N-1 | Simulation automatique de contingences | P8, P9 | ✅ ~100 % |
+| **P11** | Simulation transitoire | Résolution PDE instationnaire (linepack, propagation) | P7, P8 | 🟨 ~55 % |
+| **P12** | Édition topologique | Création/modification du réseau dans l'UI | P6 | 🟨 ~85 % |
+| **P13** | Calage SCADA | Comparaison mesures/simulation, calibration inverse | P6, P9 | 🟨 ~90 % |
 
 ```
 P6 (Import) ──┬── P8 (Régulation) ──┬── P10 (N-1)
@@ -277,7 +277,7 @@ avec $x = (P_1 - P_2) / P_1$ (ratio de chute), $Y$ facteur d'expansion, $N$ cons
 | 8.4 | Parser organes depuis GeoJSON/CSV (mapping) + GasLib `controlValve` | `import/mapping.rs`, `gaslib/parser.rs` | ✅ |
 | 8.5 | Boucle externe régulateur : slack aval conditionnel + bypass | `solver/regulator.rs`, `solver/steady_state.rs` | ✅ |
 | 8.6 | Modèle hydraulique vanne Cv (approx. ouverture → diamètre effectif) | `solver/steady_state.rs` | 🟡 MVP |
-| 8.7 | Intégration dans l'assemblage du Jacobien (dérivées partielles pour régulateur et vanne Cv) | `solver/newton.rs` | ⬜ |
+| 8.7 | Jacobien régulateur (FD sur ligne nœud active ; analytique Cv restant) | `solver/newton.rs` | 🟡 MVP |
 | 8.8 | Logique de commutation régulateur (actif / bypass) avec hystérésis | `solver/regulator.rs` | ✅ |
 | 8.9 | API : exposer les organes et leur état dans les résultats | `api/mod.rs`, `SolverResult` | ✅ |
 | 8.10 | Frontend : marqueurs carte + popup organes | `components/CesiumViewer.vue` | ✅ |
@@ -339,8 +339,8 @@ Les presets ciblent des **points de livraison ou postes de soutirage agrégés**
 | 9.5 | **Simulation multi-pas** : boucle sur une série temporelle (T_ext horaire), résolution steady-state à chaque pas, agrégation des résultats | `solver/timeseries.rs` | ✅ |
 | 9.6 | API : endpoint `POST /api/simulate/timeseries` avec série météo + profils | `api/mod.rs` | ✅ |
 | 9.7 | API : WebSocket `start_timeseries_simulation` avec streaming pas-par-pas | `api/ws.rs` | ✅ |
-| 9.8 | Frontend : scénario temporel (T_ext manuelle, profils par nœud ; météo CSV ⬜) | `components/ScenarioPanel.vue` | 🟡 MVP |
-| 9.9 | Frontend : graphiques temporels (pression min, soutirage total ; MVP) | `components/TimeseriesChart.vue` | 🟡 MVP |
+| 9.8 | Frontend : scénario temporel (T_ext, profils par nœud, météo CSV, week-end) | `components/ScenarioPanel.vue` | ✅ |
+| 9.9 | Frontend : graphiques temporels (pression min, soutirage total) | `components/TimeseriesChart.vue` | ✅ MVP |
 | 9.10 | Frontend : animation temporelle sur la carte (slider de temps, couleurs évoluent) | `components/CesiumViewer.vue` | ✅ MVP |
 
 ### Tests
@@ -379,17 +379,17 @@ Pour chaque élément $e$ d'un ensemble d'éléments critiques $\mathcal{C}$ :
 
 | # | Tâche | Fichiers | Status |
 |---|-------|----------|--------|
-| 10.1 | Struct `ContingencyCase { element_id, element_type, action: Remove|Close|Disable }` | `solver/contingency.rs` (nouveau) | ⬜ |
-| 10.2 | Fonction `generate_n_minus_1_cases(network, critical_set) → Vec<ContingencyCase>` : génération automatique (toutes les sources, pipes principaux, compresseurs) | `solver/contingency.rs` | ⬜ |
-| 10.3 | Fonction `apply_contingency(network, case) → GasNetwork` : réseau modifié (retrait d'arc, fermeture vanne, suppression source) | `solver/contingency.rs` | ⬜ |
-| 10.4 | Exécution parallèle des cas N-1 avec Rayon (chaque cas indépendant) | `solver/contingency.rs` | ⬜ |
-| 10.5 | Struct `ContingencyReport` : matrice élément × nœud avec violation min/max | `solver/contingency.rs` | ⬜ |
-| 10.6 | Identification automatique des cas « rouges » (au moins une violation) et « verts » (aucune) | `solver/contingency.rs` | ⬜ |
-| 10.7 | API : `POST /api/contingency` avec choix du périmètre (all, sources_only, custom list) | `api/contingency.rs` | ⬜ |
-| 10.8 | API : WebSocket streaming des résultats cas par cas (progress bar globale) | `api/ws.rs` | ⬜ |
-| 10.9 | Frontend : page d'analyse N-1 avec tableau de résultats, tri par sévérité | `pages/ContingencyPage.vue` | ⬜ |
-| 10.10 | Frontend : coloration carte en mode N-1 (overlay des violations par cas sélectionné) | `components/CesiumViewer.vue` | ⬜ |
-| 10.11 | Export du rapport N-1 (Excel avec une feuille par cas, feuille synthèse) | `api/export.rs` | ⬜ |
+| 10.1 | Struct `ContingencyCase { element_id, element_type, action }` | `solver/contingency.rs` | ✅ |
+| 10.2 | `generate_n_minus_1_cases` : sources, vannes, compresseurs | `solver/contingency.rs` | ✅ |
+| 10.3 | `apply_contingency` : réseau dégradé | `solver/contingency.rs` | ✅ |
+| 10.4 | Exécution parallèle Rayon | `solver/contingency.rs` | ✅ |
+| 10.5 | `ContingencyReport` + violations pression | `solver/contingency.rs` | ✅ |
+| 10.6 | Cas rouges / verts | `solver/contingency.rs` | ✅ |
+| 10.7 | API `POST /api/contingency` (scope all / sources / custom) | `api/mod.rs` | ✅ |
+| 10.8 | WebSocket `start_contingency_simulation` | `api/ws.rs` | ✅ |
+| 10.9 | Frontend `ContingencyPage.vue` | `pages/ContingencyPage.vue` | ✅ |
+| 10.10 | Overlay carte violations | `CesiumViewer.vue`, `ContingencyPage.vue` | ✅ |
+| 10.11 | Export N-1 XLSX/CSV | `api/export.rs`, `POST /api/contingency/export` | ✅ |
 
 ### Tests
 
@@ -439,18 +439,18 @@ Avec $P = \rho Z R T / M$ (équation d'état).
 
 | # | Tâche | Fichiers | Status |
 |---|-------|----------|--------|
-| 11.1 | Discrétisation spatiale : segmentation des pipes en $N_x$ cellules, maillage adaptatif | `solver/transient/mesh.rs` | ⬜ |
-| 11.2 | Assemblage du système transitoire : résidus et Jacobien pour continuité + QdM | `solver/transient/system.rs` | ⬜ |
-| 11.3 | Conditions aux limites : pression imposée (source), débit imposé (sink), jonctions (conservation masse + continuité pression) | `solver/transient/boundary.rs` | ⬜ |
-| 11.4 | Intégration temporelle : Euler implicite avec pas adaptatif (CFL + convergence Newton) | `solver/transient/time_integration.rs` | ⬜ |
-| 11.5 | Initialisation : solution steady-state comme condition initiale | `solver/transient/mod.rs` | ⬜ |
-| 11.6 | Événements temporels : fermeture/ouverture vanne à $t_0$, changement consigne régulateur, variation source | `solver/transient/events.rs` | ⬜ |
-| 11.7 | Calcul du linepack : $\text{LP}(t) = \sum_{\text{pipes}} \int_0^L A \cdot \rho(x,t) \, dx$ | `solver/transient/linepack.rs` | ⬜ |
-| 11.8 | API : `POST /api/simulate/transient` avec durée, pas, événements | `api/mod.rs` | ⬜ |
-| 11.9 | WebSocket : streaming des snapshots transitoires (champs $P(x)$, $Q(x)$ par pipe) | `api/ws.rs` | ⬜ |
-| 11.10 | Frontend : timeline + animation de la propagation (couleurs évoluent dans le temps) | `components/TransientPlayer.vue` | ⬜ |
-| 11.11 | Frontend : graphiques P(t) et Q(t) pour un nœud/pipe sélectionné | `components/TransientChart.vue` | ⬜ |
-| 11.12 | Frontend : indicateur de linepack global et par zone | `components/LinepackGauge.vue` | ⬜ |
+| 11.1 | Maillage 1D par conduite (`n_cells_per_pipe`) | `solver/transient/mesh.rs` | ✅ MVP |
+| 11.2 | Système transitoire (Euler implicite tridiagonal par pipe) | `solver/transient/system.rs` | 🟡 MVP |
+| 11.3 | Conditions aux limites source/sink | `solver/transient/boundary.rs` | 🟡 MVP |
+| 11.4 | Intégration temporelle | `solver/transient/time_integration.rs` | 🟡 MVP |
+| 11.5 | Initialisation steady-state + modes `quasi_steady` / `pde` | `solver/transient/mod.rs` | ✅ |
+| 11.6 | Événements temporels (vanne, demande, consigne) | `solver/transient/events.rs` | ✅ |
+| 11.7 | Linepack agrégé $M = \sum \rho A L$ | `solver/transient/linepack.rs` | ✅ |
+| 11.8 | API `POST /api/simulate/transient` (+ `mode`, `n_cells_per_pipe`) | `api/mod.rs` | ✅ |
+| 11.9 | WebSocket streaming transitoire $P(x,t)$ | `api/ws.rs` | ⬜ |
+| 11.10 | Frontend timeline + player | `components/TransientPlayer.vue` | ✅ MVP |
+| 11.11 | Graphiques P(t), Q(t) dédiés | `components/TransientChart.vue` | ⬜ |
+| 11.12 | Jauge linepack par zone | `components/LinepackGauge.vue` | ⬜ (linepack dans steps API) |
 
 ### Tests
 
@@ -481,15 +481,15 @@ Permettre la création, modification et suppression d'éléments du réseau dire
 
 | # | Tâche | Fichiers | Status |
 |---|-------|----------|--------|
-| 12.1 | API CRUD : `POST/PUT/DELETE /api/network/nodes`, `/api/network/pipes`, `/api/network/equipment` | `api/network_edit.rs` | ⬜ |
-| 12.2 | Validation incrémentale : vérifier la cohérence du graphe après chaque modification | `import/validation.rs` | ⬜ |
-| 12.3 | **Scénarios topologiques** : sauvegarder des variantes du réseau (base, projet A, projet B) comme des diffs | `graph/scenarios.rs` | ⬜ |
-| 12.4 | Frontend : mode édition sur la carte (curseur, snap-to-grid, dessin de pipes) | `components/CesiumEditor.vue` | ⬜ |
-| 12.5 | Frontend : palette d'outils (ajouter nœud, tracer pipe, placer régulateur, supprimer) | `components/EditorToolbar.vue` | ⬜ |
-| 12.6 | Frontend : formulaire de propriétés (diamètre, longueur, rugosité, type) au clic sur un élément | `components/PropertyPanel.vue` | ⬜ |
-| 12.7 | Frontend : undo/redo (command pattern) | `stores/editor.ts` | ⬜ |
-| 12.8 | Export du réseau modifié (GeoJSON, CSV) | `api/export.rs` | ⬜ |
-| 12.9 | Comparaison de scénarios : simuler deux variantes et afficher les différences (ΔP, ΔQ) | `components/ComparePanel.vue` | ⬜ |
+| 12.1 | API CRUD nœuds / pipes | `api/network_edit.rs` | ✅ |
+| 12.2 | Validation incrémentale post-modification | `import/validation.rs` | ✅ |
+| 12.3 | Scénarios topologiques (diffs vs baseline) | `graph/scenarios.rs`, `api/scenarios.rs` | ✅ |
+| 12.4 | Édition carte avancée (snap, dessin pipe) | `CesiumViewer.vue` | 🟡 MVP |
+| 12.5 | Palette outils éditeur | `components/EditorToolbar.vue` | ✅ |
+| 12.6 | Panneau propriétés | `components/PropertyPanel.vue` | ✅ |
+| 12.7 | Undo/redo | `stores/editor.ts` | ✅ |
+| 12.8 | Export réseau modifié (GeoJSON, CSV) | `api/export.rs` | ⬜ |
+| 12.9 | Compare ΔP/ΔQ entre scénarios | `ComparePanel.vue`, `POST /api/simulate/compare` | ✅ |
 
 ### Tests
 
@@ -529,16 +529,16 @@ Résolution par **Levenberg-Marquardt** (réutilise le solveur direct existant c
 
 | # | Tâche | Fichiers | Status |
 |---|-------|----------|--------|
-| 13.1 | Struct `ScadaMeasurement { node_or_pipe_id, measurement_type: Pressure|Flow, value, timestamp, uncertainty }` | `calibration/mod.rs` (nouveau) | ⬜ |
-| 13.2 | Import SCADA depuis CSV (colonnes : id, type, valeur, timestamp) | `calibration/import.rs` | ⬜ |
-| 13.3 | Struct `CalibrationParameter` : quels paramètres sont libres (rugosités, demandes), bornes, valeur initiale | `calibration/mod.rs` | ⬜ |
-| 13.4 | Fonction objectif : écart simulation/mesures pondéré | `calibration/objective.rs` | ⬜ |
-| 13.5 | Solveur Levenberg-Marquardt (Jacobien par différences finies sur le solveur steady-state) | `calibration/optimizer.rs` | ⬜ |
-| 13.6 | Rapport de calage : paramètres avant/après, résidus, indicateurs qualité (RMSE, Nash-Sutcliffe, R²) | `calibration/report.rs` | ⬜ |
-| 13.7 | API : `POST /api/calibrate` avec mesures + paramètres libres → résultat de calage | `api/calibration.rs` | ⬜ |
-| 13.8 | Frontend : page de calage (import mesures, sélection paramètres, lancement, résultats) | `pages/CalibrationPage.vue` | ⬜ |
-| 13.9 | Frontend : graphique simulation vs mesures (scatter plot P_sim vs P_mes, droite de régression) | `components/CalibrationChart.vue` | ⬜ |
-| 13.10 | Frontend : carte avec écarts par nœud (coloration par résidu) | `components/CesiumViewer.vue` | ⬜ |
+| 13.1 | Struct `ScadaMeasurement` | `calibration/mod.rs` | ✅ |
+| 13.2 | Import SCADA CSV | `calibration/import.rs` | ✅ |
+| 13.3 | `CalibrationParameter` (rugosité globale, par pipe, `DemandScale`) | `calibration/mod.rs` | ✅ |
+| 13.4 | Fonction objectif pondérée | `calibration/objective.rs` | ✅ |
+| 13.5 | Levenberg-Marquardt (global + multi-param ≤5, FD) | `calibration/lm.rs`, `optimizer.rs` | ✅ MVP |
+| 13.6 | Rapport RMSE, R², résidus | `calibration/report.rs` | ✅ |
+| 13.7 | API `POST /api/calibrate` | `api/mod.rs` | ✅ |
+| 13.8 | Page calage | `pages/CalibrationPage.vue` | ✅ |
+| 13.9 | Scatter plot sim vs mesures | `components/CalibrationChart.vue` | ⬜ |
+| 13.10 | Carte résidus pression | `CalibrationPage.vue`, `CesiumViewer.vue` | ✅ |
 
 ### Tests
 
