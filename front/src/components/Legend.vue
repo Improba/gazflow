@@ -1,20 +1,25 @@
 <template>
   <q-card dark flat bordered class="legend-card">
     <q-card-section class="q-pa-sm">
-      <div class="text-subtitle2 q-mb-xs">Legende</div>
+      <div class="text-subtitle2 q-mb-xs">Légende</div>
 
-      <div class="text-caption text-grey-4">Debit (m3/s)</div>
-      <div class="legend-gradient flow-gradient q-mb-xs" />
-      <div class="row justify-between text-caption q-mb-sm">
-        <span>0</span>
-        <span>{{ maxAbsFlow.toFixed(2) }}</span>
-      </div>
+      <template v-if="hasSimulationData">
+        <div class="text-caption text-grey-4">Débit (Nm³/s)</div>
+        <div class="legend-gradient flow-gradient q-mb-xs" />
+        <div class="row justify-between text-caption q-mb-sm">
+          <span>0</span>
+          <span>{{ maxAbsFlow.toFixed(2) }}</span>
+        </div>
 
-      <div class="text-caption text-grey-4">Pression (bar)</div>
-      <div class="legend-gradient pressure-gradient q-mb-xs" />
-      <div class="row justify-between text-caption">
-        <span>{{ minPressure.toFixed(1) }}</span>
-        <span>{{ maxPressure.toFixed(1) }}</span>
+        <div class="text-caption text-grey-4">Pression (bar)</div>
+        <div class="legend-gradient pressure-gradient q-mb-xs" />
+        <div class="row justify-between text-caption">
+          <span>{{ minPressure.toFixed(1) }}</span>
+          <span>{{ maxPressure.toFixed(1) }}</span>
+        </div>
+      </template>
+      <div v-else class="text-caption text-grey-5">
+        Lancez une simulation pour afficher l'échelle des débits et pressions.
       </div>
     </q-card-section>
   </q-card>
@@ -29,18 +34,22 @@ const simulateStore = useSimulateStore();
 const flowValues = computed(() => Object.values(simulateStore.liveFlows));
 const pressureValues = computed(() => Object.values(simulateStore.livePressures));
 
+const hasSimulationData = computed(
+  () => flowValues.value.length > 0 || pressureValues.value.length > 0,
+);
+
 const maxAbsFlow = computed(() => {
   if (flowValues.value.length === 0) return 1;
   return Math.max(...flowValues.value.map((v) => Math.abs(v)), 1);
 });
 
 const minPressure = computed(() => {
-  if (pressureValues.value.length === 0) return 40;
+  if (pressureValues.value.length === 0) return 0;
   return Math.min(...pressureValues.value);
 });
 
 const maxPressure = computed(() => {
-  if (pressureValues.value.length === 0) return 70;
+  if (pressureValues.value.length === 0) return 0;
   return Math.max(...pressureValues.value);
 });
 </script>

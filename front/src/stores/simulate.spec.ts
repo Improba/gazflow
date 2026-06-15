@@ -111,4 +111,19 @@ describe('useSimulateStore', () => {
       });
     }
   });
+
+  it('rerunLastSimulation replays stored demands and mode', async () => {
+    const store = useSimulateStore();
+    await store.runSimulation(
+      { A: -3 },
+      { mode: 'check', capacity_bounds: { A: { min: -10, max: 0 } } },
+    );
+    store.loading = false;
+    wsSpies.startSimulation.mockClear();
+    await store.rerunLastSimulation();
+    expect(wsSpies.startSimulation).toHaveBeenCalledTimes(1);
+    const payload = wsSpies.startSimulation.mock.calls[0]?.[0];
+    expect(payload.demands).toEqual({ A: -3 });
+    expect(payload.mode).toBe('check');
+  });
 });

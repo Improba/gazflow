@@ -1,16 +1,40 @@
-import type { SimulationResult } from 'src/services/api';
+import type {
+  GasCompositionDto,
+  SimulationResult,
+  CapacityViolation,
+  PipeEquipmentDto,
+  ContingencyCase,
+  ContingencyReport,
+  ContingencyResult,
+  ContingencyScope,
+} from 'src/services/api';
+import type {
+  DemandProfileDto,
+  TimeseriesResultDto,
+  TimeseriesStepDto,
+  WeatherStepDto,
+} from 'src/utils/demandProfiles';
 
 export interface WsStartOptions {
   max_iter?: number;
   tolerance?: number;
   snapshot_every?: number;
+  /** 0 = pas de limite de durée côté serveur. */
   timeout_ms?: number;
   initial_pressures?: Record<string, number>;
+  gas_composition?: GasCompositionDto;
 }
 
 export interface WsCapacityOptions {
   capacity_bounds?: Record<string, { min: number; max: number }>;
   mode?: 'check' | 'optimize';
+}
+
+export interface WsTimeseriesOptions {
+  warm_start?: boolean;
+  max_iter?: number;
+  tolerance?: number;
+  gas_composition?: GasCompositionDto;
 }
 
 export interface WsSimulationResult {
@@ -28,10 +52,25 @@ type WsClientMessage =
       options?: WsStartOptions;
       capacity_bounds?: Record<string, { min: number; max: number }>;
       mode?: 'check' | 'optimize';
+      equipment_overrides?: Record<string, PipeEquipmentDto>;
     }
   | {
       type: 'cancel_simulation';
       run_id?: string;
+    }
+  | {
+      type: 'start_timeseries_simulation';
+      run_id?: string;
+      profiles: Record<string, DemandProfileDto>;
+      weather: WeatherStepDto[];
+      options?: WsTimeseriesOptions;
+    }
+  | {
+      type: 'start_contingency_simulation';
+      run_id?: string;
+      scope: ContingencyScope;
+      demands?: Record<string, number>;
+      custom_cases?: ContingencyCase[];
     };
 
 export type WsServerMessage =
@@ -58,6 +97,13 @@ export type WsServerMessage =
       seq: number;
       result: SimulationResult;
       total_ms: number;
+      /** Champs capacité au niveau racine (backend WS) — fusionnés dans le store. */
+      capacity_violations?: CapacityViolation[];
+      adjusted_demands?: Record<string, number>;
+      active_bounds?: string[];
+      objective_value?: number;
+      outer_iterations?: number;
+      infeasibility_diagnostic?: string | null;
     }
   | {
       type: 'cancelled';
@@ -71,6 +117,44 @@ export type WsServerMessage =
       seq: number;
       message: string;
       fatal: boolean;
+    }
+  | {
+      type: 'timeseries_started';
+      run_id: string;
+      seq: number;
+      total_hours: number;
+    }
+  | {
+      type: 'timeseries_step';
+      run_id: string;
+      seq: number;
+      step: TimeseriesStepDto;
+    }
+  | {
+      type: 'timeseries_finished';
+      run_id: string;
+      seq: number;
+      result: TimeseriesResultDto;
+      total_ms: number;
+    }
+  | {
+      type: 'contingency_started';
+      run_id: string;
+      seq: number;
+      total_cases: number;
+    }
+  | {
+      type: 'contingency_case';
+      run_id: string;
+      seq: number;
+      index: number;
+      result: ContingencyResult;
+    }
+  | {
+      type: 'contingency_finished';
+      run_id: string;
+      seq: number;
+      report: ContingencyReport;
     };
 
 export class SimulationWsClient {
@@ -114,6 +198,7 @@ export class SimulationWsClient {
     options?: WsStartOptions;
     capacityBounds?: Record<string, { min: number; max: number }>;
     mode?: 'check' | 'optimize';
+    equipmentOverrides?: Record<string, PipeEquipmentDto>;
   }): void {
     this.send({
       type: 'start_simulation',
@@ -122,6 +207,7 @@ export class SimulationWsClient {
       options: payload.options,
       capacity_bounds: payload.capacityBounds,
       mode: payload.mode,
+      equipment_overrides: payload.equipmentOverrides,
     });
   }
 
@@ -129,6 +215,36 @@ export class SimulationWsClient {
     this.send({
       type: 'cancel_simulation',
       run_id: runId,
+    });
+  }
+
+  startTimeseriesSimulation(payload: {
+    runId?: string;
+    profiles: Record<string, DemandProfileDto>;
+    weather: WeatherStepDto[];
+    options?: WsTimeseriesOptions;
+  }): void {
+    this.send({
+      type: 'start_timeseries_simulation',
+      run_id: payload.runId,
+      profiles: payload.profiles,
+      weather: payload.weather,
+      options: payload.options,
+    });
+  }
+
+  startContingencySimulation(payload: {
+    runId?: string;
+    scope: ContingencyScope;
+    demands?: Record<string, number>;
+    customCases?: ContingencyCase[];
+  }): void {
+    this.send({
+      type: 'start_contingency_simulation',
+      run_id: payload.runId,
+      scope: payload.scope,
+      demands: payload.demands,
+      custom_cases: payload.customCases,
     });
   }
 
@@ -149,7 +265,11 @@ export class SimulationWsClient {
       return;
     }
     try {
-      const parsed = JSON.parse(raw) as WsServerMessage;
+      const parsed: unknown = JSON.parse(raw);
+      if (!isWsServerMessage(parsed)) {
+        this.onError('invalid websocket payload: missing type');
+        return;
+      }
       this.onMessage(parsed);
     } catch (err) {
       this.onError(`invalid websocket payload: ${String(err)}`);
@@ -161,10 +281,34 @@ function toWsUrl(path: string): string {
   return buildWsUrlForOrigin(window.location.origin, path);
 }
 
+function isWsServerMessage(value: unknown): value is WsServerMessage {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { type?: unknown }).type === 'string'
+  );
+}
+
 export function buildWsUrlForOrigin(origin: string, path: string): string {
   const url = new URL(origin);
   const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${url.host}${path}`;
+}
+
+export function mergeConvergedMessage(
+  msg: Extract<WsServerMessage, { type: 'converged' }>,
+): SimulationResult {
+  const base = msg.result;
+  return {
+    ...base,
+    capacity_violations: msg.capacity_violations ?? base.capacity_violations ?? [],
+    adjusted_demands: msg.adjusted_demands ?? base.adjusted_demands,
+    active_bounds: msg.active_bounds ?? base.active_bounds,
+    objective_value: msg.objective_value ?? base.objective_value,
+    outer_iterations: msg.outer_iterations ?? base.outer_iterations,
+    infeasibility_diagnostic:
+      msg.infeasibility_diagnostic ?? base.infeasibility_diagnostic ?? null,
+  };
 }
 
 function waitForOpen(socket: WebSocket): Promise<void> {

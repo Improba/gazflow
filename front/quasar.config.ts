@@ -10,6 +10,7 @@ export default configure(() => {
     extras: ['roboto-font', 'material-icons'],
 
     build: {
+      distDir: 'dist/spa-build',
       target: { browser: ['es2022', 'firefox115', 'chrome115', 'safari14'] },
       vueRouterMode: 'history',
 

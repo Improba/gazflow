@@ -16,6 +16,7 @@
         icon="speed"
         color="dark"
         class="perf-toggle"
+        aria-label="Afficher le panneau de performance"
         @click="debugOverlayEnabled = !debugOverlayEnabled"
       />
       <div v-if="debugOverlayEnabled" class="perf-overlay">
@@ -24,15 +25,34 @@
         <div>Maj couleurs: {{ renderUpdateMs.toFixed(2) }} ms</div>
         <div>Entites: {{ entityCount }}</div>
       </div>
+      <div v-if="timeseriesStore.hasResult" class="timeseries-slider">
+        <div class="text-caption text-grey-3 q-mb-xs">
+          Heure {{ timeseriesStore.selectedHour }}h
+          <span v-if="selectedStep && !selectedStep.converged" class="text-red-4">
+            — échec convergence
+          </span>
+        </div>
+        <q-slider
+          :model-value="timeseriesStore.selectedStepIndex"
+          :min="0"
+          :max="Math.max(0, timeseriesStore.steps.length - 1)"
+          :step="1"
+          label
+          color="primary"
+          dark
+          @update:model-value="timeseriesStore.setSelectedStepIndex"
+        />
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import {
   Viewer,
   Entity,
+  Cartesian2,
   Cartesian3,
   Color,
   Material,
@@ -42,9 +62,25 @@ import {
   LabelStyle,
   VerticalOrigin,
   UrlTemplateImageryProvider,
+  ScreenSpaceEventHandler,
+  ScreenSpaceEventType,
+  defined,
+  Cartographic,
+  Math as CesiumMath,
 } from 'cesium';
 import { useNetworkStore } from 'src/stores/network';
 import { useSimulateStore } from 'src/stores/simulate';
+import { useTimeseriesStore } from 'src/stores/timeseries';
+import { useEditorStore } from 'src/stores/editor';
+import { pressureRange, pressureToCss } from 'src/utils/pressureColor';
+import { escapeHtml } from 'src/utils/escapeHtml';
+import {
+  equipmentKindLabel,
+  equipmentMarkerColor,
+  isEquipmentKind,
+  regulatorModeLabel,
+} from 'src/utils/equipmentLabels';
+import type { PipeDto } from 'src/stores/network';
 
 const cesiumContainer = ref<HTMLElement>();
 let viewer: Viewer | null = null;
@@ -52,11 +88,16 @@ let postRenderCb: (() => void) | null = null;
 let cameraChangedCb: (() => void) | null = null;
 let pipeCollection: PolylineCollection | null = null;
 const nodeEntities: Entity[] = [];
+const nodeEntitiesById = new Map<string, Entity>();
 const pipeEntitiesById = new Map<string, Entity>();
 const pipePolylinesById = new Map<string, { material: Color } | any>();
+const equipmentEntitiesById = new Map<string, Entity>();
 
 const networkStore = useNetworkStore();
 const simulateStore = useSimulateStore();
+const timeseriesStore = useTimeseriesStore();
+const editorStore = useEditorStore();
+const selectedStep = computed(() => timeseriesStore.selectedStep);
 const debugOverlayEnabled = ref(false);
 const fps = ref(0);
 const renderUpdateMs = ref(0);
@@ -66,12 +107,99 @@ const positioningWarningTitle = ref('Positionnement cartographique approximatif'
 const positioningWarningDetail = ref('');
 const canvasArea = ref<HTMLElement>();
 let resizeObserver: ResizeObserver | null = null;
+let editClickHandler: ScreenSpaceEventHandler | null = null;
+let onKeyDown: ((event: KeyboardEvent) => void) | null = null;
 const PRIMITIVE_PIPE_THRESHOLD = 200;
+const SELECTED_NODE_COLOR = Color.fromCssColorString('#FFD54F');
+const SELECTED_PIPE_GLOW = Color.fromCssColorString('#FFD54F');
+const CONTINGENCY_NODE_COLOR = Color.fromCssColorString('#FF5252');
+const props = withDefaults(
+  defineProps<{
+    contingencyViolationNodeIds?: string[];
+  }>(),
+  {
+    contingencyViolationNodeIds: () => [],
+  },
+);
+const contingencyViolationSet = computed(
+  () => new Set((props.contingencyViolationNodeIds ?? []).filter(Boolean)),
+);
+const CALIBRATION_RESIDUAL_LOW = Color.fromCssColorString('#66bb6a');
+const CALIBRATION_RESIDUAL_HIGH = Color.fromCssColorString('#ef5350');
 
 function createPrimitivePipeMaterial(color: Color) {
   return Material.fromType('Color', {
     color: color.clone(),
   });
+}
+
+function pipeLineColor(kind: string): Color {
+  const base = kind && kind !== 'pipe' ? equipmentMarkerColor(kind) : '#FFB74D';
+  return Color.fromCssColorString(base);
+}
+
+function buildPipeDescription(pipe: PipeDto): string {
+  const kindLine = isEquipmentKind(pipe.kind)
+    ? `<p>Type : <b>${escapeHtml(equipmentKindLabel(pipe.kind))}</b></p>`
+    : '';
+  const eq = pipe.equipment;
+  const eqLines: string[] = [];
+  if (eq?.regulator_setpoint_bar != null) {
+    eqLines.push(`Consigne : ${eq.regulator_setpoint_bar} bar`);
+  }
+  if (eq?.delivery_min_pressure_bar != null) {
+    eqLines.push(`P min contractuel : ${eq.delivery_min_pressure_bar} bar`);
+  }
+  if (eq?.control_valve_cv != null) {
+    eqLines.push(`Cv : ${eq.control_valve_cv}`);
+  }
+  if (eq?.control_valve_opening_pct != null) {
+    eqLines.push(`Ouverture : ${eq.control_valve_opening_pct} %`);
+  }
+  const eqHtml =
+    eqLines.length > 0
+      ? `<p>${eqLines.map((l) => escapeHtml(l)).join('<br/>')}</p>`
+      : '';
+  return `<p>Conduite <b>${escapeHtml(pipe.id)}</b></p>
+          <p>${escapeHtml(pipe.from)} → ${escapeHtml(pipe.to)}</p>
+          <p>L : ${pipe.length_km} km | D : ${pipe.diameter_mm} mm</p>
+          ${kindLine}${eqHtml}`;
+}
+
+function addEquipmentMarker(pipe: PipeDto, lon: number, lat: number) {
+  if (!viewer || !isEquipmentKind(pipe.kind)) return;
+  const entity = viewer.entities.add({
+    id: `equip:${pipe.id}`,
+    position: Cartesian3.fromDegrees(lon, lat, 0),
+    point: {
+      pixelSize: 12,
+      color: pipeLineColor(pipe.kind),
+      outlineColor: Color.WHITE,
+      outlineWidth: 2,
+      heightReference: HeightReference.CLAMP_TO_GROUND,
+    },
+    label: {
+      text: equipmentKindLabel(pipe.kind).split(' ')[0] ?? pipe.kind,
+      font: '10px sans-serif',
+      style: LabelStyle.FILL_AND_OUTLINE,
+      outlineWidth: 2,
+      verticalOrigin: VerticalOrigin.BOTTOM,
+      pixelOffset: new Cartesian2(0, -14),
+      showBackground: true,
+      backgroundColor: Color.fromAlpha(Color.BLACK, 0.55),
+    },
+  });
+  equipmentEntitiesById.set(pipe.id, entity);
+}
+
+function updateEquipmentStateLabels() {
+  const states = simulateStore.equipmentStates;
+  if (states.length === 0) return;
+  for (const eq of states) {
+    const entity = equipmentEntitiesById.get(eq.pipe_id);
+    if (!entity?.label) continue;
+    entity.label.text = `${equipmentKindLabel(eq.kind).split(' ')[0]} · ${regulatorModeLabel(eq.mode)}`;
+  }
 }
 
 onMounted(async () => {
@@ -147,9 +275,120 @@ onMounted(async () => {
     });
     resizeObserver.observe(canvasArea.value);
   }
+
+  setupEditInteractions();
 });
 
+function setupEditInteractions() {
+  if (!viewer || editClickHandler) return;
+
+  editClickHandler = new ScreenSpaceEventHandler(viewer.scene.canvas);
+  editClickHandler.setInputAction((movement: { position: Cartesian2 }) => {
+    if (!editorStore.editMode) return;
+    void handleMapClick(movement.position);
+  }, ScreenSpaceEventType.LEFT_CLICK);
+
+  onKeyDown = (event: KeyboardEvent) => {
+    if (!editorStore.editMode) return;
+    if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+    event.preventDefault();
+    void editorStore.deleteSelected();
+  };
+  window.addEventListener('keydown', onKeyDown);
+}
+
+function teardownEditInteractions() {
+  editClickHandler?.destroy();
+  editClickHandler = null;
+  if (onKeyDown) {
+    window.removeEventListener('keydown', onKeyDown);
+    onKeyDown = null;
+  }
+}
+
+async function handleMapClick(screenPosition: Cartesian2) {
+  if (!viewer) return;
+
+  const picked = viewer.scene.pick(screenPosition);
+  if (defined(picked) && picked.id) {
+    const entity = picked.id as Entity;
+    const entityId = typeof entity.id === 'string' ? entity.id : '';
+    if (entityId.startsWith('node:')) {
+      editorStore.selectNode(entityId.slice(5));
+      updateSelectionHighlight();
+      return;
+    }
+    if (entityId.startsWith('pipe:')) {
+      editorStore.selectPipe(entityId.slice(5));
+      updateSelectionHighlight();
+      return;
+    }
+    if (entityId.startsWith('equip:')) {
+      editorStore.selectPipe(entityId.slice(6));
+      updateSelectionHighlight();
+      return;
+    }
+  }
+
+  if (editorStore.placingNode) {
+    const cartesian =
+      viewer.scene.pickPosition(screenPosition) ??
+      viewer.camera.pickEllipsoid(screenPosition, viewer.scene.globe.ellipsoid);
+    if (!cartesian) return;
+
+    const cartographic = Cartographic.fromCartesian(cartesian);
+    const lon = CesiumMath.toDegrees(cartographic.longitude);
+    const lat = CesiumMath.toDegrees(cartographic.latitude);
+    try {
+      await editorStore.createNodeAt(lon, lat);
+      updateSelectionHighlight();
+    } catch (error) {
+      console.warn('Failed to create node', error);
+    }
+    return;
+  }
+
+  editorStore.clearSelection();
+  updateSelectionHighlight();
+}
+
+function updateSelectionHighlight() {
+  for (const [nodeId, entity] of nodeEntitiesById.entries()) {
+    if (!entity.point) continue;
+    const selected = editorStore.selectedKind === 'node' && editorStore.selectedId === nodeId;
+    const contingency = contingencyViolationSet.value.has(nodeId);
+    entity.point.pixelSize = selected ? 14 : contingency ? 10 : 8;
+    entity.point.outlineColor = selected
+      ? SELECTED_NODE_COLOR
+      : contingency
+        ? CONTINGENCY_NODE_COLOR
+        : Color.TRANSPARENT;
+    entity.point.outlineWidth = selected ? 3 : contingency ? 2.5 : 0;
+  }
+
+  for (const [pipeId, entity] of pipeEntitiesById.entries()) {
+    if (!entity.polyline) continue;
+    const selected = editorStore.selectedKind === 'pipe' && editorStore.selectedId === pipeId;
+    const baseColor = selected ? SELECTED_PIPE_GLOW : pipeLineColor(
+      networkStore.pipes.find((pipe) => pipe.id === pipeId)?.kind ?? 'pipe',
+    );
+    entity.polyline.width = selected ? 6 : Math.max(
+      2,
+      (networkStore.pipes.find((pipe) => pipe.id === pipeId)?.diameter_mm ?? 100) / 100,
+    );
+    entity.polyline.material = new PolylineGlowMaterialProperty({
+      glowPower: selected ? 0.45 : 0.2,
+      color: baseColor,
+    });
+  }
+
+  viewer?.scene.requestRender();
+}
+
 onBeforeUnmount(() => {
+  teardownEditInteractions();
   resizeObserver?.disconnect();
   resizeObserver = null;
   if (viewer && postRenderCb) {
@@ -160,8 +399,10 @@ onBeforeUnmount(() => {
   }
   pipeCollection = null;
   nodeEntities.length = 0;
+  nodeEntitiesById.clear();
   pipeEntitiesById.clear();
   pipePolylinesById.clear();
+  equipmentEntitiesById.clear();
   postRenderCb = null;
   cameraChangedCb = null;
   viewer?.destroy();
@@ -169,11 +410,29 @@ onBeforeUnmount(() => {
 });
 
 watch(
-  () => simulateStore.liveFlows,
+  () => [simulateStore.liveFlows, simulateStore.livePressures],
   () => {
-    if (Object.keys(simulateStore.liveFlows).length > 0) {
+    if (!timeseriesStore.hasResult) {
       updateColors();
     }
+  },
+  { deep: true },
+);
+
+watch(
+  () => timeseriesStore.selectedStep,
+  () => {
+    if (timeseriesStore.hasResult) {
+      updateColors();
+    }
+  },
+  { deep: true },
+);
+
+watch(
+  () => simulateStore.equipmentStates,
+  () => {
+    updateEquipmentStateLabels();
   },
   { deep: true },
 );
@@ -182,7 +441,34 @@ watch(
   () => [networkStore.nodes, networkStore.pipes],
   () => {
     renderNetwork();
+    updateSelectionHighlight();
   },
+);
+
+watch(
+  () => networkStore.calibrationPressureResiduals,
+  () => {
+    updateColors();
+  },
+  { deep: true },
+);
+
+watch(
+  () => [editorStore.editMode, editorStore.selectedId, editorStore.selectedKind],
+  () => {
+    updateSelectionHighlight();
+    if (viewer) {
+      viewer.canvas.style.cursor = editorStore.editMode && editorStore.placingNode ? 'crosshair' : '';
+    }
+  },
+);
+
+watch(
+  () => props.contingencyViolationNodeIds,
+  () => {
+    updateSelectionHighlight();
+  },
+  { deep: true },
 );
 
 function renderNetwork() {
@@ -218,8 +504,10 @@ function renderNetwork() {
       pipeCollection = null;
     }
     nodeEntities.length = 0;
+    nodeEntitiesById.clear();
     pipeEntitiesById.clear();
     pipePolylinesById.clear();
+    equipmentEntitiesById.clear();
 
     const nodeById = new Map(nodes.map((n) => [n.id, n] as const));
     const neighborsByNode = new Map<string, Set<string>>();
@@ -265,11 +553,12 @@ function renderNetwork() {
           style: LabelStyle.FILL_AND_OUTLINE,
           outlineWidth: 2,
           verticalOrigin: VerticalOrigin.BOTTOM,
-          pixelOffset: new Cartesian3(0, -12, 0) as never,
+          pixelOffset: new Cartesian2(0, -12),
         },
-        description: `<p>Noeud <b>${node.id}</b></p><p>Alt: ${node.height_m} m</p><p>Voisins: ${neighborsText}</p>`,
+        description: `<p>Nœud <b>${escapeHtml(node.id)}</b></p><p>Alt. : ${node.height_m} m</p><p>Voisins : ${escapeHtml(neighborsText)}</p>`,
       });
       nodeEntities.push(entity);
+      nodeEntitiesById.set(node.id, entity);
     }
 
     if (pipes.length > PRIMITIVE_PIPE_THRESHOLD) {
@@ -285,9 +574,10 @@ function renderNetwork() {
         const polyline = pipeCollection.add({
           positions: Cartesian3.fromDegreesArray([p1.lon, p1.lat, p2.lon, p2.lat]),
           width: Math.max(2, pipe.diameter_mm / 100),
-          material: createPrimitivePipeMaterial(Color.ORANGE),
+          material: createPrimitivePipeMaterial(pipeLineColor(pipe.kind ?? 'pipe')),
         });
         pipePolylinesById.set(pipe.id, polyline);
+        addEquipmentMarker(pipe, (p1.lon + p2.lon) / 2, (p1.lat + p2.lat) / 2);
       }
     } else {
       for (const pipe of pipes) {
@@ -305,32 +595,107 @@ function renderNetwork() {
             width: Math.max(2, pipe.diameter_mm / 100),
             material: new PolylineGlowMaterialProperty({
               glowPower: 0.2,
-              color: Color.ORANGE,
+              color: pipeLineColor(pipe.kind ?? 'pipe'),
             }),
             clampToGround: true,
           },
-          description: `<p>Tuyau <b>${pipe.id}</b></p>
-          <p>${pipe.from} → ${pipe.to}</p>
-          <p>L: ${pipe.length_km} km | D: ${pipe.diameter_mm} mm</p>`,
+          description: buildPipeDescription(pipe),
         });
         pipeEntitiesById.set(pipe.id, entity);
+        addEquipmentMarker(pipe, (p1.lon + p2.lon) / 2, (p1.lat + p2.lat) / 2);
       }
     }
 
   viewer.zoomTo(viewer.entities);
   entityCount.value = viewer.entities.values.length;
   updateNodeLod();
+  updateEquipmentStateLabels();
+  updateColors();
+  updateSelectionHighlight();
 }
 
 function updateColors() {
-  // Colorer les tuyaux selon le débit après simulation
   if (!viewer) return;
   const startedAt = performance.now();
+
+  const step = timeseriesStore.selectedStep;
+  const pressures =
+    step?.pressures ??
+    (Object.keys(simulateStore.livePressures).length > 0
+      ? simulateStore.livePressures
+      : (simulateStore.result?.pressures ?? {}));
   const flows =
-    Object.keys(simulateStore.liveFlows).length > 0
+    step?.flows ??
+    (Object.keys(simulateStore.liveFlows).length > 0
       ? simulateStore.liveFlows
-      : (simulateStore.result?.flows ?? {});
-  if (Object.keys(flows).length === 0) return;
+      : (simulateStore.result?.flows ?? {}));
+
+  if (Object.keys(pressures).length > 0) {
+    updateNodePressureColors(pressures);
+  }
+
+  if (Object.keys(flows).length > 0) {
+    updatePipeFlowColors(flows);
+  }
+
+  applyCalibrationResidualHighlights(pressures);
+  renderUpdateMs.value = performance.now() - startedAt;
+}
+
+function applyCalibrationResidualHighlights(pressures: Record<string, number>) {
+  const residuals = networkStore.calibrationPressureResiduals;
+  const residualEntries = Object.entries(residuals).filter(([, value]) => Number.isFinite(value));
+  if (residualEntries.length === 0) {
+    if (Object.keys(pressures).length === 0) {
+      for (const entity of nodeEntitiesById.values()) {
+        if (!entity.point) continue;
+        entity.point.color = Color.CYAN;
+      }
+    }
+    return;
+  }
+
+  const geolocatedNodes = new Set(
+    networkStore.nodes
+      .filter((node) => node.lon != null && node.lat != null)
+      .map((node) => node.id),
+  );
+  const maxResidual = Math.max(
+    ...residualEntries.map(([, value]) => value),
+    1e-9,
+  );
+
+  for (const [nodeId, entity] of nodeEntitiesById.entries()) {
+    if (!entity.point) continue;
+    const residual = residuals[nodeId];
+    if (residual == null || !geolocatedNodes.has(nodeId)) {
+      if (Object.keys(pressures).length === 0) {
+        entity.point.color = Color.CYAN;
+      }
+      continue;
+    }
+
+    const ratio = Math.max(0, Math.min(1, residual / maxResidual));
+    entity.point.color = Color.lerp(
+      CALIBRATION_RESIDUAL_LOW,
+      CALIBRATION_RESIDUAL_HIGH,
+      ratio,
+      new Color(),
+    );
+  }
+}
+
+function updateNodePressureColors(pressures: Record<string, number>) {
+  const values = Object.values(pressures);
+  const { min, max } = pressureRange(values);
+  for (const [nodeId, entity] of nodeEntitiesById.entries()) {
+    const p = pressures[nodeId];
+    if (p == null || !entity.point) continue;
+    entity.point.color = Color.fromCssColorString(pressureToCss(p, min, max));
+  }
+}
+
+function updatePipeFlowColors(flows: Record<string, number>) {
   const maxFlow = Math.max(...Object.values(flows).map(Math.abs), 1);
 
   for (const [pipeId, entity] of pipeEntitiesById.entries()) {
@@ -341,7 +706,7 @@ function updateColors() {
     entity.polyline.material = new PolylineGlowMaterialProperty({
       glowPower: 0.3,
       color,
-    }) as never;
+    });
   }
 
   for (const [pipeId, polyline] of pipePolylinesById.entries()) {
@@ -349,7 +714,6 @@ function updateColors() {
     const ratio = Math.abs(flow) / maxFlow;
     polyline.material = createPrimitivePipeMaterial(Color.fromHsl(0.33 * (1 - ratio), 1.0, 0.5));
   }
-  renderUpdateMs.value = performance.now() - startedAt;
 }
 
 function updateNodeLod() {
@@ -429,5 +793,17 @@ function updateNodeLod() {
   line-height: 1.5;
   z-index: 10;
   border: 1px solid rgba(120, 180, 220, 0.45);
+}
+
+.timeseries-slider {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 10;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(18, 18, 18, 0.88);
+  border: 1px solid rgba(120, 180, 220, 0.35);
 }
 </style>

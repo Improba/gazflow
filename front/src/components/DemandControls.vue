@@ -3,7 +3,7 @@
     dense
     dense-toggle
     icon="tune"
-    label="Demandes custom (nœuds puits)"
+    label="Demandes personnalisées (soutirage)"
     class="q-mb-sm"
   >
     <q-card flat bordered class="q-pa-sm bg-grey-10">
@@ -15,7 +15,7 @@
         >
           <div class="row items-center justify-between text-caption q-mb-none">
             <span>{{ node.id }}</span>
-            <span>-{{ (sliderValues[node.id] ?? 0).toFixed(1) }} m³/s</span>
+            <span>-{{ (sliderValues[node.id] ?? 0).toFixed(1) }} Nm³/s</span>
           </div>
           <q-slider
             :model-value="sliderValues[node.id] ?? 0"
@@ -34,7 +34,7 @@
             flat
             dense
             color="grey-4"
-            label="Reset"
+            label="Réinitialiser"
             icon="restart_alt"
             @click="resetAll"
           />

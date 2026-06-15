@@ -1,14 +1,21 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { api, type SimulationResult, type CapacityViolation } from 'src/services/api';
+import { api, type SimulationResult, type CapacityViolation, type EquipmentState, type PipeEquipmentDto } from 'src/services/api';
 import {
   SimulationWsClient,
+  mergeConvergedMessage,
   type WsServerMessage,
   type WsStartOptions,
   type WsCapacityOptions,
 } from 'src/services/ws';
 
 type SimulationStatus = 'idle' | 'running' | 'converged' | 'cancelled' | 'error';
+
+type LastRunParams = {
+  demands?: Record<string, number>;
+  equipmentOverrides?: Record<string, PipeEquipmentDto>;
+  options?: WsStartOptions & WsCapacityOptions;
+};
 
 export const useSimulateStore = defineStore('simulate', () => {
   const result = ref<SimulationResult | null>(null);
@@ -29,11 +36,14 @@ export const useSimulateStore = defineStore('simulate', () => {
   const capacityViolations = ref<CapacityViolation[]>([]);
   const adjustedDemands = ref<Record<string, number>>({});
   const activeBounds = ref<string[]>([]);
+  const equipmentStates = ref<EquipmentState[]>([]);
+  const warnings = ref<string[]>([]);
 
   let wsClient: SimulationWsClient | null = null;
   let lastSnapshotAt = 0;
   let pendingSnapshot: Extract<WsServerMessage, { type: 'snapshot' }> | null = null;
   let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastRunParams: LastRunParams | null = null;
 
   async function ensureConnectedWs() {
     if (!wsClient) {
@@ -44,6 +54,7 @@ export const useSimulateStore = defineStore('simulate', () => {
             status.value = 'error';
             errorMessage.value = 'connexion websocket fermée';
             loading.value = false;
+            clearSnapshotQueue();
           }
         },
         onError: (message: string) => {
@@ -51,6 +62,7 @@ export const useSimulateStore = defineStore('simulate', () => {
           if (loading.value) {
             status.value = 'error';
             loading.value = false;
+            clearSnapshotQueue();
           }
         },
       });
@@ -61,32 +73,67 @@ export const useSimulateStore = defineStore('simulate', () => {
   async function runSimulation(
     demands?: Record<string, number>,
     options?: WsStartOptions & WsCapacityOptions,
+    equipmentOverrides?: Record<string, PipeEquipmentDto>,
   ) {
-    await ensureConnectedWs();
-    const warmStartPressures =
-      result.value?.pressures ??
-      (Object.keys(livePressures.value).length > 0 ? { ...livePressures.value } : undefined);
-    resetRuntimeState();
-    currentRunId.value = `run-${Date.now()}`;
+    if (loading.value) {
+      return;
+    }
     loading.value = true;
-    status.value = 'running';
+    try {
+      await ensureConnectedWs();
+      const warmStartPressures =
+        result.value?.pressures ??
+        (Object.keys(livePressures.value).length > 0 ? { ...livePressures.value } : undefined);
+      clearSnapshotQueue();
+      resetRuntimeState();
+      currentRunId.value = `run-${Date.now()}`;
+      status.value = 'running';
 
-    const { capacity_bounds, mode, ...solverOpts } = options ?? {};
-
-    wsClient!.startSimulation({
-      runId: currentRunId.value,
-      demands,
-      options: {
+      const { capacity_bounds, mode, ...solverOpts } = options ?? {};
+      const mergedEquipment = equipmentOverrides;
+      const runOptions: WsStartOptions & WsCapacityOptions = {
         snapshot_every: 3,
         timeout_ms: 30_000,
         max_iter: 1000,
         tolerance: 5e-4,
         initial_pressures: warmStartPressures,
         ...solverOpts,
-      },
-      capacityBounds: capacity_bounds,
-      mode,
-    });
+        capacity_bounds,
+        mode,
+      };
+
+      lastRunParams = {
+        demands: demands ? { ...demands } : undefined,
+        equipmentOverrides: mergedEquipment ? { ...mergedEquipment } : undefined,
+        options: { ...runOptions },
+      };
+
+      wsClient!.startSimulation({
+        runId: currentRunId.value,
+        demands,
+        options: runOptions,
+        capacityBounds: capacity_bounds,
+        mode,
+        equipmentOverrides: mergedEquipment,
+      });
+    } catch (err) {
+      loading.value = false;
+      status.value = 'error';
+      errorMessage.value = err instanceof Error ? err.message : 'échec lancement simulation';
+      throw err;
+    }
+  }
+
+  async function rerunLastSimulation() {
+    if (!lastRunParams) {
+      await runSimulation();
+      return;
+    }
+    await runSimulation(
+      lastRunParams.demands,
+      lastRunParams.options,
+      lastRunParams.equipmentOverrides,
+    );
   }
 
   function cancelSimulation() {
@@ -116,26 +163,34 @@ export const useSimulateStore = defineStore('simulate', () => {
         break;
       case 'converged':
         if (!isCurrentRun(msg.run_id)) return;
-        result.value = msg.result;
-        livePressures.value = { ...msg.result.pressures };
-        liveFlows.value = { ...msg.result.flows };
-        iteration.value = msg.result.iterations;
-        residual.value = msg.result.residual;
-        capacityViolations.value = msg.result.capacity_violations ?? [];
-        adjustedDemands.value = msg.result.adjusted_demands ?? {};
-        activeBounds.value = msg.result.active_bounds ?? [];
+        clearSnapshotQueue();
+        {
+          const merged = mergeConvergedMessage(msg);
+          result.value = merged;
+          livePressures.value = { ...merged.pressures };
+          liveFlows.value = { ...merged.flows };
+          iteration.value = merged.iterations;
+          residual.value = merged.residual;
+          capacityViolations.value = merged.capacity_violations ?? [];
+          adjustedDemands.value = merged.adjusted_demands ?? {};
+          activeBounds.value = merged.active_bounds ?? [];
+          equipmentStates.value = merged.equipment_states ?? [];
+          warnings.value = merged.warnings ?? [];
+        }
         status.value = 'converged';
         loading.value = false;
         addLog(`converged in ${msg.total_ms}ms`);
         break;
       case 'cancelled':
         if (!isCurrentRun(msg.run_id)) return;
+        clearSnapshotQueue();
         status.value = 'cancelled';
         loading.value = false;
         addLog(`cancelled: ${msg.reason}`);
         break;
       case 'error':
         if (!isCurrentRun(msg.run_id)) return;
+        clearSnapshotQueue();
         status.value = 'error';
         errorMessage.value = msg.message;
         loading.value = false;
@@ -145,7 +200,16 @@ export const useSimulateStore = defineStore('simulate', () => {
   }
 
   function isCurrentRun(runId: string): boolean {
-    return !currentRunId.value || runId === currentRunId.value;
+    return currentRunId.value !== null && runId === currentRunId.value;
+  }
+
+  function clearSnapshotQueue() {
+    pendingSnapshot = null;
+    if (snapshotTimer !== null) {
+      clearTimeout(snapshotTimer);
+      snapshotTimer = null;
+    }
+    lastSnapshotAt = 0;
   }
 
   function resetRuntimeState() {
@@ -161,11 +225,13 @@ export const useSimulateStore = defineStore('simulate', () => {
     capacityViolations.value = [];
     adjustedDemands.value = {};
     activeBounds.value = [];
+    equipmentStates.value = [];
+    warnings.value = [];
   }
 
   function queueSnapshot(msg: Extract<WsServerMessage, { type: 'snapshot' }>) {
     const now = Date.now();
-    const minIntervalMs = 100; // ~10 Hz UI updates
+    const minIntervalMs = 100;
     if (now - lastSnapshotAt >= minIntervalMs) {
       applySnapshot(msg);
       lastSnapshotAt = now;
@@ -175,15 +241,19 @@ export const useSimulateStore = defineStore('simulate', () => {
     if (snapshotTimer) return;
     snapshotTimer = setTimeout(() => {
       snapshotTimer = null;
-      if (pendingSnapshot) {
-        applySnapshot(pendingSnapshot);
-        pendingSnapshot = null;
+      const pending = pendingSnapshot;
+      pendingSnapshot = null;
+      if (pending && isCurrentRun(pending.run_id)) {
+        applySnapshot(pending);
         lastSnapshotAt = Date.now();
       }
     }, minIntervalMs);
   }
 
   function applySnapshot(msg: Extract<WsServerMessage, { type: 'snapshot' }>) {
+    if (!isCurrentRun(msg.run_id)) {
+      return;
+    }
     livePressures.value = { ...msg.pressures };
     liveFlows.value = { ...msg.flows };
   }
@@ -194,6 +264,7 @@ export const useSimulateStore = defineStore('simulate', () => {
 
   function resetSimulation() {
     if (loading.value) return;
+    clearSnapshotQueue();
     resetRuntimeState();
     currentRunId.value = null;
   }
@@ -239,7 +310,10 @@ export const useSimulateStore = defineStore('simulate', () => {
     capacityViolations,
     adjustedDemands,
     activeBounds,
+    equipmentStates,
+    warnings,
     runSimulation,
+    rerunLastSimulation,
     cancelSimulation,
     resetSimulation,
     exportResult,

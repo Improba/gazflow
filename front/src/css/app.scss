@@ -30,7 +30,7 @@ body {
   top: 60px;
   left: 16px;
   width: 360px;
-  max-height: calc(100vh - 230px);
+  max-height: min(calc(100vh - 92px), 85vh);
   overflow-y: auto;
   z-index: 100;
   background: var(--scada-panel);
