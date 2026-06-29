@@ -3,8 +3,8 @@
 > Document maître pour terminer le post-MVP P6–P13. Mode équipe, exécution autonome par vagues parallélisables.
 > Complète `production-sprint-plan.md` (vagues A–C ✅) et remplace le backlog D–G par un découpage exécutable.
 
-**Date** : 2026-06-15  
-**Référence état code** : `cargo test --lib` 240/240 · `npm test` 64/64 · commits `da95752`–`8132a14` sur `main`
+**Date** : 2026-06-29  
+**Référence état code** : `cargo test --lib` 240/240 · `npm test` 64/64 · commits `da95752`–`e02ddd4` sur `main`
 
 ---
 
@@ -77,7 +77,7 @@ Max **3 sous-agents parallèles** ; intégration parent après chaque vague.
 |----|-------|----------|-------|
 | H0.1 | Split commits par phase (P9, P10, P13, revues phys/dev) | 4–6 PRs reviewables | shell |
 | H0.2 | Intégrer corpus `docs/testing/corpus/` (+ script fetch CI) | Corpus versionné ou fetch documenté | Composer |
-| H0.3 | Aligner `operational-roadmap.md` (P10 ✅, tests 227/56, P7 78 %) | Doc sans contradiction | Composer |
+| H0.3 | Aligner `operational-roadmap.md` (P10 ✅, tests 240/64, P7 ~88 %) | Doc sans contradiction | ✅ |
 | H0.4 | CI : `verify_test_corpus.sh` + `validate_test_corpus.py` dans `scripts/ci.sh` | Pipeline vert | Composer |
 | H0.5 | Étendre `apiContracts.spec.ts` (GasProperties.warnings, transient, contingency) | Contrats gelés | Composer |
 
@@ -154,12 +154,13 @@ Max **3 sous-agents parallèles** ; intégration parent après chaque vague.
 
 **Parallèle avec** : D, E
 
-### F1. GERG-2008 ou PR-78 (H₂ > 20 %)
+### F1. GERG-2008 (H₂ > 20 %, PR-78 livré)
 
 | Fichier | Action |
 |---------|--------|
-| `back/src/solver/eos/gerg.rs` ou `pr78.rs` | **Nouveau** module EOS |
-| `back/src/solver/gas_properties.rs` | `enum EosModel { PapayKay, Gerg2008 }` ; sélection auto si H₂ > 0.2 |
+| `back/src/solver/eos/pr78.rs` | ✅ PR-78 auto si H₂ > 20 % |
+| `back/src/solver/eos/gerg.rs` | **Nouveau** module EOS (précision maximale) |
+| `back/src/solver/gas_properties.rs` | `enum EosModel { PapayKay, Pr78, Gerg2008 }` ; sélection auto |
 | `docs/science/limitations.md` | Domaine de validité par EOS |
 
 **Option pragmatique** : crate `gerg2008` ou port minimal 5 composants (CH₄, C₂H₆, CO₂, N₂, H₂).
@@ -180,7 +181,7 @@ Max **3 sous-agents parallèles** ; intégration parent après chaque vague.
 
 **Peut être reporté post-100 %** si périmètre « exploitant HP isotherme » suffit ; documenter comme P7.11.
 
-**Done quand** : warning H₂ déclenche GERG ; tests monotonie conservés ; doc §2.4 à jour.
+**Done quand** : PR-78 auto ✅ ; GERG-2008 optionnel livré ; tests monotonie conservés ; doc §2.4 à jour.
 
 ---
 
@@ -353,14 +354,14 @@ Phase 4  Revue Bugbot + Security + mise à jour roadmap 100 %
 | Vague | Statut | Date cible | Notes |
 |-------|--------|------------|-------|
 | A–C | ✅ | 2026-06-14 | production-sprint-plan |
-| H0 | ✅ | 2026-06-14 | CI corpus, doc alignée |
+| H0 | ✅ | 2026-06-15 | CI corpus, doc alignée ; rafraîchi 2026-06-29 |
 | D | ✅ | 2026-06-14 | scenarios + compare |
 | E | 🟡 | — | Cv MVP (ISA restant) |
 | F | ✅ | 2026-06-14 | PR-78 auto |
 | G | 🟡 | — | PDE scaffold + UI player ; réseaux complexes restants |
 | H | ✅ | 2026-06-14 | LM ≤5 params |
-| I | 🟡 | 2026-06-15 | export list ✅ ; OpenAPI stub ✅ ; utoipa restant |
+| I | 🟡 | 2026-06-29 | export list ✅ ; OpenAPI stub ✅ ; utoipa restant |
 
 ---
 
-*Prochaine action autonome recommandée : lancer **H0** (commit + CI corpus), puis **D + E + F** en parallèle.*
+*Prochaine action autonome recommandée : vague **G** (P11 PDE réseaux branchés + WS transitoire), **E** (Cv ISA + Jacobien analytique), **I** (utoipa), export GeoJSON édité (P12.8).*

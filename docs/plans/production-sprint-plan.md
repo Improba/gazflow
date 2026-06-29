@@ -11,7 +11,7 @@
 | **C** | P13 fin | LM global 1-param, carte résidus SCADA, rapport enrichi | M | — |
 | **D** | P12 | Scénarios diffs topologiques, compare ΔP/ΔQ, export GeoJSON édité | M | P6 |
 | **E** | P8 | Cv ISA complet, Jacobien analytique régulateur | M | P7 partiel |
-| **F** | P7 | Validation ΔP H₂, profil thermique conduites, GERG >20 % H₂ | M | — |
+| **F** | P7 | Validation ΔP H₂, profil thermique conduites, PR-78 auto H₂ >20 % (GERG-2008 restant) | M | — |
 | **G** | P11 | PDE 1D implicite, maillage, WS, TransientPlayer + jauge linepack | XL | P7, P8 |
 
 **Goulot** : vague G (P11 PDE). Toutes les autres vagues sont indépendantes et livrables incrémentalement.
@@ -95,14 +95,14 @@ Voir `operational-roadmap.md` sections P12, P8, P7, P11 pour détail tâches.
 
 ---
 
-## Suivi session en cours (2026-06-14)
+## Suivi session en cours (2026-06-29)
 
 | Tâche | Statut |
 |-------|--------|
 | A1 Import météo CSV (`import/weather.rs`, `weatherCsv.ts`, ScenarioPanel) | ✅ |
 | A2 Profils week-end (`DayType`, presets weekend) | ✅ |
 | A3 Persistance profils (`stores/demandProfiles.ts`, localStorage) | ✅ |
-| A4 CI tests parallèles (`serial_test`, 219/219) | ✅ |
+| A4 CI tests parallèles (`serial_test`, 240/240) | ✅ |
 | B1 WS streaming N-1 (`start_contingency_simulation`) | ✅ |
 | B2 Overlay carte violations (CesiumViewer + ContingencyPage) | ✅ |
 | B3 Export N-1 XLSX/CSV (`POST /api/contingency/export`) | ✅ |

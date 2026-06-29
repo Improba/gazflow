@@ -2,7 +2,7 @@
 
 > Feuille de route pour transformer GazFlow d'un démonstrateur académique (GasLib) en outil utilisable par un exploitant de réseau gaz. Chaque phase est conçue pour apporter de la valeur métier indépendamment, tout en construisant les fondations des phases suivantes.
 
-## État d'avancement (2026-06-14, plan complétion)
+## État d'avancement (2026-06-29, plan complétion)
 
 | Phase | Statut | Commentaire |
 |-------|--------|-------------|
@@ -193,6 +193,7 @@ Enrichir le modèle physique pour couvrir les cas métier courants : terrain en 
 | 7.8 | Configuration de la composition gaz par réseau (`PATCH /api/network/gas-composition`, G20 par défaut import) | `api/mod.rs`, `stores/network.ts` | ✅ |
 | 7.9 | Affichage/édition composition, PCS et Wobbe dans le panneau simulation | `components/SimulationPanel.vue` | ✅ |
 | 7.10 | Validation physique : tendances monotones (plus de H₂ → moins de PCS, gravité atténuée, ΔP friction ↓ sur conduite plate) | `solver/gas_properties.rs`, `steady_state.rs` | ✅ tests friction/gravité/Re H₂ |
+| 7.11 | **EOS PR-78** : bascule auto si H₂ > 20 % (remplace Papay+Kay) | `solver/eos/pr78.rs`, `gas_properties.rs` | ✅ |
 
 ### Formulation gravité
 
@@ -594,7 +595,7 @@ Le transitoire (P11) et le calage SCADA (P13) sont les plus complexes et bénéf
 | Régulateurs créent des non-linéarités fortes (commutation actif/bypass) | Newton diverge | P8 | Hystérésis + sous-relaxation + continuation |
 | Solveur transitoire instable (CFL, chocs) | P11 inutilisable | P11 | Schéma implicite (inconditionnellement stable), pas adaptatif, TVD limiter si explicite |
 | Problème inverse mal conditionné (calage) | Calage ne converge pas | P13 | Régularisation Tikhonov, bornes physiques, données redondantes |
-| Composition H₂ élevée (>20%) invalide Papay | Résultats physiquement faux | P7 | Basculer vers GERG-2008 ou Peng-Robinson au-delà de 20% H₂ |
+| Composition H₂ élevée (>20%) invalide Papay | Résultats physiquement faux | P7 | PR-78 auto au-delà de 20 % H₂ (✅) ; GERG-2008 pour précision maximale si besoin |
 | Maillage transitoire trop fin → temps de calcul prohibitif | P11 inutilisable en interactif | P11 | Maillage adaptatif + parallélisme Rayon + option « résolution rapide » (maillage grossier) |
 | Absence de données SCADA pour le calage (confidentialité opérateur) | P13 non testable | P13 | Données synthétiques pour les tests, architecture « apportez vos données » |
 
