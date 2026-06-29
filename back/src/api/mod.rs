@@ -288,8 +288,16 @@ struct NetworkResponse {
 
 #[derive(Serialize)]
 struct NetworksResponse {
-    available: Vec<String>,
+    networks: Vec<NetworkInfoDto>,
     active: String,
+}
+
+#[derive(Serialize)]
+struct NetworkInfoDto {
+    id: String,
+    tier: solver::NetworkTier,
+    node_count: usize,
+    recommended_demo: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -464,6 +472,8 @@ struct SimulationResponse {
     equipment_states: Vec<solver::EquipmentState>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    demand_scale_achieved: Option<f64>,
 }
 
 impl From<solver::SolverResult> for SimulationResponse {
@@ -481,6 +491,7 @@ impl From<solver::SolverResult> for SimulationResponse {
             infeasibility_diagnostic: None,
             equipment_states: r.equipment_states,
             warnings: r.warnings,
+            demand_scale_achieved: r.demand_scale_achieved,
         }
     }
 }
@@ -500,6 +511,7 @@ impl From<solver::ConstrainedSolverResult> for SimulationResponse {
             infeasibility_diagnostic: r.infeasibility_diagnostic,
             equipment_states: Vec::new(),
             warnings: Vec::new(),
+            demand_scale_achieved: None,
         }
     }
 }
@@ -532,10 +544,56 @@ async fn list_networks(State(state): State<SharedState>) -> Json<NetworksRespons
         .read()
         .expect("available datasets lock should not be poisoned")
         .clone();
+    let networks: Vec<NetworkInfoDto> = available
+        .iter()
+        .filter_map(|id| dataset_network_info(&state, id))
+        .collect();
     Json(NetworksResponse {
-        available,
+        networks,
         active: active_dataset_id(&state),
     })
+}
+
+fn dataset_network_info(state: &SharedState, dataset_id: &str) -> Option<NetworkInfoDto> {
+    let node_count = dataset_node_count(state, dataset_id)?;
+    Some(NetworkInfoDto {
+        id: dataset_id.to_string(),
+        tier: solver::tier_for_dataset(dataset_id, node_count),
+        node_count,
+        recommended_demo: solver::recommended_demo_for_dataset(dataset_id),
+    })
+}
+
+fn dataset_node_count(state: &SharedState, dataset_id: &str) -> Option<usize> {
+    let net_path = state.data_dir.join(format!("{dataset_id}.net"));
+    if net_path.exists() {
+        return gaslib::load_network(&net_path)
+            .ok()
+            .map(|network| network.node_count());
+    }
+    state
+        .imported
+        .read()
+        .expect("imported lock should not be poisoned")
+        .get(dataset_id)
+        .map(|dataset| dataset.network.node_count())
+}
+
+fn solve_rest_steady(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    gas_composition: solver::GasComposition,
+) -> anyhow::Result<solver::SolverResult> {
+    let preset = solver::preset_for_node_count(network.node_count());
+    solver::solve_steady_state_with_preset(
+        network,
+        demands,
+        None,
+        &preset,
+        gas_composition,
+        |_| solver::SolverControl::Continue,
+        None::<fn(solver::ContinuationStepEvent)>,
+    )
 }
 
 async fn get_network(State(state): State<SharedState>) -> Json<NetworkResponse> {
@@ -915,6 +973,7 @@ async fn run_timeseries_simulation(
         tolerance: payload.tolerance,
         warm_start: payload.warm_start,
         warm_start_max_demand_rel_change: 3.0,
+        robust_solver: network.node_count() > 199,
     };
 
     let permit = state
@@ -1216,13 +1275,7 @@ async fn run_simulation_with_demands(
             let result = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 pool.install(|| {
-                    solver::solve_steady_state_with_composition(
-                        &network_for_solve,
-                        &demands_for_check,
-                        gas_composition,
-                        1000,
-                        5e-4,
-                    )
+                    solve_rest_steady(&network_for_solve, &demands_for_check, gas_composition)
                 })
             })
             .await
@@ -1251,15 +1304,7 @@ async fn run_simulation_with_demands(
         None => {
             let result = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                pool.install(|| {
-                    solver::solve_steady_state_with_composition(
-                        &network_for_solve,
-                        &demands,
-                        gas_composition,
-                        1000,
-                        5e-4,
-                    )
-                })
+                pool.install(|| solve_rest_steady(&network_for_solve, &demands, gas_composition))
             })
             .await
             .map_err(|err| {
@@ -1341,15 +1386,15 @@ fn load_dataset_from_disk(
     dataset_id: &str,
 ) -> Result<(GasNetwork, HashMap<String, f64>), String> {
     let network_path = data_dir.join(format!("{dataset_id}.net"));
-    let network = gaslib::load_network(&network_path)
+    let mut network = gaslib::load_network(&network_path)
         .map_err(|err| format!("failed to load network {:?}: {err:#}", network_path))?;
 
     let scenario_path = data_dir.join(format!("{dataset_id}.scn"));
     let default_demands = if scenario_path.exists() {
         match gaslib::load_scenario_demands(&scenario_path) {
-            Ok(parsed) => {
-                let scenario: gaslib::ScenarioDemands = parsed;
-                scenario.demands
+            Ok(scenario) => {
+                gaslib::apply_scenario_boundaries(&mut network, &scenario);
+                gaslib::demands_without_pressure_slack(&scenario.demands, &scenario)
             }
             Err(err) => {
                 tracing::warn!("Impossible de charger {:?}: {err:#}", scenario_path);
@@ -1439,6 +1484,52 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).expect("json body");
         assert_eq!(json.get("node_count").and_then(Value::as_u64), Some(2));
         assert_eq!(json.get("edge_count").and_then(Value::as_u64), Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_api_list_networks_returns_tier() {
+        let app = create_router_with_runtime_limits_and_datasets(
+            GasNetwork::new(),
+            HashMap::new(),
+            "GasLib-11".to_string(),
+            vec!["GasLib-11".to_string()],
+            PathBuf::from("dat"),
+            4,
+            2,
+        );
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/networks")
+            .body(Body::empty())
+            .expect("request");
+
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            json.get("active").and_then(Value::as_str),
+            Some("GasLib-11")
+        );
+        let networks = json
+            .get("networks")
+            .and_then(Value::as_array)
+            .expect("networks array");
+        assert_eq!(networks.len(), 1);
+        let entry = &networks[0];
+        assert_eq!(
+            entry.get("id").and_then(Value::as_str),
+            Some("GasLib-11")
+        );
+        assert_eq!(entry.get("tier").and_then(Value::as_str), Some("demo"));
+        assert_eq!(entry.get("node_count").and_then(Value::as_u64), Some(11));
+        assert_eq!(
+            entry.get("recommended_demo").and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     #[tokio::test]

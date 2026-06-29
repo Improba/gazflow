@@ -85,7 +85,10 @@ describe('useNetworkStore', () => {
 
   it('loads available datasets and switches active network', async () => {
     apiSpies.getNetworks.mockResolvedValue({
-      available: ['GasLib-11', 'GasLib-24'],
+      networks: [
+        { id: 'GasLib-11', tier: 'demo', node_count: 11, recommended_demo: true },
+        { id: 'GasLib-24', tier: 'demo', node_count: 24, recommended_demo: false },
+      ],
       active: 'GasLib-11',
     });
     apiSpies.selectNetwork.mockResolvedValue({
@@ -105,6 +108,8 @@ describe('useNetworkStore', () => {
     const store = useNetworkStore();
     await store.fetchAvailableNetworks();
     expect(store.availableNetworks).toEqual(['GasLib-11', 'GasLib-24']);
+    expect(store.networkInfos).toHaveLength(2);
+    expect(store.networkOptionLabel('GasLib-11')).toBe('GasLib-11 (Démo, 11 nœuds) ★');
     expect(store.activeNetwork).toBe('GasLib-11');
 
     await store.selectNetwork('GasLib-24');
@@ -122,7 +127,10 @@ describe('useNetworkStore', () => {
       validate_only: false,
     });
     apiSpies.getNetworks.mockResolvedValue({
-      available: ['GasLib-11', 'import-demo'],
+      networks: [
+        { id: 'GasLib-11', tier: 'demo', node_count: 11, recommended_demo: true },
+        { id: 'import-demo', tier: 'standard', node_count: 3, recommended_demo: false },
+      ],
       active: 'import-demo',
     });
     apiSpies.getNetwork.mockResolvedValue({
@@ -158,7 +166,10 @@ describe('useNetworkStore', () => {
       validate_only: false,
     });
     apiSpies.getNetworks.mockResolvedValue({
-      available: ['GasLib-11', 'import-staged'],
+      networks: [
+        { id: 'GasLib-11', tier: 'demo', node_count: 11, recommended_demo: true },
+        { id: 'import-staged', tier: 'standard', node_count: 3, recommended_demo: false },
+      ],
       active: 'GasLib-11',
     });
 

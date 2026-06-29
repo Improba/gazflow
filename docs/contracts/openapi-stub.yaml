@@ -7,6 +7,17 @@ paths:
   /api/network:
     get:
       summary: Réseau actif (nœuds, pipes, gaz)
+  /api/networks:
+    get:
+      summary: Liste des réseaux disponibles et réseau actif
+      description: |
+        Réponse JSON :
+        - `active` (string) : id du dataset actif
+        - `networks` (array) : métadonnées par réseau
+          - `id` (string)
+          - `tier` (string) : `demo` | `standard` | `large` | `x_large`
+          - `node_count` (integer)
+          - `recommended_demo` (boolean)
   /api/network/gas-composition:
     patch:
       summary: Met à jour la composition gaz
@@ -51,3 +62,12 @@ paths:
   /api/ws/sim:
     get:
       summary: WebSocket simulation steady / timeseries / contingency
+      description: |
+        Messages client (tag `type`, snake_case) :
+        - `start_simulation` : `options.robust_mode` (bool), `options.continuation_scales` (number[])
+        - `start_timeseries_simulation` : `options.robust_mode` (bool)
+        - `start_contingency_simulation`, `cancel_simulation`
+
+        Messages serveur :
+        - `started`, `iteration`, `snapshot`, `converged`, `cancelled`, `error`, …
+        - `continuation_step` : `{ run_id, seq, step, total_steps, scale }` — palier de continuation de charge

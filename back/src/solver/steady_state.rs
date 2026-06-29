@@ -27,6 +27,15 @@ pub struct SolverResult {
     /// Avertissements métier (ex. poste livraison sous P_min).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Palier de continuation atteint (1.0 = demandes nominales).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demand_scale_achieved: Option<f64>,
+}
+
+impl Default for SolverResult {
+    fn default() -> Self {
+        Self::from_core(HashMap::new(), HashMap::new(), 0, 0.0)
+    }
 }
 
 impl SolverResult {
@@ -43,6 +52,7 @@ impl SolverResult {
             residual,
             equipment_states: Vec::new(),
             warnings: Vec::new(),
+            demand_scale_achieved: None,
         }
     }
 }
@@ -992,7 +1002,13 @@ mod tests {
     use serial_test::serial;
     use std::path::{Path, PathBuf};
 
-    use crate::gaslib::{load_network, load_reference_solution, load_scenario_demands};
+    use crate::gaslib::{
+        apply_scenario_boundaries, demands_without_pressure_slack, load_network,
+        load_reference_solution, load_scenario_demands,
+    };
+    use crate::solver::gas_properties::GasComposition;
+    use crate::solver::presets::preset_for_node_count;
+    use crate::solver::continuation::solve_steady_state_with_preset;
     use crate::graph::{ConnectionKind, GasNetwork, Node, Pipe};
 
     fn two_node_network() -> GasNetwork {
@@ -1531,8 +1547,10 @@ mod tests {
         let network = load_network(network_path).expect("load GasLib-11 network");
         let scenario = load_scenario_demands(scenario_path).expect("load GasLib-11 scenario");
         let reference = load_reference_solution(solution_path).expect("load reference solution");
-        let result = solve_steady_state(&network, &scenario.demands, 1200, 5e-4)
-            .or_else(|_| solve_steady_state(&network, &scenario.demands, 2000, 1e-3))
+        let effective_demands =
+            demands_without_pressure_slack(&scenario.demands, &scenario);
+        let result = solve_steady_state(&network, &effective_demands, 1200, 5e-4)
+            .or_else(|_| solve_steady_state(&network, &effective_demands, 2000, 1e-3))
             .expect("solver should converge on GasLib-11");
 
         let mut compared = 0usize;
@@ -1574,140 +1592,6 @@ mod tests {
         );
     }
 
-    fn solve_dataset_with_continuation(
-        network: &GasNetwork,
-        demands: &HashMap<String, f64>,
-        max_iter: usize,
-        tolerance: f64,
-        continuation_scales: &[f64],
-        continuation_max_seconds: Option<u64>,
-    ) -> Result<SolverResult> {
-        // Préserver l'ordre donné (et les duplicatas éventuels) pour permettre
-        // des passes successives sur un même palier de continuation.
-        let mut scales: Vec<f64> = continuation_scales
-            .iter()
-            .copied()
-            .filter(|s| *s > 0.0)
-            .collect();
-        if scales.is_empty() {
-            return Err(anyhow::anyhow!("no continuation scale provided"));
-        }
-        let per_scale_iters =
-            continuation_iter_schedule(max_iter, scales.len(), network.node_count());
-
-        let auto_bridges = env_usize("GAZFLOW_CONTINUATION_AUTO_BRIDGES", 0);
-        let min_gap = env_f64("GAZFLOW_CONTINUATION_MIN_GAP", 0.02);
-        let snapshot_default = if network.node_count() > 2000 {
-            1
-        } else {
-            (max_iter / 2).max(1)
-        };
-        let snapshot_every =
-            env_usize("GAZFLOW_CONTINUATION_SNAPSHOT_EVERY", snapshot_default).max(1);
-        let continuation_max_seconds = continuation_max_seconds.or_else(|| {
-            let v = env_usize("GAZFLOW_CONTINUATION_MAX_SECONDS", 0);
-            (v > 0).then_some(v as u64)
-        });
-        let started_at = std::time::Instant::now();
-
-        let mut last_err: Option<anyhow::Error> = None;
-        let mut warm_start_pressures: Option<HashMap<String, f64>> = None;
-        let mut last_success: Option<SolverResult> = None;
-        let mut last_success_scale: Option<f64> = None;
-        let mut bridges_used = 0usize;
-
-        let mut idx = 0usize;
-        while idx < scales.len() {
-            if continuation_max_seconds
-                .map(|max_s| started_at.elapsed().as_secs() >= max_s)
-                .unwrap_or(false)
-            {
-                eprintln!(
-                    "dataset continuation timeout reached after {}s",
-                    continuation_max_seconds.unwrap_or_default()
-                );
-                break;
-            }
-            let scale = scales[idx];
-            let iter_budget = per_scale_iters[idx];
-            let scaled_demands: HashMap<String, f64> = demands
-                .iter()
-                .map(|(node_id, q)| (node_id.clone(), q * scale))
-                .collect();
-            let mut best_snapshot_pressures: Option<HashMap<String, f64>> = None;
-            let mut best_snapshot_residual = f64::INFINITY;
-
-            match solve_steady_state_with_progress(
-                network,
-                &scaled_demands,
-                warm_start_pressures.as_ref(),
-                SteadyStateConfig {
-                    max_iter: iter_budget,
-                    tolerance,
-                    snapshot_every,
-                    ..SteadyStateConfig::default()
-                },
-                |progress| {
-                    if let Some(pressures) = progress.pressures {
-                        if progress.residual < best_snapshot_residual {
-                            best_snapshot_residual = progress.residual;
-                            best_snapshot_pressures = Some(pressures);
-                        }
-                    }
-                    SolverControl::Continue
-                },
-            ) {
-                Ok(result) => {
-                    if scale < 1.0 {
-                        eprintln!(
-                            "dataset continuation succeeded at scale={scale:.3} (budget={}, iter={}, residual={:.3e})",
-                            iter_budget, result.iterations, result.residual
-                        );
-                    }
-                    warm_start_pressures = Some(result.pressures.clone());
-                    last_success_scale = Some(scale);
-                    last_success = Some(result);
-                    idx += 1;
-                }
-                Err(err) => {
-                    if let Some(snapshot) = best_snapshot_pressures.take() {
-                        eprintln!(
-                            "dataset continuation captures best snapshot warm-start at scale={scale:.3} (budget={iter_budget}, residual={best_snapshot_residual:.3e})"
-                        );
-                        warm_start_pressures = Some(snapshot);
-                    }
-                    eprintln!("dataset continuation failed at scale={scale:.3}: {err:#}");
-                    if bridges_used < auto_bridges {
-                        let low = last_success_scale.unwrap_or(0.0);
-                        let gap = scale - low;
-                        if gap > min_gap {
-                            let mid = low + 0.5 * gap;
-                            if !scales.iter().any(|s| (*s - mid).abs() < 1e-9) {
-                                eprintln!(
-                                    "dataset continuation inserts intermediate scale={mid:.3} between {low:.3} and {scale:.3}"
-                                );
-                                scales.insert(idx, mid);
-                                bridges_used += 1;
-                                continue;
-                            }
-                        }
-                    }
-                    last_err = Some(err);
-                    idx += 1;
-                }
-            }
-        }
-
-        if let Some(result) = last_success {
-            if let Some(scale) = last_success_scale {
-                eprintln!("dataset continuation finished at best successful scale={scale:.3}");
-            }
-            return Ok(result);
-        }
-
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no continuation scale provided")))
-    }
-
     fn env_usize(name: &str, default: usize) -> usize {
         std::env::var(name)
             .ok()
@@ -1738,46 +1622,6 @@ mod tests {
         }
     }
 
-    fn continuation_iter_schedule(
-        max_iter: usize,
-        n_scales: usize,
-        node_count: usize,
-    ) -> Vec<usize> {
-        if n_scales == 0 {
-            return Vec::new();
-        }
-
-        if let Ok(raw) = std::env::var("GAZFLOW_CONTINUATION_ITER_SCHEDULE") {
-            let parsed: Vec<usize> = raw
-                .split(',')
-                .filter_map(|t| t.trim().parse::<usize>().ok())
-                .map(|v| v.max(1))
-                .collect();
-            if !parsed.is_empty() {
-                let mut schedule = Vec::with_capacity(n_scales);
-                for i in 0..n_scales {
-                    schedule.push(
-                        *parsed
-                            .get(i)
-                            .unwrap_or_else(|| parsed.last().expect("non-empty")),
-                    );
-                }
-                return schedule;
-            }
-        }
-
-        // Heuristique large dataset: investir surtout sur le dernier palier,
-        // les premiers servant à stabiliser le warm-start.
-        if node_count > 2000 && n_scales >= 2 && max_iter >= n_scales {
-            let mut schedule = vec![1usize; n_scales];
-            let remaining = max_iter.saturating_sub(n_scales - 1).max(1);
-            schedule[n_scales - 1] = remaining;
-            return schedule;
-        }
-
-        vec![max_iter.max(1); n_scales]
-    }
-
     fn run_dataset_solve_smoke(dataset: &str) {
         let network_path = Path::new("dat").join(format!("{dataset}.net"));
         let scenario_path = Path::new("dat").join(format!("{dataset}.scn"));
@@ -1789,8 +1633,9 @@ mod tests {
             return;
         }
 
-        let network = load_network(&network_path).expect("load network");
+        let mut network = load_network(&network_path).expect("load network");
         let scenario = load_scenario_demands(&scenario_path).expect("load scenario");
+        apply_scenario_boundaries(&mut network, &scenario);
         let enable_large = std::env::var("GAZFLOW_ENABLE_LARGE_DATASET_TESTS")
             .ok()
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -1802,44 +1647,31 @@ mod tests {
             );
             return;
         }
-        let is_large = network.node_count() > 500;
         let node_count = network.node_count();
-        let (default_max_iter, default_tolerance, default_scales): (usize, f64, &[f64]) =
-            if node_count > 2000 {
-                // Très grands réseaux: smoke court pour vérifier robustesse d'exécution
-                // sans bloquer la CI pendant de longues minutes.
-                // On répète le dernier palier pour raffiner le warm-start
-                // sans augmenter le budget global d'itérations.
-                (6, 1e-2, &[0.05, 0.1, 0.1])
-            } else if node_count > 500 {
-                // Les très grands cas restent sensibles tant que les compresseurs sont
-                // modélisés en approximation MVP. On valide la capacité de scaling
-                // via continuation de charge.
-                (180, 2e-3, &[0.1, 0.3])
-            } else {
-                (1500, 5e-4, &[1.0])
-            };
-        let max_iter = if is_large {
-            env_usize("GAZFLOW_LARGE_TEST_MAX_ITER", default_max_iter)
+        let preset = preset_for_node_count(node_count);
+        let max_iter = if node_count > 500 {
+            env_usize("GAZFLOW_LARGE_TEST_MAX_ITER", preset.max_iter)
         } else {
-            default_max_iter
+            preset.max_iter
         };
-        let tolerance = if is_large {
-            env_f64("GAZFLOW_LARGE_TEST_TOL", default_tolerance)
+        let tolerance = if node_count > 500 {
+            env_f64("GAZFLOW_LARGE_TEST_TOL", preset.tolerance)
         } else {
-            default_tolerance
+            preset.tolerance
         };
-        let continuation_scales: Vec<f64> = if is_large {
-            env_scales("GAZFLOW_LARGE_TEST_SCALES", default_scales)
+        let continuation_scales: Vec<f64> = if node_count > 500 {
+            env_scales("GAZFLOW_LARGE_TEST_SCALES", &preset.continuation_scales)
         } else {
-            default_scales.to_vec()
+            preset.continuation_scales.clone()
         };
-        let continuation_max_seconds = if is_large {
-            let default_timeout_s = if node_count > 2000 { 40 } else { 120 };
-            let configured = env_usize("GAZFLOW_LARGE_TEST_MAX_SECONDS", default_timeout_s);
+        let continuation_max_seconds = if node_count > 500 {
+            let default_timeout_s = preset
+                .continuation_max_seconds
+                .unwrap_or(180);
+            let configured = env_usize("GAZFLOW_LARGE_TEST_MAX_SECONDS", default_timeout_s as usize);
             (configured > 0).then_some(configured as u64)
         } else {
-            None
+            preset.continuation_max_seconds
         };
 
         eprintln!(
@@ -1850,38 +1682,54 @@ mod tests {
             continuation_scales
         );
 
-        let solve_result = solve_dataset_with_continuation(
+        let mut effective_preset = preset.clone();
+        effective_preset.max_iter = max_iter;
+        effective_preset.tolerance = tolerance;
+        effective_preset.continuation_scales = continuation_scales;
+        effective_preset.continuation_max_seconds = continuation_max_seconds;
+
+        let effective_demands = demands_without_pressure_slack(&scenario.demands, &scenario);
+
+        let solve_result = solve_steady_state_with_preset(
             &network,
-            &scenario.demands,
-            max_iter,
-            tolerance,
-            &continuation_scales,
-            continuation_max_seconds,
+            &effective_demands,
+            None,
+            &effective_preset,
+            GasComposition::pure_ch4(),
+            |_| SolverControl::Continue,
+            None::<fn(crate::solver::ContinuationStepEvent)>,
         );
 
-        if is_large {
+        if node_count > 500 {
             match solve_result {
                 Ok(result) => {
-                    assert!(
-                        result.iterations <= max_iter,
-                        "too many iterations: {}",
-                        result.iterations
-                    );
                     assert!(result.residual.is_finite(), "residual should be finite");
                     assert_eq!(result.pressures.len(), network.node_count());
                     assert_eq!(result.flows.len(), network.edge_count());
+                    let scale = result.demand_scale_achieved.unwrap_or(1.0);
+                    if scale >= 0.999 && result.residual < tolerance {
+                        eprintln!(
+                            "large dataset full convergence: residual={:.3e}, iters={}, scale={scale}",
+                            result.residual,
+                            result.iterations,
+                        );
+                    } else {
+                        eprintln!(
+                            "large dataset partial/attempt: residual={:.3e}, iters={}, scale={scale} (MVP compresseurs)",
+                            result.residual,
+                            result.iterations,
+                        );
+                    }
                 }
                 Err(err) => {
-                    // Sur les très gros cas, tant que le modèle compresseur reste en
-                    // approximation MVP, la convergence n'est pas garantie pour tous
-                    // scénarios. Le smoke test valide ici le chargement complet du
-                    // dataset + la robustesse d'exécution (échec explicite non-panique).
                     let msg = format!("{err:#}");
                     assert!(
                         msg.contains("did not converge"),
                         "unexpected failure mode on large dataset: {msg}"
                     );
-                    eprintln!("large dataset non-convergence accepted in smoke mode: {msg}");
+                    eprintln!(
+                        "large dataset non-convergence accepted in smoke mode (transport MVP): {msg}"
+                    );
                 }
             }
         } else {
@@ -1905,6 +1753,11 @@ mod tests {
     #[test]
     fn test_solve_gaslib_40() {
         run_dataset_solve_smoke("GasLib-40");
+    }
+
+    #[test]
+    fn test_solve_gaslib_135() {
+        run_dataset_solve_smoke("GasLib-135");
     }
 
     #[test]

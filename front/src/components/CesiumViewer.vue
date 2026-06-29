@@ -83,6 +83,12 @@ import {
   isEquipmentKind,
   regulatorModeLabel,
 } from 'src/utils/equipmentLabels';
+import {
+  labelLodVisible,
+  nodePointPixelSize,
+  nodePointVisible,
+  nodeStride,
+} from 'src/utils/mapLod';
 import type { PipeDto } from 'src/stores/network';
 
 const cesiumContainer = ref<HTMLElement>();
@@ -362,7 +368,6 @@ function updateSelectionHighlight() {
     if (!entity.point) continue;
     const selected = editorStore.selectedKind === 'node' && editorStore.selectedId === nodeId;
     const contingency = contingencyViolationSet.value.has(nodeId);
-    entity.point.pixelSize = selected ? 14 : contingency ? 10 : 8;
     entity.point.outlineColor = selected
       ? SELECTED_NODE_COLOR
       : contingency
@@ -387,6 +392,7 @@ function updateSelectionHighlight() {
     });
   }
 
+  updateNodeLod();
   viewer?.scene.requestRender();
 }
 
@@ -722,9 +728,36 @@ function updatePipeFlowColors(flows: Record<string, number>) {
 function updateNodeLod() {
   if (!viewer) return;
   const height = viewer.camera.positionCartographic.height;
-  const stride = height > 8_000_000 ? 8 : height > 4_000_000 ? 4 : height > 2_000_000 ? 2 : 1;
+  const networkSize = networkStore.nodes.length;
+  const stride = nodeStride(height, networkSize);
+  const selectedKind = editorStore.selectedKind;
+  const selectedNodeId = editorStore.selectedId;
+
   nodeEntities.forEach((entity, index) => {
-    entity.show = index % stride === 0;
+    const nodeId = entity.id?.startsWith('node:') ? entity.id.slice(5) : '';
+    const selected = selectedKind === 'node' && selectedNodeId === nodeId;
+    const contingency = contingencyViolationSet.value.has(nodeId);
+    const basePixelSize = selected ? 14 : contingency ? 10 : 8;
+    const pointVisible = nodePointVisible(index, stride, {
+      nodeId,
+      selectedKind,
+      selectedNodeId,
+      isContingency: contingency,
+    });
+    const labelVisible = labelLodVisible(height, networkSize, {
+      nodeId,
+      selectedKind,
+      selectedNodeId,
+    });
+
+    if (entity.point) {
+      entity.point.show = pointVisible;
+      entity.point.pixelSize = nodePointPixelSize(basePixelSize, height, networkSize);
+    }
+    if (entity.label) {
+      entity.label.show = labelVisible;
+    }
+    entity.show = pointVisible || labelVisible;
   });
 }
 </script>

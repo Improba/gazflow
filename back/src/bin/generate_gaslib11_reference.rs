@@ -27,7 +27,9 @@ fn main() -> Result<()> {
 
     let network = load_network(&network_path).context("load GasLib-11 network")?;
     let scenario = load_scenario_demands(&scenario_path).context("load GasLib-11 scenario")?;
-    let result = solve_steady_state(&network, &scenario.demands, 1200, 5e-4)
+    let demands =
+        gazflow_back::gaslib::demands_without_pressure_slack(&scenario.demands, &scenario);
+    let result = solve_steady_state(&network, &demands, 1200, 5e-4)
         .context("solve GasLib-11 steady-state")?;
 
     if let Some(parent) = output_path.parent() {

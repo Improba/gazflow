@@ -8,6 +8,8 @@ import {
   type WsStartOptions,
   type WsCapacityOptions,
 } from 'src/services/ws';
+import { presetForNodeCount, presetRobust } from 'src/utils/solverPresets';
+import { useNetworkStore } from 'src/stores/network';
 
 type SimulationStatus = 'idle' | 'running' | 'converged' | 'cancelled' | 'error';
 
@@ -46,6 +48,8 @@ export const useSimulateStore = defineStore('simulate', () => {
   const equipmentStates = ref<EquipmentState[]>([]);
   const warnings = ref<string[]>([]);
   const runScenarioSummary = ref<RunScenarioSummary | null>(null);
+  const robustMode = ref(false);
+  const continuationLabel = ref<string | null>(null);
 
   let wsClient: SimulationWsClient | null = null;
   let lastSnapshotAt = 0;
@@ -78,6 +82,27 @@ export const useSimulateStore = defineStore('simulate', () => {
     await wsClient.connect();
   }
 
+  function buildSolverOptions(
+    warmStartPressures: Record<string, number> | undefined,
+    overrides?: WsStartOptions & WsCapacityOptions,
+  ): WsStartOptions & WsCapacityOptions {
+    const networkStore = useNetworkStore();
+    const nodeCount = Math.max(networkStore.nodes.length, 1);
+    const basePreset = presetForNodeCount(nodeCount);
+    const useRobust = robustMode.value || Boolean(basePreset.robust_mode);
+    const preset = useRobust ? presetRobust(nodeCount) : basePreset;
+    const { capacity_bounds, mode, ...solverOpts } = overrides ?? {};
+    return {
+      ...preset,
+      initial_pressures: warmStartPressures,
+      ...solverOpts,
+      capacity_bounds,
+      mode,
+      robust_mode: useRobust,
+      continuation_scales: solverOpts.continuation_scales ?? preset.continuation_scales,
+    };
+  }
+
   async function runSimulation(
     demands?: Record<string, number>,
     options?: WsStartOptions & WsCapacityOptions,
@@ -99,16 +124,11 @@ export const useSimulateStore = defineStore('simulate', () => {
 
       const { capacity_bounds, mode, ...solverOpts } = options ?? {};
       const mergedEquipment = equipmentOverrides;
-      const runOptions: WsStartOptions & WsCapacityOptions = {
-        snapshot_every: 3,
-        timeout_ms: 30_000,
-        max_iter: 1000,
-        tolerance: 5e-4,
-        initial_pressures: warmStartPressures,
+      const runOptions = buildSolverOptions(warmStartPressures, {
         ...solverOpts,
         capacity_bounds,
         mode,
-      };
+      });
 
       lastRunParams = {
         demands: demands ? { ...demands } : undefined,
@@ -130,6 +150,11 @@ export const useSimulateStore = defineStore('simulate', () => {
       errorMessage.value = err instanceof Error ? err.message : 'échec lancement simulation';
       throw err;
     }
+  }
+
+  async function rerunWithRobustMode() {
+    robustMode.value = true;
+    await rerunLastSimulation();
   }
 
   async function rerunLastSimulation() {
@@ -166,6 +191,13 @@ export const useSimulateStore = defineStore('simulate', () => {
         currentRunId.value = msg.run_id;
         addLog(`started ${msg.run_id}`);
         break;
+      case 'continuation_step':
+        if (!isCurrentRun(msg.run_id)) return;
+        continuationLabel.value = `Palier ${msg.step}/${msg.total_steps} — ${Math.round(msg.scale * 100)} % des demandes`;
+        addLog(
+          `continuation ${msg.step}/${msg.total_steps} scale=${(msg.scale * 100).toFixed(0)}%`,
+        );
+        break;
       case 'iteration':
         if (!isCurrentRun(msg.run_id)) return;
         iteration.value = msg.iter;
@@ -192,9 +224,16 @@ export const useSimulateStore = defineStore('simulate', () => {
           activeBounds.value = merged.active_bounds ?? [];
           equipmentStates.value = merged.equipment_states ?? [];
           warnings.value = merged.warnings ?? [];
+          const scaleAchieved = merged.demand_scale_achieved;
+          if (scaleAchieved !== undefined && scaleAchieved < 1) {
+            addLog(
+              `attention: convergence partielle à ${Math.round(scaleAchieved * 100)} % des demandes`,
+            );
+          }
         }
         status.value = 'converged';
         loading.value = false;
+        continuationLabel.value = null;
         addLog(`converged in ${msg.total_ms}ms`);
         break;
       case 'cancelled':
@@ -202,6 +241,16 @@ export const useSimulateStore = defineStore('simulate', () => {
         clearSnapshotQueue();
         status.value = 'cancelled';
         loading.value = false;
+        continuationLabel.value = null;
+        if (msg.reason === 'timeout') {
+          errorMessage.value =
+            'Délai dépassé — activez le mode robuste ou réduisez le scénario.';
+        } else if (msg.reason === 'diverged') {
+          errorMessage.value =
+            'Non-convergence — essayez le mode robuste (continuation de charge).';
+        } else {
+          errorMessage.value = null;
+        }
         addLog(`cancelled: ${msg.reason}`);
         break;
       case 'error':
@@ -243,6 +292,7 @@ export const useSimulateStore = defineStore('simulate', () => {
     activeBounds.value = [];
     equipmentStates.value = [];
     warnings.value = [];
+    continuationLabel.value = null;
   }
 
   function queueSnapshot(msg: Extract<WsServerMessage, { type: 'snapshot' }>) {
@@ -329,8 +379,11 @@ export const useSimulateStore = defineStore('simulate', () => {
     equipmentStates,
     warnings,
     runScenarioSummary,
+    robustMode,
+    continuationLabel,
     runSimulation,
     rerunLastSimulation,
+    rerunWithRobustMode,
     lastInputDemands,
     setRunScenarioSummary,
     cancelSimulation,

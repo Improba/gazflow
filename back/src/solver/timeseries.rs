@@ -13,8 +13,10 @@ use serde::{Deserialize, Serialize};
 use crate::graph::GasNetwork;
 
 use super::config::SteadyStateConfig;
+use super::continuation::solve_steady_state_with_preset;
 use super::demand::{DemandProfile, resolve_demands};
 use super::gas_properties::GasComposition;
+use super::presets::{preset_for_node_count, preset_robust};
 use super::steady_state::{SolverControl, SolverResult, solve_steady_state_with_progress};
 
 /// Pas météo horaire.
@@ -32,6 +34,8 @@ pub struct TimeseriesConfig {
     pub warm_start: bool,
     /// Variation relative max des demandes (Σ|Δd|/Σ|d|) pour réutiliser le warm-start.
     pub warm_start_max_demand_rel_change: f64,
+    /// Active continuation de charge sur grands réseaux (auto si node_count > 199).
+    pub robust_solver: bool,
 }
 
 impl Default for TimeseriesConfig {
@@ -42,6 +46,7 @@ impl Default for TimeseriesConfig {
             tolerance: 1e-3,
             warm_start: true,
             warm_start_max_demand_rel_change: 3.0,
+            robust_solver: false,
         }
     }
 }
@@ -130,8 +135,13 @@ pub fn simulate_timeseries_with_progress(
             &demands,
         );
 
-        let (solve_outcome, retried_cold) =
-            solve_timeseries_step(network, &demands, warm_ic.as_ref(), steady_template);
+        let (solve_outcome, retried_cold) = solve_timeseries_step(
+            network,
+            &demands,
+            warm_ic.as_ref(),
+            steady_template,
+            config.robust_solver,
+        );
 
         let step_result = match solve_outcome {
             Ok(result) => {
@@ -195,18 +205,22 @@ fn solve_timeseries_step(
     demands: &HashMap<String, f64>,
     warm_ic: Option<&HashMap<String, f64>>,
     steady_config: SteadyStateConfig,
+    robust_solver: bool,
 ) -> (Result<SolverResult>, bool) {
     if let Some(ic) = warm_ic {
-        match solve_step(network, demands, Some(ic), steady_config) {
+        match solve_step(network, demands, Some(ic), steady_config, robust_solver) {
             ok @ Ok(_) => return (ok, false),
             Err(err) => {
                 tracing::debug!(error = %err, "warm-start failed, retrying cold");
-                let cold = solve_step(network, demands, None, steady_config);
+                let cold = solve_step(network, demands, None, steady_config, robust_solver);
                 return (cold, true);
             }
         }
     }
-    (solve_step(network, demands, None, steady_config), false)
+    (
+        solve_step(network, demands, None, steady_config, robust_solver),
+        false,
+    )
 }
 
 fn solve_step(
@@ -214,7 +228,27 @@ fn solve_step(
     demands: &HashMap<String, f64>,
     initial_pressures: Option<&HashMap<String, f64>>,
     steady_config: SteadyStateConfig,
+    robust_solver: bool,
 ) -> Result<SolverResult> {
+    if network.node_count() > 199 || robust_solver {
+        let mut preset = if robust_solver {
+            preset_robust(network.node_count())
+        } else {
+            preset_for_node_count(network.node_count())
+        };
+        preset.max_iter = steady_config.max_iter;
+        preset.tolerance = steady_config.tolerance;
+        preset.snapshot_every = steady_config.snapshot_every.max(1);
+        return solve_steady_state_with_preset(
+            network,
+            demands,
+            initial_pressures,
+            &preset,
+            steady_config.gas_composition,
+            |_| SolverControl::Continue,
+            None::<fn(super::continuation::ContinuationStepEvent)>,
+        );
+    }
     solve_steady_state_with_progress(network, demands, initial_pressures, steady_config, |_| {
         SolverControl::Continue
     })
@@ -517,7 +551,7 @@ mod tests {
         let mut bad_ic = HashMap::new();
         bad_ic.insert("SK".to_string(), 0.5);
 
-        let (result, _) = solve_timeseries_step(&net, &demands, Some(&bad_ic), steady);
+        let (result, _) = solve_timeseries_step(&net, &demands, Some(&bad_ic), steady, false);
         assert!(result.is_ok(), "solver should converge: {:?}", result.err());
         let r = result.unwrap();
         assert!(r.residual < steady.tolerance * 10.0);

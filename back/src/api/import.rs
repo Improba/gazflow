@@ -546,11 +546,11 @@ mod tests {
         let (networks_status, networks) = get_json(&app, "/api/networks").await;
         assert_eq!(networks_status, StatusCode::OK);
         assert!(
-            !networks["available"]
+            !networks["networks"]
                 .as_array()
-                .expect("available")
+                .expect("networks")
                 .iter()
-                .any(|id| id == "import-preview-line"),
+                .any(|entry| entry["id"] == "import-preview-line"),
             "validate_only ne doit pas enregistrer le réseau"
         );
     }
@@ -643,11 +643,11 @@ mod tests {
         let (networks_status, networks) = get_json(&app, "/api/networks").await;
         assert_eq!(networks_status, StatusCode::OK);
         assert!(
-            networks["available"]
+            networks["networks"]
                 .as_array()
-                .expect("available")
+                .expect("networks")
                 .iter()
-                .any(|id| id.as_str() == Some(network_id.as_str()))
+                .any(|entry| entry["id"].as_str() == Some(network_id.as_str()))
         );
 
         let (select_status, selected) = post_json(

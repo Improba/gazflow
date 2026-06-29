@@ -61,7 +61,11 @@ fn physical_init_iters(node_count: usize) -> usize {
     if let Some(v) = env_usize_opt("GAZFLOW_PHYSICAL_INIT_ITERS") {
         return v;
     }
-    if node_count > 2000 { 2 } else { 0 }
+    match node_count {
+        n if n > 2000 => 4,
+        n if n > 150 => 12,
+        _ => 0,
+    }
 }
 
 #[derive(Debug, Clone)]

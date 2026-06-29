@@ -11,6 +11,10 @@ const apiSpies = vi.hoisted(() => ({
   exportSimulation: vi.fn(async () => new Blob(['{}'], { type: 'application/json' })),
 }));
 
+const networkStoreMock = vi.hoisted(() => ({
+  nodes: [{ id: 'N1' }, { id: 'N2' }] as { id: string }[],
+}));
+
 vi.mock('src/services/ws', () => ({
   SimulationWsClient: class {
     connect = wsSpies.connect;
@@ -25,11 +29,16 @@ vi.mock('src/services/api', () => ({
   },
 }));
 
+vi.mock('src/stores/network', () => ({
+  useNetworkStore: () => networkStoreMock,
+}));
+
 import { useSimulateStore } from './simulate';
 
 describe('useSimulateStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    networkStoreMock.nodes = [{ id: 'N1' }, { id: 'N2' }];
     wsSpies.connect.mockClear();
     wsSpies.startSimulation.mockClear();
     wsSpies.cancelSimulation.mockClear();
@@ -51,6 +60,31 @@ describe('useSimulateStore', () => {
     expect(wsSpies.startSimulation).toHaveBeenCalledTimes(1);
     const payload = wsSpies.startSimulation.mock.calls[0]?.[0];
     expect(payload.options.initial_pressures).toEqual({ J: 68.2, A: 65.1 });
+  });
+
+  it('applies continuation_scales and adaptive timeout for large networks', async () => {
+    networkStoreMock.nodes = Array.from({ length: 582 }, (_, i) => ({ id: `N${i}` }));
+    const store = useSimulateStore();
+
+    await store.runSimulation();
+
+    const payload = wsSpies.startSimulation.mock.calls[0]?.[0];
+    expect(payload.options.continuation_scales).toEqual([0.05, 0.1, 0.2, 0.4, 0.7, 1.0]);
+    expect(payload.options.timeout_ms).toBe(180_000);
+    expect(payload.options.robust_mode).toBe(true);
+  });
+
+  it('uses robust continuation preset when robustMode is enabled', async () => {
+    networkStoreMock.nodes = [{ id: 'N1' }];
+    const store = useSimulateStore();
+    store.robustMode = true;
+
+    await store.runSimulation();
+
+    const payload = wsSpies.startSimulation.mock.calls[0]?.[0];
+    expect(payload.options.robust_mode).toBe(true);
+    expect(payload.options.continuation_scales).toEqual([0.3, 0.6, 1.0]);
+    expect(payload.options.timeout_ms).toBeGreaterThanOrEqual(120_000);
   });
 
   it('does not export when simulation is not converged', async () => {

@@ -23,6 +23,8 @@ export interface WsStartOptions {
   timeout_ms?: number;
   initial_pressures?: Record<string, number>;
   gas_composition?: GasCompositionDto;
+  robust_mode?: boolean;
+  continuation_scales?: number[];
 }
 
 export interface WsCapacityOptions {
@@ -82,6 +84,14 @@ export type WsServerMessage =
       iter: number;
       residual: number;
       elapsed_ms: number;
+    }
+  | {
+      type: 'continuation_step';
+      run_id: string;
+      seq: number;
+      step: number;
+      total_steps: number;
+      scale: number;
     }
   | {
       type: 'snapshot';

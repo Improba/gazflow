@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { api, type GasCompositionDto, type GasPropertiesDto, type NetworkPipeDto, G20_NOMINAL, validateGasComposition } from 'src/services/api';
+import { api, type GasCompositionDto, type GasPropertiesDto, type NetworkInfoDto, type NetworkPipeDto, G20_NOMINAL, validateGasComposition } from 'src/services/api';
+import { networkTierLabel } from 'src/utils/solverPresets';
 
 export interface NodeDto {
   id: string;
@@ -23,6 +24,7 @@ export const useNetworkStore = defineStore('network', () => {
   const error = ref<string | null>(null);
   const switching = ref(false);
   const availableNetworks = ref<string[]>([]);
+  const networkInfos = ref<NetworkInfoDto[]>([]);
   const activeNetwork = ref<string | null>(null);
   const calibrationPressureResiduals = ref<Record<string, number>>({});
   const gas = ref<GasPropertiesDto>({
@@ -53,8 +55,21 @@ export const useNetworkStore = defineStore('network', () => {
 
   async function fetchAvailableNetworks() {
     const data = await api.getNetworks();
-    availableNetworks.value = data.available;
+    networkInfos.value = data.networks;
+    availableNetworks.value = data.networks.map((n) => n.id);
     activeNetwork.value = data.active;
+  }
+
+  function networkInfo(id: string): NetworkInfoDto | undefined {
+    return networkInfos.value.find((n) => n.id === id);
+  }
+
+  function networkOptionLabel(id: string): string {
+    const info = networkInfo(id);
+    if (!info) return id;
+    const tier = networkTierLabel(info.tier);
+    const demo = info.recommended_demo ? ' ★' : '';
+    return `${id} (${tier}, ${info.node_count} nœuds)${demo}`;
   }
 
   async function selectNetwork(datasetId: string) {
@@ -120,6 +135,7 @@ export const useNetworkStore = defineStore('network', () => {
     error,
     switching,
     availableNetworks,
+    networkInfos,
     activeNetwork,
     calibrationPressureResiduals,
     gas,
@@ -131,5 +147,7 @@ export const useNetworkStore = defineStore('network', () => {
     setCalibrationPressureResiduals,
     clearCalibrationPressureResiduals,
     bootstrap,
+    networkInfo,
+    networkOptionLabel,
   };
 });

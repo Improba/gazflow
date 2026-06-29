@@ -5,6 +5,8 @@ use anyhow::{Context, Result};
 use quick_xml::de::from_str;
 use serde::Deserialize;
 
+use crate::graph::GasNetwork;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename = "boundaryValue")]
 struct XmlBoundaryValue {
@@ -28,6 +30,8 @@ struct XmlScenarioNode {
     node_type: Option<String>,
     #[serde(rename = "flow", default)]
     flows: Vec<XmlFlowBound>,
+    #[serde(rename = "pressure", default)]
+    pressures: Vec<XmlPressureBound>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,10 +44,59 @@ struct XmlFlowBound {
     unit: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct XmlPressureBound {
+    #[serde(rename = "@bound", default)]
+    bound: Option<String>,
+    #[serde(rename = "@value")]
+    value: f64,
+    #[serde(rename = "@unit", default)]
+    unit: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PressureSlackHint {
+    pub node_id: String,
+    pub pressure_bar: f64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScenarioDemands {
     pub scenario_id: Option<String>,
     pub demands: HashMap<String, f64>,
+    /// Slack pression implicite (ex. sortie principale avec borne basse seule).
+    pub pressure_slack: Option<PressureSlackHint>,
+}
+
+/// Applique les conditions aux limites du scénario au réseau (slack pression).
+///
+/// Ne modifie rien si le réseau possède déjà un nœud à pression fixée.
+pub fn apply_scenario_boundaries(network: &mut GasNetwork, scenario: &ScenarioDemands) {
+    if network.nodes().any(|n| n.pressure_fixed_bar.is_some()) {
+        return;
+    }
+    let Some(slack) = scenario.pressure_slack.as_ref() else {
+        return;
+    };
+    if let Some(node) = network.node_mut(&slack.node_id) {
+        node.pressure_fixed_bar = Some(slack.pressure_bar);
+    }
+}
+
+/// Retire la demande imposée sur le nœud slack pression.
+///
+/// Sur un réseau transport GasLib, le débit au point de référence pression est
+/// une inconnue du solveur : imposer P et Q simultanément sur-contrainte le système.
+pub fn demands_without_pressure_slack(
+    demands: &HashMap<String, f64>,
+    scenario: &ScenarioDemands,
+) -> HashMap<String, f64> {
+    let Some(slack) = scenario.pressure_slack.as_ref() else {
+        return demands.clone();
+    };
+    let mut adjusted = demands.clone();
+    adjusted.remove(&slack.node_id);
+    adjusted
 }
 
 /// Charge un fichier GasLib `.scn` et retourne les demandes nodales.
@@ -61,16 +114,14 @@ fn parse_scenario_demands_from_str(xml: &str) -> Result<ScenarioDemands> {
     let raw: XmlBoundaryValue =
         from_str(xml).with_context(|| "parsing XML GasLib scenario (.scn)")?;
 
-    let demands = raw
-        .scenario
-        .nodes
+    let nodes = &raw.scenario.nodes;
+    let demands = nodes
         .iter()
         .filter_map(|node| {
             let magnitude = extract_flow_value(&node.flows)?;
             let sign = match node.node_type.as_deref() {
                 Some("entry") => 1.0,
                 Some("exit") => -1.0,
-                // Cas fallback: on garde la valeur positive si type absent/inconnu.
                 _ => 1.0,
             };
             Some((node.id.clone(), sign * magnitude))
@@ -80,7 +131,61 @@ fn parse_scenario_demands_from_str(xml: &str) -> Result<ScenarioDemands> {
     Ok(ScenarioDemands {
         scenario_id: raw.scenario.id,
         demands,
+        pressure_slack: detect_pressure_slack(nodes),
     })
+}
+
+/// Détecte le nœud slack pression pour les scénarios transport GasLib.
+///
+/// Heuristique : sortie avec débit significatif et borne pression basse seule
+/// (typique des nœuds de balancement type sink_109 sur GasLib-582).
+fn detect_pressure_slack(nodes: &[XmlScenarioNode]) -> Option<PressureSlackHint> {
+    let mut best: Option<(String, f64, f64)> = None;
+
+    for node in nodes {
+        let flow_mag = extract_flow_value(&node.flows).unwrap_or(0.0).abs();
+        if flow_mag < 5.0 {
+            continue;
+        }
+
+        let mut lower: Option<f64> = None;
+        let mut upper: Option<f64> = None;
+        for p in &node.pressures {
+            let abs = pressure_to_bar_absolute(p.value, p.unit.as_deref());
+            match p.bound.as_deref() {
+                Some("lower") => lower = Some(abs),
+                Some("upper") => upper = Some(abs),
+                Some("both") => {
+                    lower = Some(abs);
+                    upper = Some(abs);
+                }
+                _ => {}
+            }
+        }
+
+        if lower.is_some() && upper.is_none() {
+            let pressure = lower?;
+            let replace = best
+                .as_ref()
+                .map(|(_, _, prev_flow)| flow_mag > *prev_flow)
+                .unwrap_or(true);
+            if replace {
+                best = Some((node.id.clone(), pressure, flow_mag));
+            }
+        }
+    }
+
+    best.map(|(node_id, pressure_bar, _)| PressureSlackHint {
+        node_id,
+        pressure_bar,
+    })
+}
+
+fn pressure_to_bar_absolute(value: f64, unit: Option<&str>) -> f64 {
+    match unit {
+        Some("barg") => value + 1.01325,
+        _ => value,
+    }
 }
 
 fn extract_flow_value(flows: &[XmlFlowBound]) -> Option<f64> {
@@ -155,6 +260,62 @@ mod tests {
         assert!((parsed.demands["entry01"] - 44.444_444_444).abs() < 1e-9);
         assert!((parsed.demands["exit01"] + 27.777_777_777).abs() < 1e-9);
         assert!((parsed.demands["exit02"] + 33.333_333_333).abs() < 1e-9);
+        assert!(parsed.pressure_slack.is_none());
+    }
+
+    #[test]
+    fn test_detect_transport_pressure_slack() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<boundaryValue>
+  <scenario id="transport">
+    <node type="exit" id="sink_109">
+      <pressure unit="barg" bound="lower" value="50.0"/>
+      <flow unit="1000m_cube_per_hour" bound="lower" value="920.1659"/>
+      <flow unit="1000m_cube_per_hour" bound="upper" value="920.1659"/>
+    </node>
+  </scenario>
+</boundaryValue>"#;
+
+        let parsed = parse_scenario_demands_from_str(xml).expect("parse");
+        let slack = parsed.pressure_slack.expect("slack");
+        assert_eq!(slack.node_id, "sink_109");
+        assert!((slack.pressure_bar - 51.01325).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_apply_scenario_boundaries_sets_slack() {
+        use crate::graph::Node;
+
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "sink_109".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: None,
+            lat: None,
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+
+        let scenario = ScenarioDemands {
+            scenario_id: None,
+            demands: HashMap::new(),
+            pressure_slack: Some(PressureSlackHint {
+                node_id: "sink_109".into(),
+                pressure_bar: 51.01325,
+            }),
+        };
+
+        apply_scenario_boundaries(&mut net, &scenario);
+        let fixed = net
+            .nodes()
+            .find(|n| n.id == "sink_109")
+            .and_then(|n| n.pressure_fixed_bar);
+        assert_eq!(fixed, Some(51.01325));
     }
 
     #[test]
@@ -189,12 +350,45 @@ mod tests {
         assert!((parsed.demands["exit01"] + 27.777_777_777).abs() < 1e-9);
         assert!((parsed.demands["exit02"] + 33.333_333_333).abs() < 1e-9);
         assert!((parsed.demands["exit03"] + 22.222_222_222).abs() < 1e-9);
+        assert!(parsed.pressure_slack.is_none());
 
         let sum: f64 = parsed.demands.values().sum();
         assert!(
             sum.abs() < 1e-9,
             "scenario should be globally balanced, got sum={sum}"
         );
+    }
+
+    #[test]
+    fn test_parse_gaslib_582_scenario_slack() {
+        let path = Path::new("dat/GasLib-582.scn");
+        if !path.exists() {
+            eprintln!("skip: {:?} not found", path);
+            return;
+        }
+
+        let parsed = load_scenario_demands(path).expect("load 582 scenario");
+        let slack = parsed
+            .pressure_slack
+            .as_ref()
+            .expect("582 scenario should expose pressure slack");
+        assert_eq!(slack.node_id, "sink_109");
+    }
+
+    #[test]
+    fn test_demands_without_pressure_slack() {
+        let mut demands = HashMap::new();
+        demands.insert("sink_109".into(), -255.0);
+        let scenario = ScenarioDemands {
+            scenario_id: None,
+            demands: demands.clone(),
+            pressure_slack: Some(PressureSlackHint {
+                node_id: "sink_109".into(),
+                pressure_bar: 51.01325,
+            }),
+        };
+        let adjusted = demands_without_pressure_slack(&demands, &scenario);
+        assert!(!adjusted.contains_key("sink_109"));
     }
 
     #[test]

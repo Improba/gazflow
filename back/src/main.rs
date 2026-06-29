@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let network_path = data_dir.join(format!("{active_dataset}.net"));
-    let network = gaslib::load_network(&network_path)
+    let mut network = gaslib::load_network(&network_path)
         .with_context(|| format!("chargement réseau {:?}", network_path))?;
     tracing::info!(
         "Réseau actif {} chargé : {} nœuds, {} arêtes",
@@ -54,21 +54,25 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let scenario_path = data_dir.join(format!("{active_dataset}.scn"));
-    let default_demands: HashMap<String, f64> = if scenario_path.exists() {
+    let (default_demands, mut network) = if scenario_path.exists() {
         match gaslib::load_scenario_demands(&scenario_path) {
-            Ok(parsed) => {
-                let scenario: gaslib::ScenarioDemands = parsed;
+            Ok(scenario) => {
+                gaslib::apply_scenario_boundaries(&mut network, &scenario);
                 tracing::info!(
-                    "Scénario chargé pour {} : id={:?}, {} demandes",
+                    "Scénario chargé pour {} : id={:?}, {} demandes, slack={:?}",
                     active_dataset,
                     scenario.scenario_id,
-                    scenario.demands.len()
+                    scenario.demands.len(),
+                    scenario.pressure_slack.as_ref().map(|s| &s.node_id)
                 );
-                scenario.demands
+                (
+                    gaslib::demands_without_pressure_slack(&scenario.demands, &scenario),
+                    network,
+                )
             }
             Err(err) => {
                 tracing::warn!("Impossible de charger {:?}: {err:#}", scenario_path);
-                HashMap::new()
+                (HashMap::new(), network)
             }
         }
     } else {
@@ -76,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
             "Fichier scénario absent: {:?} (utilisation des demandes par défaut)",
             scenario_path
         );
-        HashMap::new()
+        (HashMap::new(), network)
     };
 
     let app = api::create_router_with_datasets(

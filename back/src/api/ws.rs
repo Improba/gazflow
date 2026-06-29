@@ -73,6 +73,11 @@ struct StartOptions {
     initial_pressures: Option<HashMap<String, f64>>,
     #[serde(default)]
     gas_composition: Option<solver::GasComposition>,
+    /// Force continuation de charge (sinon auto selon taille réseau).
+    #[serde(default)]
+    robust_mode: bool,
+    #[serde(default)]
+    continuation_scales: Option<Vec<f64>>,
 }
 
 impl StartOptions {
@@ -83,6 +88,18 @@ impl StartOptions {
             tolerance: self.tolerance,
             snapshot_every: self.snapshot_every,
         }
+    }
+
+    fn solver_preset(&self, node_count: usize) -> solver::SolverPreset {
+        solver::preset_from_request(
+            node_count,
+            self.robust_mode,
+            self.max_iter,
+            self.tolerance,
+            self.timeout_ms,
+            self.snapshot_every,
+            self.continuation_scales.clone(),
+        )
     }
 }
 
@@ -96,6 +113,8 @@ impl Default for StartOptions {
             timeout_ms: default_timeout_ms(),
             initial_pressures: None,
             gas_composition: None,
+            robust_mode: false,
+            continuation_scales: None,
         }
     }
 }
@@ -110,6 +129,8 @@ struct TimeseriesOptions {
     tolerance: f64,
     #[serde(default)]
     gas_composition: Option<solver::GasComposition>,
+    #[serde(default)]
+    robust_mode: bool,
 }
 
 impl TimeseriesOptions {
@@ -120,6 +141,7 @@ impl TimeseriesOptions {
             tolerance: self.tolerance,
             warm_start: self.warm_start,
             warm_start_max_demand_rel_change: 3.0,
+            robust_solver: self.robust_mode,
         }
     }
 }
@@ -131,6 +153,7 @@ impl Default for TimeseriesOptions {
             max_iter: default_ts_max_iter(),
             tolerance: default_ts_tolerance(),
             gas_composition: None,
+            robust_mode: false,
         }
     }
 }
@@ -148,6 +171,13 @@ enum ServerMessage {
         iter: usize,
         residual: f64,
         elapsed_ms: u64,
+    },
+    ContinuationStep {
+        run_id: String,
+        seq: u64,
+        step: usize,
+        total_steps: usize,
+        scale: f64,
     },
     Snapshot {
         run_id: String,
@@ -673,25 +703,51 @@ fn run_solver_stream(ctx: SolverStreamContext) {
         }
         (Some(api_bounds), _) => {
             let bounds = super::api_bounds_to_solver(api_bounds, &network);
+            let preset = options.solver_preset(network.node_count());
+            let gas = steady_config.gas_composition;
             let result = state.rayon_pool.install(|| {
-                solver::solve_steady_state_with_progress(
+                solver::solve_steady_state_with_preset(
                     &network,
                     &demands,
                     options.initial_pressures.as_ref(),
-                    steady_config,
+                    &preset,
+                    gas,
                     &progress_cb,
+                    Some(|ev: solver::ContinuationStepEvent| {
+                        let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
+                        let _ = tx.blocking_send(ServerMessage::ContinuationStep {
+                            run_id: run_id.clone(),
+                            seq: s,
+                            step: ev.step,
+                            total_steps: ev.total_steps,
+                            scale: ev.scale,
+                        });
+                    }),
                 )
             });
             SolveOutcome::Check { result, bounds }
         }
         _ => {
+            let preset = options.solver_preset(network.node_count());
+            let gas = steady_config.gas_composition;
             let result = state.rayon_pool.install(|| {
-                solver::solve_steady_state_with_progress(
+                solver::solve_steady_state_with_preset(
                     &network,
                     &demands,
                     options.initial_pressures.as_ref(),
-                    steady_config,
+                    &preset,
+                    gas,
                     &progress_cb,
+                    Some(|ev: solver::ContinuationStepEvent| {
+                        let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
+                        let _ = tx.blocking_send(ServerMessage::ContinuationStep {
+                            run_id: run_id.clone(),
+                            seq: s,
+                            step: ev.step,
+                            total_steps: ev.total_steps,
+                            scale: ev.scale,
+                        });
+                    }),
                 )
             });
             SolveOutcome::Normal(result)

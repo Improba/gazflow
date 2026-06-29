@@ -23,11 +23,14 @@ This document describes the known limits of the solver in its current state. It 
 
 - Convergence depends on initialisation, line search, and optional Jacobi fallback.
 - Very large networks may require continuation strategies and warm-start.
+- **Partial continuation**: when charge ramping stops before 100 % demand, the solver may return a converged state at a lower scale (`demand_scale_achieved` < 1); results are valid only for that fraction of nominal demand.
 - PDE transient: fixed time step; no adaptive CFL yet; junction coupling simplified.
 
 ## 3. Data and validation limits
 
 - GasLib-11 pressure validation: max relative error < 5 % (`test_gaslib_11_vs_reference_solution`).
+- GasLib-135 (135 nodes): recommended transport demo with continuation preset.
+- GasLib-582 (582 nodes): map/visualisation and load tests; **full steady-state convergence not guaranteed** with the simplified compressor MVP — scenario applies a pressure slack (`sink_109`) and strips its imposed flow before solve.
 - Flow comparison against external `.sol` references: not yet systematic.
 - PDE transient: monotonicity tests on single pipe; full wave validation pending.
 

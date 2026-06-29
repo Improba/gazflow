@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::graph::{ConnectionKind, GasNetwork};
 
 use super::{SolverControl, SolverResult, SteadyStateConfig, solve_steady_state_with_progress};
+use super::continuation::solve_steady_state_with_preset;
+use super::presets::preset_for_node_count;
 
 const DEFAULT_MIN_PRESSURE_BAR: f64 = 0.05;
 
@@ -149,9 +151,8 @@ pub fn evaluate_contingency_case(
     config: SteadyStateConfig,
 ) -> ContingencyResult {
     let scenario = apply_contingency(network, case);
-    match solve_steady_state_with_progress(&scenario, demands, None, config, |_| {
-        SolverControl::Continue
-    }) {
+    let solve_result = solve_contingency_steady(&scenario, demands, None, &config);
+    match solve_result {
         Ok(solver_result) => {
             let min_pressure_bar = solver_result
                 .pressures
@@ -176,6 +177,32 @@ pub fn evaluate_contingency_case(
             solver_result: None,
         },
     }
+}
+
+fn solve_contingency_steady(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    initial_pressures: Option<&HashMap<String, f64>>,
+    config: &SteadyStateConfig,
+) -> anyhow::Result<SolverResult> {
+    if network.node_count() > 199 {
+        let mut preset = preset_for_node_count(network.node_count());
+        preset.max_iter = config.max_iter;
+        preset.tolerance = config.tolerance;
+        preset.snapshot_every = config.snapshot_every.max(1);
+        return solve_steady_state_with_preset(
+            network,
+            demands,
+            initial_pressures,
+            &preset,
+            config.gas_composition,
+            |_| SolverControl::Continue,
+            None::<fn(super::continuation::ContinuationStepEvent)>,
+        );
+    }
+    solve_steady_state_with_progress(network, demands, initial_pressures, *config, |_| {
+        SolverControl::Continue
+    })
 }
 
 pub fn finalize_contingency_report(results: Vec<ContingencyResult>) -> ContingencyReport {

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { CalibrationParameter, TransientEventDto, TransientMode } from './api';
+import type {
+  CalibrationParameter,
+  NetworksResponse,
+  TransientEventDto,
+  TransientMode,
+} from './api';
 
 describe('apiContracts', () => {
   it('serializes transient events with backend type discriminator', () => {
@@ -27,6 +32,22 @@ describe('apiContracts', () => {
     const parsed = JSON.parse(JSON.stringify(params)) as CalibrationParameter[];
     expect(parsed[0].kind).toBe('global_roughness_factor');
     expect(parsed[2]).toEqual({ kind: 'demand_scale', node_id: 'SK', factor: 1.08 });
+  });
+
+  it('serializes networks catalog with metadata', () => {
+    const response: NetworksResponse = {
+      networks: [
+        { id: 'GasLib-11', tier: 'demo', node_count: 11, recommended_demo: true },
+        { id: 'GasLib-582', tier: 'large', node_count: 582, recommended_demo: false },
+      ],
+      active: 'GasLib-11',
+    };
+    const parsed = JSON.parse(JSON.stringify(response)) as NetworksResponse;
+    expect(parsed.networks).toHaveLength(2);
+    expect(parsed.networks[0].recommended_demo).toBe(true);
+    expect(parsed.networks[1].tier).toBe('large');
+    expect(parsed.active).toBe('GasLib-11');
+    expect(parsed).not.toHaveProperty('available');
   });
 
   it('serializes compare request with optional scenario ids', () => {

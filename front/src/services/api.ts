@@ -55,8 +55,17 @@ export interface NetworkResponse {
   pipes: NetworkPipeDto[];
 }
 
+export type NetworkTier = 'demo' | 'standard' | 'large' | 'xlarge';
+
+export interface NetworkInfoDto {
+  id: string;
+  tier: NetworkTier;
+  node_count: number;
+  recommended_demo: boolean;
+}
+
 export interface NetworksResponse {
-  available: string[];
+  networks: NetworkInfoDto[];
   active: string;
 }
 
@@ -102,6 +111,7 @@ export interface SimulationResult {
   infeasibility_diagnostic?: string | null;
   equipment_states?: EquipmentState[];
   warnings?: string[];
+  demand_scale_achieved?: number;
 }
 
 export interface TimeseriesRequest {

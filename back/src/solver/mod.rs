@@ -5,10 +5,12 @@
 
 pub mod capacity;
 pub mod config;
+pub mod continuation;
 pub mod contingency;
 pub mod demand;
 pub mod eos;
 pub mod gas_properties;
+pub mod presets;
 pub(crate) mod iterative;
 pub(crate) mod newton;
 pub(crate) mod regulator;
@@ -18,6 +20,14 @@ pub mod transient;
 
 pub use capacity::{CapacityBounds, CapacityViolation, ConstrainedSolverResult};
 pub use config::SteadyStateConfig;
+pub use continuation::{
+    ContinuationConfig, ContinuationStepEvent, solve_steady_state_with_continuation,
+    solve_steady_state_with_preset,
+};
+pub use presets::{
+    NetworkTier, SolverPreset, preset_for_node_count, preset_from_request, preset_robust,
+    recommended_demo_for_dataset, tier_for_dataset, tier_for_node_count,
+};
 pub use contingency::{
     ContingencyAction, ContingencyCase, ContingencyElementType, ContingencyReport,
     ContingencyResult, PressureViolation, apply_contingency, evaluate_contingency_case,

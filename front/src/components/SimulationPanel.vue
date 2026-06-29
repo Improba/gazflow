@@ -33,6 +33,9 @@
         <q-select
           v-model="selectedNetwork"
           :options="networkStore.availableNetworks"
+          :option-label="networkOptionLabel"
+          emit-value
+          map-options
           label="Réseau"
           dense
           outlined
@@ -165,6 +168,29 @@
       class="q-mb-sm full-width"
     />
 
+    <q-toggle
+      v-model="simulateStore.robustMode"
+      label="Mode robuste (continuation)"
+      color="secondary"
+      dark
+      class="q-mb-sm"
+      :disable="simulateStore.loading"
+    >
+      <q-tooltip max-width="300px">
+        Enchaîne des paliers de demande (10 % → 30 % → 100 %) pour faciliter la convergence
+        sur les grands réseaux transport.
+      </q-tooltip>
+    </q-toggle>
+
+    <q-banner
+      v-if="simulateStore.continuationLabel"
+      dense
+      rounded
+      class="bg-blue-grey-10 text-blue-grey-2 q-mb-sm"
+    >
+      {{ simulateStore.continuationLabel }}
+    </q-banner>
+
     <div class="row q-col-gutter-sm q-mb-md">
       <div class="col">
         <q-btn
@@ -200,6 +226,15 @@
       {{ simulateStore.errorMessage }}
       <template #action>
         <q-btn
+          v-if="simulateStore.status === 'cancelled'"
+          flat
+          dense
+          color="white"
+          label="Mode robuste"
+          :disable="simulateStore.loading || networkStore.nodes.length === 0"
+          @click="simulateStore.rerunWithRobustMode()"
+        />
+        <q-btn
           flat
           dense
           color="white"
@@ -211,6 +246,18 @@
     </q-banner>
 
     <template v-if="simulateStore.result">
+      <q-banner
+        v-if="partialContinuationWarning"
+        dense
+        rounded
+        class="bg-orange-10 text-orange-2 q-mb-sm"
+      >
+        <template #avatar>
+          <q-icon name="warning" />
+        </template>
+        {{ partialContinuationWarning }}
+      </q-banner>
+
       <div class="text-subtitle2 q-mb-xs">
         Convergence en {{ simulateStore.result.iterations }} itérations
         (résidu : {{ simulateStore.result.residual.toExponential(2) }})
@@ -409,6 +456,10 @@ const gasFields = [
   { key: 'h2' as const, label: 'H₂' },
 ];
 
+function networkOptionLabel(id: string): string {
+  return networkStore.networkOptionLabel(id);
+}
+
 const canLoadNetwork = computed(
   () =>
     !!selectedNetwork.value &&
@@ -418,6 +469,17 @@ const canLoadNetwork = computed(
 
 const pressureCount = computed(() => Object.keys(simulateStore.result?.pressures ?? {}).length);
 const flowCount = computed(() => Object.keys(simulateStore.result?.flows ?? {}).length);
+
+const partialContinuationWarning = computed(() => {
+  const scale = simulateStore.result?.demand_scale_achieved;
+  if (scale !== undefined && scale < 1) {
+    return `Convergence partielle à ${Math.round(scale * 100)} % des demandes — résultat valide pour cette charge seulement.`;
+  }
+  const continuationWarnings = simulateStore.warnings.filter((w) =>
+    w.toLowerCase().includes('continuation'),
+  );
+  return continuationWarnings[0] ?? null;
+});
 
 function demandKey(demands: Record<string, number>): string {
   return JSON.stringify(
