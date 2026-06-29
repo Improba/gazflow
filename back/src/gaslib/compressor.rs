@@ -78,7 +78,7 @@ fn parse_compressor_ratios_from_str(raw: &str) -> Result<HashMap<String, f64>> {
     let ratios = station_stages
         .into_iter()
         .map(|(id, stages)| {
-            let ratio = (1.08_f64).powi(stages as i32).clamp(1.0, 1.6);
+            let ratio = (1.08_f64).powi(stages as i32).clamp(1.0, 5.0);
             (id, ratio)
         })
         .collect();

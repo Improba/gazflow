@@ -131,6 +131,22 @@ Reference solutions will be compared when available.
 
 ---
 
+## Transport solver hardening — 2026-06-29
+
+- **Root cause (GasLib-582)**: closing valves/CV by default fragmented the active subgraph into many connected components without fixed pressure → singular Jacobian → faer LU panics and continuation failure.
+- **Fixes (generic, no dataset hardcode)**:
+  - valves and control valves **open by default**; `.cdf` combined decisions close equipment explicitly;
+  - **component pressure anchoring** in Newton (`newton.rs`): one reference pressure per floating connected component;
+  - **`.cdf` parser and dynamic routing** (`gaslib/cdf.rs`, `routing.rs`, `connectivity.rs`) at solve time, with symlink-aware `.cdf` path resolution;
+  - continuation: ramped compressor uplift per demand scale; relaxed tolerance on intermediate tiers.
+- **Measurements (June 2026, `GAZFLOW_ENABLE_LARGE_DATASET_TESTS=1`)**:
+  - GasLib-135: smoke OK (~90s), no faer LU panics;
+  - GasLib-582: no faer panics; residual ~8.9 m³/s with `.cdf` routing `d1`/`d1_1`, ~5.0 m³/s without CDF; **full convergence to 3e-3 not reached** (MVP compressor limit);
+  - GasLib-11: unchanged (distribution reference).
+- **Next step for 582 convergence**: compressor outer loop or `.cs` maps (see `limitations.md` §5).
+
+---
+
 ## Final report v1 (conditional) — 2026-03-10
 
 ### Locked internal reference (regression)

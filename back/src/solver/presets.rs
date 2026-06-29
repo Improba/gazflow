@@ -88,7 +88,7 @@ pub fn tier_for_dataset(dataset_id: &str, node_count: usize) -> NetworkTier {
 }
 
 pub fn recommended_demo_for_dataset(dataset_id: &str) -> bool {
-    matches!(dataset_id, "GasLib-11" | "GasLib-135")
+    matches!(dataset_id, "GasLib-11" | "GasLib-135" | "GasLib-582")
 }
 
 pub fn preset_for_node_count(node_count: usize) -> SolverPreset {
@@ -186,6 +186,6 @@ mod tests {
     fn recommended_demo_datasets() {
         assert!(recommended_demo_for_dataset("GasLib-11"));
         assert!(recommended_demo_for_dataset("GasLib-135"));
-        assert!(!recommended_demo_for_dataset("GasLib-582"));
+        assert!(recommended_demo_for_dataset("GasLib-582"));
     }
 }

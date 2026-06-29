@@ -680,12 +680,33 @@ fn run_solver_stream(ctx: SolverStreamContext) {
         },
     }
 
+    let preset_for_routing = options.solver_preset(network.node_count());
+    let network_path = state.data_dir.join(format!("{network_id}.net"));
+    let mut network_prepared = (*network).clone();
+    let routing_outcome = state.rayon_pool.install(|| {
+        crate::gaslib::resolve_and_apply_cdf_routing(
+            &mut network_prepared,
+            &network_path,
+            &demands,
+            &preset_for_routing,
+        )
+    });
+    if let Err(err) = routing_outcome {
+        let _ = tx.blocking_send(ServerMessage::Error {
+            run_id: run_id.clone(),
+            seq: 1,
+            message: format!("routage transport `.cdf`: {err:#}"),
+            fatal: true,
+        });
+        return;
+    }
+
     let outcome = match (&capacity_bounds, &mode) {
         (Some(api_bounds), Some(SimulationMode::Optimize)) => {
-            let bounds = super::api_bounds_to_solver(api_bounds, &network);
+            let bounds = super::api_bounds_to_solver(api_bounds, &network_prepared);
             let result = state.rayon_pool.install(|| {
                 solver::capacity::solve_steady_state_constrained(
-                    &network,
+                    &network_prepared,
                     &demands,
                     &bounds,
                     options.initial_pressures.as_ref(),
@@ -702,12 +723,12 @@ fn run_solver_stream(ctx: SolverStreamContext) {
             SolveOutcome::Constrained(result)
         }
         (Some(api_bounds), _) => {
-            let bounds = super::api_bounds_to_solver(api_bounds, &network);
-            let preset = options.solver_preset(network.node_count());
+            let bounds = super::api_bounds_to_solver(api_bounds, &network_prepared);
+            let preset = options.solver_preset(network_prepared.node_count());
             let gas = steady_config.gas_composition;
             let result = state.rayon_pool.install(|| {
                 solver::solve_steady_state_with_preset(
-                    &network,
+                    &network_prepared,
                     &demands,
                     options.initial_pressures.as_ref(),
                     &preset,
@@ -728,11 +749,11 @@ fn run_solver_stream(ctx: SolverStreamContext) {
             SolveOutcome::Check { result, bounds }
         }
         _ => {
-            let preset = options.solver_preset(network.node_count());
+            let preset = options.solver_preset(network_prepared.node_count());
             let gas = steady_config.gas_composition;
             let result = state.rayon_pool.install(|| {
                 solver::solve_steady_state_with_preset(
-                    &network,
+                    &network_prepared,
                     &demands,
                     options.initial_pressures.as_ref(),
                     &preset,
@@ -761,7 +782,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                 super::export::new_export_record(
                     run_id.clone(),
                     network_id,
-                    &network,
+                    &network_prepared,
                     demands.clone(),
                     final_result.clone(),
                     started.elapsed().as_millis() as u64,
@@ -786,7 +807,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
             bounds,
         } => {
             let violations = solver::capacity::check_capacity_violations(
-                &network,
+                &network_prepared,
                 &final_result,
                 &demands,
                 &bounds,
@@ -796,7 +817,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                 super::export::new_export_record(
                     run_id.clone(),
                     network_id,
-                    &network,
+                    &network_prepared,
                     demands.clone(),
                     final_result.clone(),
                     started.elapsed().as_millis() as u64,

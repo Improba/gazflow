@@ -145,7 +145,7 @@ where
         .map(|(i, id)| (id.clone(), i))
         .collect();
 
-    let fixed: HashMap<usize, f64> = network
+    let mut fixed: HashMap<usize, f64> = network
         .nodes()
         .filter_map(|n| {
             n.pressure_fixed_bar
@@ -179,10 +179,11 @@ where
         demands_vec[idx] += demand;
     }
 
-    let scaling = NondimScaling::new(
-        pressure_sq_reference_from_fixed(&fixed),
-        flow_reference_from_demands(&demands_vec),
-    );
+    let node_bounds: Vec<(Option<f64>, Option<f64>)> = network
+        .nodes()
+        .map(|node| (node.pressure_lower_bar, node.pressure_upper_bar))
+        .collect();
+    debug_assert_eq!(node_bounds.len(), n);
 
     let node_heights: HashMap<String, f64> = network
         .nodes()
@@ -212,11 +213,93 @@ where
         })
         .collect();
 
+    let mut adjacency = vec![Vec::<usize>::new(); n];
+    for pipe in &pipes {
+        adjacency[pipe.from_idx].push(pipe.to_idx);
+        adjacency[pipe.to_idx].push(pipe.from_idx);
+    }
+
+    let mut visited = vec![false; n];
+    let mut anchored_components = 0usize;
+    for start_idx in 0..n {
+        if visited[start_idx] {
+            continue;
+        }
+
+        let mut stack = vec![start_idx];
+        let mut component = Vec::<usize>::new();
+        visited[start_idx] = true;
+
+        while let Some(node_idx) = stack.pop() {
+            component.push(node_idx);
+            for &neighbor_idx in &adjacency[node_idx] {
+                if !visited[neighbor_idx] {
+                    visited[neighbor_idx] = true;
+                    stack.push(neighbor_idx);
+                }
+            }
+        }
+
+        if component.iter().any(|idx| fixed.contains_key(idx)) {
+            continue;
+        }
+
+        // On ancre chaque composante flottante pour lever la singularite du bloc Laplacien.
+        let anchor = component
+            .iter()
+            .copied()
+            .filter_map(|idx| node_bounds[idx].1.map(|upper_bar| (idx, upper_bar)))
+            .min_by_key(|(idx, _)| *idx)
+            .or_else(|| {
+                component
+                    .iter()
+                    .copied()
+                    .filter_map(|idx| node_bounds[idx].0.map(|lower_bar| (idx, lower_bar)))
+                    .min_by_key(|(idx, _)| *idx)
+            })
+            .or_else(|| {
+                component
+                    .iter()
+                    .copied()
+                    .filter(|&idx| demands_vec[idx].abs() > 0.0)
+                    .max_by(|&a, &b| {
+                        demands_vec[a]
+                            .abs()
+                            .total_cmp(&demands_vec[b].abs())
+                            .then_with(|| b.cmp(&a))
+                    })
+                    .map(|idx| (idx, pressures_sq[idx].sqrt()))
+            })
+            .or_else(|| {
+                component
+                    .iter()
+                    .copied()
+                    .min()
+                    .map(|idx| (idx, pressures_sq[idx].sqrt()))
+            });
+
+        if let Some((anchor_idx, anchor_pressure_bar)) = anchor {
+            let p_sq = anchor_pressure_bar * anchor_pressure_bar;
+            fixed.insert(anchor_idx, p_sq);
+            pressures_sq[anchor_idx] = p_sq;
+            anchored_components += 1;
+        }
+    }
+
+    tracing::debug!(
+        "anchored {} floating components (no pressure reference)",
+        anchored_components
+    );
+
     let free_indices: Vec<usize> = (0..n).filter(|i| !fixed.contains_key(i)).collect();
     let mut free_pos = vec![usize::MAX; n];
     for (pos, &node_idx) in free_indices.iter().enumerate() {
         free_pos[node_idx] = pos;
     }
+    let scaling = NondimScaling::new(
+        pressure_sq_reference_from_fixed(&fixed),
+        flow_reference_from_demands(&demands_vec),
+    );
     let active_regulator_nodes = collect_active_regulator_nodes(network, &id_pos, &fixed);
     let guard_jacobi_fallback = env_bool("GAZFLOW_GUARD_JACOBI_FALLBACK", n > 2000);
 

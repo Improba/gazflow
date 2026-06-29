@@ -54,6 +54,25 @@ pub struct RawPipe {
     pub equipment: super::EquipmentSpec,
 }
 
+impl Default for RawPipe {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            from: String::new(),
+            to: String::new(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 0.0,
+            diameter_mm: 0.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: super::EquipmentSpec::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RawNetwork {
     pub nodes: Vec<RawNode>,

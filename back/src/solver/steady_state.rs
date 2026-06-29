@@ -287,8 +287,15 @@ pub(crate) fn compressor_pressure_from_coeff(pipe: &Pipe) -> f64 {
     if pipe.kind != ConnectionKind::CompressorStation {
         return 1.0;
     }
-    let ratio = pipe.compressor_ratio_max.unwrap_or(1.08).clamp(1.0, 1.6);
-    ratio * ratio
+    let ratio = pipe.compressor_ratio_max.unwrap_or(1.08).clamp(1.0, 5.0);
+    let r2 = ratio * ratio;
+    if ratio > 3.0 {
+        // Transport haute surpression : atténuation MVP pour éviter les instabilités Newton
+        // tout en conservant une surpression significative (coeff plafonné ~9 → ratio eff. ~3).
+        r2.min(9.0)
+    } else {
+        r2
+    }
 }
 
 pub(crate) fn flow_reference_from_demands(demands: &[f64]) -> f64 {
@@ -417,6 +424,30 @@ pub(crate) fn pipe_flow_with_gravity(
     let conductance_from = g * d_dp_d_from;
     let conductance_to = g * (-d_dp_d_to);
     (q, conductance_from, conductance_to)
+}
+
+/// Réseau avec surpression compresseur ramenée au palier de continuation courant.
+pub fn network_with_scaled_compressor_lift(network: &GasNetwork, demand_scale: f64) -> GasNetwork {
+    if (demand_scale - 1.0).abs() < 1e-9 {
+        return network.clone();
+    }
+    let mut net = network.clone();
+    let blend = demand_scale.sqrt().clamp(0.05, 1.0);
+    for pipe in net.pipes_mut() {
+        if pipe.kind != ConnectionKind::CompressorStation {
+            continue;
+        }
+        let nominal = pipe
+            .equipment
+            .compressor_nominal_ratio
+            .or(pipe.compressor_ratio_max)
+            .unwrap_or(1.08);
+        if nominal <= 1.0 + 1e-9 {
+            continue;
+        }
+        pipe.compressor_ratio_max = Some(1.0 + (nominal - 1.0) * blend);
+    }
+    net
 }
 
 /// Résout le réseau en régime permanent via Newton complet + line-search.
@@ -1007,7 +1038,7 @@ mod tests {
         load_reference_solution, load_scenario_demands,
     };
     use crate::solver::gas_properties::GasComposition;
-    use crate::solver::presets::preset_for_node_count;
+    use crate::solver::presets::{preset_for_node_count, preset_robust};
     use crate::solver::continuation::solve_steady_state_with_preset;
     use crate::graph::{ConnectionKind, GasNetwork, Node, Pipe};
 
@@ -1648,7 +1679,11 @@ mod tests {
             return;
         }
         let node_count = network.node_count();
-        let preset = preset_for_node_count(node_count);
+        let preset = if node_count > 500 {
+            preset_robust(node_count)
+        } else {
+            preset_for_node_count(node_count)
+        };
         let max_iter = if node_count > 500 {
             env_usize("GAZFLOW_LARGE_TEST_MAX_ITER", preset.max_iter)
         } else {
@@ -1690,15 +1725,43 @@ mod tests {
 
         let effective_demands = demands_without_pressure_slack(&scenario.demands, &scenario);
 
-        let solve_result = solve_steady_state_with_preset(
-            &network,
+        let cdf_outcome = crate::gaslib::resolve_and_apply_cdf_routing(
+            &mut network,
+            &network_path,
             &effective_demands,
-            None,
             &effective_preset,
-            GasComposition::pure_ch4(),
-            |_| SolverControl::Continue,
-            None::<fn(crate::solver::ContinuationStepEvent)>,
-        );
+        )
+        .expect("cdf routing resolution");
+
+        if let Some(ref outcome) = cdf_outcome {
+            eprintln!(
+                "cdf routing selected: decisions={:?} screen_score={:.3e} pre_converged={}",
+                outcome.routing.decision_ids,
+                outcome.routing.screen_score,
+                outcome.full_solve.is_some()
+            );
+        }
+
+        let solve_result = if let Some(outcome) = cdf_outcome
+            && let Some(result) = outcome.full_solve
+        {
+            eprintln!(
+                "cdf routing converged in validation: decisions={:?}, residual={:.3e}",
+                outcome.routing.decision_ids,
+                result.residual
+            );
+            Ok(result)
+        } else {
+            solve_steady_state_with_preset(
+                &network,
+                &effective_demands,
+                None,
+                &effective_preset,
+                GasComposition::pure_ch4(),
+                |_| SolverControl::Continue,
+                None::<fn(crate::solver::ContinuationStepEvent)>,
+            )
+        };
 
         if node_count > 500 {
             match solve_result {
@@ -1707,29 +1770,19 @@ mod tests {
                     assert_eq!(result.pressures.len(), network.node_count());
                     assert_eq!(result.flows.len(), network.edge_count());
                     let scale = result.demand_scale_achieved.unwrap_or(1.0);
-                    if scale >= 0.999 && result.residual < tolerance {
-                        eprintln!(
-                            "large dataset full convergence: residual={:.3e}, iters={}, scale={scale}",
-                            result.residual,
-                            result.iterations,
-                        );
-                    } else {
-                        eprintln!(
-                            "large dataset partial/attempt: residual={:.3e}, iters={}, scale={scale} (MVP compresseurs)",
-                            result.residual,
-                            result.iterations,
-                        );
-                    }
-                }
-                Err(err) => {
-                    let msg = format!("{err:#}");
                     assert!(
-                        msg.contains("did not converge"),
-                        "unexpected failure mode on large dataset: {msg}"
+                        scale >= 0.999 && result.residual < tolerance,
+                        "large dataset should fully converge: residual={:.3e}, scale={scale}, tol={tolerance:.3e}",
+                        result.residual,
                     );
                     eprintln!(
-                        "large dataset non-convergence accepted in smoke mode (transport MVP): {msg}"
+                        "large dataset full convergence: residual={:.3e}, iters={}, scale={scale}",
+                        result.residual,
+                        result.iterations,
                     );
+                }
+                Err(err) => {
+                    panic!("large dataset should converge: {err:#}");
                 }
             }
         } else {
@@ -1758,6 +1811,186 @@ mod tests {
     #[test]
     fn test_solve_gaslib_135() {
         run_dataset_solve_smoke("GasLib-135");
+    }
+
+    #[test]
+    #[ignore = "diagnostic léger GasLib-582 : nœuds isolés (sans solve)"]
+    fn diag_gaslib_582_isolated_free_nodes() {
+        use crate::gaslib::{apply_cdf_decision_ids, cdf_path_for_network, load_combined_decisions};
+        use std::collections::{HashMap, HashSet};
+
+        let network_path = Path::new("dat/GasLib-582.net");
+        let scenario_path = Path::new("dat/GasLib-582.scn");
+        if !network_path.exists() || !scenario_path.exists() {
+            eprintln!("skip: data files missing");
+            return;
+        }
+
+        let report = |network: &GasNetwork, demands: &HashMap<String, f64>, label: &str| {
+            // Nœuds avec au moins un tuyau hydrauliquement actif les touchant.
+            let mut active_deg: HashMap<&str, usize> = HashMap::new();
+            for pipe in network.pipes().filter(|p| p.hydraulically_active()) {
+                *active_deg.entry(pipe.from.as_str()).or_default() += 1;
+                *active_deg.entry(pipe.to.as_str()).or_default() += 1;
+            }
+            let fixed: HashSet<&str> = network
+                .nodes()
+                .filter(|n| n.pressure_fixed_bar.is_some())
+                .map(|n| n.id.as_str())
+                .collect();
+
+            let mut isolated_free = 0usize;
+            let mut isolated_free_with_demand = 0usize;
+            for node in network.nodes() {
+                let id = node.id.as_str();
+                if fixed.contains(id) {
+                    continue;
+                }
+                let deg = active_deg.get(id).copied().unwrap_or(0);
+                if deg == 0 {
+                    isolated_free += 1;
+                    let q = demands.get(id).copied().unwrap_or(0.0);
+                    if q.abs() > 1e-9 {
+                        isolated_free_with_demand += 1;
+                    }
+                }
+            }
+            let active_pipes = network.pipes().filter(|p| p.hydraulically_active()).count();
+
+            // Composantes connexes du sous-graphe actif (union-find simple via BFS).
+            let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+            for pipe in network.pipes().filter(|p| p.hydraulically_active()) {
+                adj.entry(pipe.from.as_str()).or_default().push(pipe.to.as_str());
+                adj.entry(pipe.to.as_str()).or_default().push(pipe.from.as_str());
+            }
+            let all_ids: Vec<&str> = network.nodes().map(|n| n.id.as_str()).collect();
+            let mut seen: HashSet<&str> = HashSet::new();
+            let mut components = 0usize;
+            let mut comps_without_ref = 0usize;
+            let mut comps_without_ref_with_demand = 0usize;
+            for &start in &all_ids {
+                if seen.contains(start) {
+                    continue;
+                }
+                components += 1;
+                let mut stack = vec![start];
+                let mut has_ref = false;
+                let mut demand_sum = 0.0_f64;
+                while let Some(u) = stack.pop() {
+                    if !seen.insert(u) {
+                        continue;
+                    }
+                    if fixed.contains(u) {
+                        has_ref = true;
+                    }
+                    demand_sum += demands.get(u).copied().unwrap_or(0.0);
+                    if let Some(neighbors) = adj.get(u) {
+                        for &v in neighbors {
+                            if !seen.contains(v) {
+                                stack.push(v);
+                            }
+                        }
+                    }
+                }
+                if !has_ref {
+                    comps_without_ref += 1;
+                    if demand_sum.abs() > 1e-9 {
+                        comps_without_ref_with_demand += 1;
+                    }
+                }
+            }
+
+            eprintln!(
+                "[{label}] nodes={} fixed={} active_pipes={}/{} isolated_free={} (demand={}) | components={} without_ref={} (with_demand={})",
+                network.node_count(),
+                fixed.len(),
+                active_pipes,
+                network.edge_count(),
+                isolated_free,
+                isolated_free_with_demand,
+                components,
+                comps_without_ref,
+                comps_without_ref_with_demand
+            );
+        };
+
+        let scenario = load_scenario_demands(scenario_path).expect("load scenario");
+        let demands = demands_without_pressure_slack(&scenario.demands, &scenario);
+
+        // 1. Réseau brut (defaults parser : CV fermées).
+        let mut net_default = load_network(network_path).expect("load network");
+        apply_scenario_boundaries(&mut net_default, &scenario);
+        report(&net_default, &demands, "defaults (tout ouvert, sans routage cdf)");
+
+        // 2. Avec routage .cdf d1 + d1_1.
+        let cdf_path = cdf_path_for_network(network_path).expect("cdf path");
+        let cdf = load_combined_decisions(&cdf_path).expect("load cdf");
+        let mut net_routed = load_network(network_path).expect("load network");
+        apply_scenario_boundaries(&mut net_routed, &scenario);
+        apply_cdf_decision_ids(&cdf, &mut net_routed, &["d1", "d1_1"]);
+        report(&net_routed, &demands, "routage d1+d1_1");
+
+        // 3. Toutes les valves et CV forcées ouvertes (topologie physique complète).
+        let mut net_all_open = load_network(network_path).expect("load network");
+        apply_scenario_boundaries(&mut net_all_open, &scenario);
+        for pipe in net_all_open.pipes_mut() {
+            pipe.is_open = true;
+            if matches!(pipe.kind, ConnectionKind::ControlValve) {
+                pipe.equipment.control_valve_opening_pct = Some(100.0);
+            }
+        }
+        report(&net_all_open, &demands, "tout ouvert (valves + CV)");
+
+        // 4. Combien de sources/sinks du scénario ont des bornes de pression ?
+        let scn_raw = std::fs::read_to_string(scenario_path).expect("read scn");
+        let entry_count = scn_raw.matches("type=\"entry\"").count();
+        let exit_count = scn_raw.matches("type=\"exit\"").count();
+        let pressure_bound_lines = scn_raw.matches("<pressure ").count();
+        eprintln!(
+            "[scn] entries={entry_count} exits={exit_count} pressure_bound_tags={pressure_bound_lines}"
+        );
+    }
+
+    #[test]
+    #[ignore = "diagnostic manuel GasLib-582"]
+    fn diag_gaslib_582_cdf_routing_d1_d1_1() {
+        use crate::gaslib::{apply_cdf_decision_ids, cdf_path_for_network, load_combined_decisions};
+        use crate::solver::presets::preset_robust;
+        use crate::solver::{GasComposition, SolverControl, solve_steady_state_with_preset};
+
+        let network_path = Path::new("dat/GasLib-582.net");
+        let scenario_path = Path::new("dat/GasLib-582.scn");
+        if !network_path.exists() || !scenario_path.exists() {
+            return;
+        }
+        let cdf_path = cdf_path_for_network(network_path).expect("cdf path");
+        let cdf = load_combined_decisions(&cdf_path).expect("load cdf");
+
+        let mut network = load_network(network_path).expect("load network");
+        let scenario = load_scenario_demands(scenario_path).expect("load scenario");
+        apply_scenario_boundaries(&mut network, &scenario);
+        apply_cdf_decision_ids(&cdf, &mut network, &["d1", "d1_1"]);
+
+        let preset = preset_robust(network.node_count());
+        let demands = demands_without_pressure_slack(&scenario.demands, &scenario);
+        let result = solve_steady_state_with_preset(
+            &network,
+            &demands,
+            None,
+            &preset,
+            GasComposition::pure_ch4(),
+            |_| SolverControl::Continue,
+            None::<fn(crate::solver::ContinuationStepEvent)>,
+        );
+        match result {
+            Ok(r) => eprintln!(
+                "d1+d1_1: residual={:.3e} scale={:?} iters={}",
+                r.residual,
+                r.demand_scale_achieved,
+                r.iterations
+            ),
+            Err(e) => eprintln!("d1+d1_1 failed: {e:#}"),
+        }
     }
 
     #[test]

@@ -9,7 +9,8 @@ use crate::graph::GasNetwork;
 use crate::solver::config::SteadyStateConfig;
 use crate::solver::gas_properties::GasComposition;
 use crate::solver::steady_state::{
-    SolverControl, SolverProgress, SolverResult, solve_steady_state_with_progress,
+    SolverControl, SolverProgress, SolverResult, network_with_scaled_compressor_lift,
+    solve_steady_state_with_progress,
 };
 
 /// Événement émis au début de chaque palier de continuation.
@@ -156,15 +157,26 @@ where
         let mut best_snapshot_pressures: Option<HashMap<String, f64>> = None;
         let mut best_snapshot_residual = f64::INFINITY;
 
+        let is_final_scale =
+            (scale - 1.0).abs() < 1e-9 || idx + 1 >= scales.len();
+        let step_tolerance = if is_final_scale {
+            steady_config.tolerance
+        } else {
+            // Palier intermédiaire : tolérance assouplie pour amorcer le warm-start.
+            (steady_config.tolerance * 100.0).max(0.05)
+        };
+
         let step_config = SteadyStateConfig {
             max_iter: iter_budget,
-            tolerance: steady_config.tolerance,
+            tolerance: step_tolerance,
             snapshot_every,
             gas_composition: steady_config.gas_composition,
         };
 
+        let step_network = network_with_scaled_compressor_lift(network, scale);
+
         match solve_steady_state_with_progress(
-            network,
+            &step_network,
             &scaled_demands,
             warm_start_pressures.as_ref(),
             step_config,

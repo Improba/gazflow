@@ -202,6 +202,16 @@ impl GasNetwork {
         self.graph.edge_weights()
     }
 
+    pub fn pipes_mut(&mut self) -> impl Iterator<Item = &mut Pipe> {
+        self.graph.edge_weights_mut()
+    }
+
+    pub fn pipe_mut(&mut self, id: &str) -> Option<&mut Pipe> {
+        self.graph
+            .edge_weights_mut()
+            .find(|pipe| pipe.id == id)
+    }
+
     /// Applique des surcharges d'équipement par identifiant de conduite (simulation).
     pub fn apply_equipment_overrides(
         &mut self,

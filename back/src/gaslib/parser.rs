@@ -141,6 +141,12 @@ struct XmlConnectionRaw {
     drag_factor_attr: Option<f64>,
     #[serde(rename = "dragFactor", default)]
     drag_factor: Option<XmlValue>,
+    #[serde(rename = "@internalBypassRequired", default)]
+    internal_bypass_required_attr: Option<u8>,
+    #[serde(rename = "pressureInMin", default)]
+    pressure_in_min: Option<XmlValue>,
+    #[serde(rename = "pressureOutMax", default)]
+    pressure_out_max: Option<XmlValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -233,17 +239,33 @@ fn convert_flow_to_m3s(value: &XmlValue) -> f64 {
     }
 }
 
-fn valve_is_open(kind: ConnectionKind, raw: &XmlConnectionRaw) -> bool {
-    if kind != ConnectionKind::Valve {
-        return true;
+fn valve_is_open(_kind: ConnectionKind, _raw: &XmlConnectionRaw) -> bool {
+    // Transport GasLib : ouvert par défaut ; le `.cdf` et le scénario ferment explicitement.
+    true
+}
+
+fn compressor_ratio_from_pressure_bounds(raw: &XmlConnectionRaw) -> Option<f64> {
+    let p_in = raw.pressure_in_min.as_ref()?.value;
+    let p_out = raw.pressure_out_max.as_ref()?.value;
+    if p_in > 0.0 && p_out > p_in {
+        Some((p_out / p_in).clamp(1.0, 5.0))
+    } else {
+        None
     }
-    let Some(min) = raw.flow_min.as_ref().map(|v| v.value) else {
-        return true;
-    };
-    let Some(max) = raw.flow_max.as_ref().map(|v| v.value) else {
-        return true;
-    };
-    !(min.abs() < 1e-12 && max.abs() < 1e-12)
+}
+
+fn effective_compressor_ratio(net_ratio: Option<f64>, cs_ratio: Option<f64>) -> f64 {
+    /// Au-delà de ce ratio, on considère une station de transport et on utilise les bornes `.net`.
+    const TRANSPORT_LIFT_THRESHOLD: f64 = 2.0;
+    let cs = cs_ratio.unwrap_or(1.08);
+    match net_ratio {
+        Some(nr) if nr >= TRANSPORT_LIFT_THRESHOLD => nr.clamp(1.0, 5.0),
+        _ => cs.clamp(1.0, 5.0),
+    }
+}
+
+fn internal_bypass_required(raw: &XmlConnectionRaw) -> bool {
+    raw.internal_bypass_required_attr.is_some_and(|v| v != 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -331,11 +353,21 @@ pub fn load_network_raw<P: AsRef<Path>>(path: P) -> Result<RawNetwork> {
         let is_open = valve_is_open(kind, src);
         let (default_length_km, default_diameter_mm, default_roughness_mm) =
             connection_defaults(kind);
-        let compressor_ratio_max = if kind == ConnectionKind::CompressorStation {
-            Some(compressor_ratios.get(&src.id).copied().unwrap_or(1.08))
+        let compressor_ratio_nominal = if kind == ConnectionKind::CompressorStation {
+            let net_ratio = compressor_ratio_from_pressure_bounds(src);
+            let cs_ratio = compressor_ratios.get(&src.id).copied();
+            Some(effective_compressor_ratio(net_ratio, cs_ratio))
         } else {
             None
         };
+        let mut compressor_ratio_max = compressor_ratio_nominal;
+        let mut equipment = EquipmentSpec::default();
+        if kind == ConnectionKind::CompressorStation {
+            if let Some(ratio) = compressor_ratio_nominal {
+                equipment.compressor_nominal_ratio = Some(ratio);
+            }
+            equipment.internal_bypass_required = Some(internal_bypass_required(src));
+        }
         pipes.push(RawPipe {
             id: src.id.clone(),
             from: src.from.clone(),
@@ -365,7 +397,7 @@ pub fn load_network_raw<P: AsRef<Path>>(path: P) -> Result<RawNetwork> {
             compressor_ratio_max,
             flow_min_m3s: src.flow_min.as_ref().map(convert_flow_to_m3s),
             flow_max_m3s: src.flow_max.as_ref().map(convert_flow_to_m3s),
-            equipment: EquipmentSpec::default(),
+            equipment,
         });
     }
 

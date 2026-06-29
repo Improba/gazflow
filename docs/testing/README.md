@@ -123,6 +123,15 @@ GAZFLOW_ENABLE_LARGE_DATASET_TESTS=1 cargo test test_solve_gaslib_582
 GAZFLOW_ENABLE_LARGE_DATASET_TESTS=1 cargo test test_solve_gaslib_4197
 ```
 
+GasLib-582 smoke test (`test_solve_gaslib_582`) requires full convergence (residual < tolerance, demand scale ≥ 0.999) when the large-dataset flag is set. As of June 2026 it may fail on the MVP compressor model; use `GAZFLOW_SKIP_CDF_ROUTING=1` to solve without automatic `.cdf` routing.
+
+Transport `.cdf` routing (optional env):
+
+- `GAZFLOW_SKIP_CDF_ROUTING` / `GAZFLOW_SKIP_CDF`: disable automatic combined-decision selection.
+- `GAZFLOW_CDF_MAX_COMBINATIONS` (default 512 for N > 500): cap for exhaustive routing search.
+- `GAZFLOW_CDF_SCREEN_MAX_ITER`, `GAZFLOW_CDF_SCREEN_TOL`, `GAZFLOW_CDF_SCREEN_SCALE`, `GAZFLOW_CDF_SCREEN_TIMEOUT_MS`: fast screening preset.
+- `GAZFLOW_CDF_FULL_SOLVE_CANDIDATES` (default 5): number of top routing candidates validated with the robust preset.
+
 Advanced (optional) parameters for large smoke tuning:
 - `GAZFLOW_LARGE_TEST_MAX_ITER` (e.g. `300`)
 - `GAZFLOW_LARGE_TEST_TOL` (e.g. `1e-2`)
@@ -138,9 +147,10 @@ Advanced (optional) parameters for large smoke tuning:
 - `GAZFLOW_PHYSICAL_INIT_ITERS` (number of physical init sweeps before Newton; `0` to disable)
 - `GAZFLOW_GUARD_JACOBI_FALLBACK` (accept Jacobi fallback only if it reduces residual; default on for >2000 nodes)
 
-Defaults:
-- GasLib-582: `max_iter=180`, `tol=2e-3`, `scales=0.1,0.3`, global timeout `120s`;
-- GasLib-4197: very short smoke profile `max_iter=6`, `tol=1e-2`, `scales=0.05,0.1,0.1`, global timeout `40s` (iters split by default `1,1,4` between tiers, short physical init default `2` sweeps for >2000 nodes, default GMRES cap `220` iters on free systems >1200 unknowns, guarded Jacobi fallback default on >2000 nodes, explicit non-convergence accepted in smoke mode).
+Defaults (Large tier, e.g. GasLib-582 with `preset_robust`):
+- `max_iter=400`, `tol=3e-3`, `scales=0.05,0.1,0.2,0.4,0.7,1.0`, continuation timeout `180s`, auto bridges `6`;
+- intermediate continuation tiers use relaxed tolerance (0.3 for 582);
+- GasLib-4197: very short smoke profile `max_iter=12`, `tol=1e-2`, `scales=0.05,0.1,0.2,0.4,0.7,1.0`, global timeout `240s` (explicit non-convergence accepted in smoke mode).
 
 ## Validation pack (backend)
 
