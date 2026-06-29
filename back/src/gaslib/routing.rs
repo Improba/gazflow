@@ -16,7 +16,9 @@ use crate::solver::{
 };
 
 use super::cdf::{CombinedDecisions, CdfDecision, apply_cdf_decisions, cdf_path_for_network, load_combined_decisions};
-use super::connectivity::routing_supports_demands;
+use super::connectivity::{
+    active_component_stats, demands_span_multiple_active_components, routing_supports_demands,
+};
 
 /// Routage `.cdf` retenu pour une résolution (traçabilité UI / logs).
 #[derive(Debug, Clone, PartialEq)]
@@ -31,27 +33,32 @@ pub struct CdfRoutingConfig {
     pub max_exhaustive_combinations: usize,
     pub screen_max_iter: usize,
     pub screen_tolerance: f64,
-    pub screen_scale: f64,
+    pub screen_scales: Vec<f64>,
     pub screen_timeout_ms: u64,
 }
 
 impl CdfRoutingConfig {
     pub fn from_env(node_count: usize) -> Self {
         let default_combos = if node_count > 500 { 512 } else { 256 };
+        let default_scales = if node_count > 500 {
+            "0.15,0.4"
+        } else {
+            "0.15"
+        };
         Self {
             max_exhaustive_combinations: env_usize("GAZFLOW_CDF_MAX_COMBINATIONS", default_combos),
             screen_max_iter: env_usize("GAZFLOW_CDF_SCREEN_MAX_ITER", 35),
             screen_tolerance: env_f64("GAZFLOW_CDF_SCREEN_TOL", 0.05),
-            screen_scale: env_f64("GAZFLOW_CDF_SCREEN_SCALE", 0.15),
+            screen_scales: env_f64_list("GAZFLOW_CDF_SCREEN_SCALES", default_scales),
             screen_timeout_ms: env_usize("GAZFLOW_CDF_SCREEN_TIMEOUT_MS", 45_000) as u64,
         }
     }
 
-    fn screen_preset(&self, node_count: usize) -> SolverPreset {
+    fn screen_preset(&self, node_count: usize, scale: f64) -> SolverPreset {
         let mut preset = preset_for_node_count(node_count);
         preset.max_iter = self.screen_max_iter.max(10);
         preset.tolerance = self.screen_tolerance;
-        preset.continuation_scales = vec![self.screen_scale.clamp(0.05, 1.0)];
+        preset.continuation_scales = vec![scale.clamp(0.05, 1.0)];
         preset.continuation_auto_bridges = 0;
         preset.continuation_max_seconds = Some((self.screen_timeout_ms / 1000).max(5));
         preset.timeout_ms = self.screen_timeout_ms.max(5_000);
@@ -209,7 +216,11 @@ fn pick_routing_with_full_solve(
                     );
                     return Some((candidate.clone(), Some(result)));
                 }
-                let score = routing_score_from_result(&result, validation_preset.tolerance);
+                let score = routing_score_from_result(
+                    &result,
+                    validation_preset.tolerance,
+                    active_component_stats(&trial).1,
+                );
                 if best.as_ref().is_none_or(|(_, s, _)| score < *s) {
                     best = Some((candidate.clone(), score, None));
                 }
@@ -227,16 +238,16 @@ fn select_cdf_routing_candidates(
     demands: &HashMap<String, f64>,
     config: &CdfRoutingConfig,
 ) -> Vec<ResolvedCdfRouting> {
-    let screen_preset = config.screen_preset(topology.node_count());
+    let node_count = topology.node_count();
     let total = total_combinations(cdf);
     let mut scored: Vec<ResolvedCdfRouting> = Vec::new();
 
     if total <= config.max_exhaustive_combinations {
-        scored = exhaustive_routing_scores(topology, cdf, demands, &screen_preset);
+        scored = exhaustive_routing_scores(topology, cdf, demands, config, node_count);
     } else {
-        let greedy = greedy_routing(topology, cdf, demands, &screen_preset);
+        let greedy = greedy_routing(topology, cdf, demands, config, node_count);
         scored.push(greedy.routing.clone());
-        if let Some(refined) = local_refine(topology, cdf, demands, &screen_preset, &greedy) {
+        if let Some(refined) = local_refine(topology, cdf, demands, config, node_count, &greedy) {
             scored.push(refined.routing);
         }
     }
@@ -249,7 +260,10 @@ fn select_cdf_routing_candidates(
     scored.retain(|r| r.screen_score.is_finite());
     scored.dedup_by(|a, b| a.decision_ids == b.decision_ids);
     if scored.is_empty() {
-        scored.push(first_decision_fallback(cdf, topology, demands, &screen_preset).routing);
+        scored.push(
+            first_decision_fallback(cdf, topology, demands, config, node_count)
+                .routing,
+        );
     }
     scored
 }
@@ -258,7 +272,8 @@ fn greedy_routing<'a>(
     topology: &GasNetwork,
     cdf: &'a CombinedDecisions,
     demands: &HashMap<String, f64>,
-    screen_preset: &SolverPreset,
+    config: &CdfRoutingConfig,
+    node_count: usize,
 ) -> RoutingSelection<'a> {
     let mut picked_indices = Vec::new();
     let mut picked_decisions: Vec<&CdfDecision> = Vec::new();
@@ -271,7 +286,7 @@ fn greedy_routing<'a>(
             let mut trial_decisions = picked_decisions.clone();
             trial_decisions.push(decision);
             apply_cdf_decisions(&mut trial, &trial_decisions);
-            let score = score_routing(&trial, demands, screen_preset);
+            let score = score_routing(&trial, demands, config, node_count);
             if score < best_score {
                 best_score = score;
                 best_idx = idx;
@@ -284,7 +299,7 @@ fn greedy_routing<'a>(
     let final_score = {
         let mut trial = topology.clone();
         apply_cdf_decisions(&mut trial, &picked_decisions);
-        score_routing(&trial, demands, screen_preset)
+        score_routing(&trial, demands, config, node_count)
     };
 
     build_selection(cdf, picked_indices, final_score, "greedy")
@@ -294,7 +309,8 @@ fn exhaustive_routing_scores(
     topology: &GasNetwork,
     cdf: &CombinedDecisions,
     demands: &HashMap<String, f64>,
-    screen_preset: &SolverPreset,
+    config: &CdfRoutingConfig,
+    node_count: usize,
 ) -> Vec<ResolvedCdfRouting> {
     let combos = enumerate_index_combinations(cdf);
     let evaluated = AtomicUsize::new(0);
@@ -311,7 +327,7 @@ fn exhaustive_routing_scores(
                 .map(|(g, &i)| &cdf.groups[g].decisions[i])
                 .collect::<Vec<_>>();
             apply_cdf_decisions(&mut trial, &decisions);
-            let score = score_routing(&trial, demands, screen_preset);
+            let score = score_routing(&trial, demands, config, node_count);
             (indices.clone(), score)
         })
         .collect();
@@ -333,7 +349,8 @@ fn local_refine<'a>(
     topology: &GasNetwork,
     cdf: &'a CombinedDecisions,
     demands: &HashMap<String, f64>,
-    screen_preset: &SolverPreset,
+    config: &CdfRoutingConfig,
+    node_count: usize,
     seed: &RoutingSelection<'a>,
 ) -> Option<RoutingSelection<'a>> {
     let mut indices = seed
@@ -365,7 +382,7 @@ fn local_refine<'a>(
                 .map(|(gi, &i)| &cdf.groups[gi].decisions[i])
                 .collect::<Vec<_>>();
             apply_cdf_decisions(&mut trial, &decisions);
-            let score = score_routing(&trial, demands, screen_preset);
+            let score = score_routing(&trial, demands, config, node_count);
             if score < best_score {
                 best_score = score;
                 indices = trial_indices;
@@ -381,7 +398,8 @@ fn first_decision_fallback<'a>(
     cdf: &'a CombinedDecisions,
     topology: &GasNetwork,
     demands: &HashMap<String, f64>,
-    screen_preset: &SolverPreset,
+    config: &CdfRoutingConfig,
+    node_count: usize,
 ) -> RoutingSelection<'a> {
     let indices = vec![0; cdf.groups.len()];
     let mut trial = topology.clone();
@@ -391,7 +409,7 @@ fn first_decision_fallback<'a>(
         .filter_map(|g| g.decisions.first())
         .collect();
     apply_cdf_decisions(&mut trial, &decisions);
-    let score = score_routing(&trial, demands, screen_preset);
+    let score = score_routing(&trial, demands, config, node_count);
     build_selection(cdf, indices, score, "fallback_first")
 }
 
@@ -417,14 +435,72 @@ fn build_selection<'a>(
     }
 }
 
+fn routing_fragmentation_penalty(network: &GasNetwork, demands: &HashMap<String, f64>) -> f64 {
+    let (total, without_fixed) = active_component_stats(network);
+    let large = network.node_count() > 500;
+
+    if without_fixed > 1 {
+        if large {
+            return f64::INFINITY;
+        }
+        return 1.0e6 * (without_fixed - 1) as f64;
+    }
+
+    if total > 1 && demands_span_multiple_active_components(network, demands) {
+        if large {
+            return f64::INFINITY;
+        }
+        return 1.0e6;
+    }
+
+    0.0
+}
+
 fn score_routing(
     network: &GasNetwork,
     demands: &HashMap<String, f64>,
-    preset: &SolverPreset,
+    config: &CdfRoutingConfig,
+    node_count: usize,
 ) -> f64 {
     if !routing_supports_demands(network, demands) {
         return f64::INFINITY;
     }
+
+    let fragmentation = routing_fragmentation_penalty(network, demands);
+    if !fragmentation.is_finite() {
+        return f64::INFINITY;
+    }
+
+    let scales = if config.screen_scales.is_empty() {
+        vec![0.15]
+    } else {
+        config.screen_scales.clone()
+    };
+
+    let (_, components_without_fixed) = active_component_stats(network);
+    let mut best_score = f64::INFINITY;
+
+    for scale in scales {
+        let preset = config.screen_preset(node_count, scale);
+        let score = score_routing_at_scale(network, demands, &preset, components_without_fixed);
+        if score < best_score {
+            best_score = score;
+        }
+    }
+
+    if !best_score.is_finite() {
+        f64::INFINITY
+    } else {
+        best_score + fragmentation
+    }
+}
+
+fn score_routing_at_scale(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    preset: &SolverPreset,
+    components_without_fixed: usize,
+) -> f64 {
     match solve_steady_state_with_preset(
         network,
         demands,
@@ -434,12 +510,18 @@ fn score_routing(
         |_| SolverControl::Continue,
         None::<fn(ContinuationStepEvent)>,
     ) {
-        Ok(result) => routing_score_from_result(&result, preset.tolerance),
+        Ok(result) => {
+            routing_score_from_result(&result, preset.tolerance, components_without_fixed)
+        }
         Err(_) => f64::INFINITY,
     }
 }
 
-fn routing_score_from_result(result: &SolverResult, tolerance: f64) -> f64 {
+fn routing_score_from_result(
+    result: &SolverResult,
+    tolerance: f64,
+    components_without_fixed: usize,
+) -> f64 {
     if !result.residual.is_finite() || result.residual > 1.0e6 {
         return f64::INFINITY;
     }
@@ -452,7 +534,12 @@ fn routing_score_from_result(result: &SolverResult, tolerance: f64) -> f64 {
     } else {
         0.0
     };
-    result.residual + scale_penalty + converged_bonus
+    let component_penalty = if components_without_fixed > 0 {
+        1.0e3 * components_without_fixed as f64
+    } else {
+        0.0
+    };
+    result.residual + scale_penalty + converged_bonus + component_penalty
 }
 
 fn total_combinations(cdf: &CombinedDecisions) -> usize {
@@ -506,6 +593,14 @@ fn env_f64(key: &str, default: f64) -> f64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+fn env_f64_list(key: &str, default: &str) -> Vec<f64> {
+    let raw = std::env::var(key).unwrap_or_else(|_| default.to_string());
+    raw.split(',')
+        .filter_map(|part| part.trim().parse::<f64>().ok())
+        .map(|s| s.clamp(0.05, 1.0))
+        .collect()
 }
 
 #[cfg(test)]
@@ -562,6 +657,7 @@ mod tests {
                 ..Default::default()
             },
             1e-3,
+            0,
         );
         let bad = routing_score_from_result(
             &SolverResult {
@@ -570,8 +666,44 @@ mod tests {
                 ..Default::default()
             },
             1e-3,
+            0,
         );
         assert!(ok < bad);
+    }
+
+    #[test]
+    fn cdf_config_default_scales_by_size() {
+        let small = CdfRoutingConfig::from_env(100);
+        assert_eq!(small.screen_scales, vec![0.15]);
+        let large = CdfRoutingConfig::from_env(600);
+        assert_eq!(large.screen_scales, vec![0.15, 0.4]);
+    }
+
+    #[test]
+    fn routing_fragmentation_penalty_rejects_large_multi_component() {
+        let mut net = GasNetwork::new();
+        for i in 0..600 {
+            net.add_node(Node {
+                id: format!("N{i}"),
+                ..Default::default()
+            });
+        }
+        net.add_pipe(Pipe {
+            id: "P1".into(),
+            from: "N0".into(),
+            to: "N1".into(),
+            kind: ConnectionKind::Pipe,
+            ..Default::default()
+        });
+        net.add_pipe(Pipe {
+            id: "P2".into(),
+            from: "N2".into(),
+            to: "N3".into(),
+            kind: ConnectionKind::Pipe,
+            ..Default::default()
+        });
+        let demands = HashMap::new();
+        assert!(!routing_fragmentation_penalty(&net, &demands).is_finite());
     }
 
     #[test]

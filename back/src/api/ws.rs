@@ -87,6 +87,7 @@ impl StartOptions {
             max_iter: self.max_iter,
             tolerance: self.tolerance,
             snapshot_every: self.snapshot_every,
+            enable_compressor_outer_loop: true,
         }
     }
 

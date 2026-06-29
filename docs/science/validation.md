@@ -143,6 +143,10 @@ Reference solutions will be compared when available.
   - GasLib-135: smoke OK (~90s), no faer LU panics;
   - GasLib-582: no faer panics; residual ~8.9 m³/s with `.cdf` routing `d1`/`d1_1`, ~5.0 m³/s without CDF; **full convergence to 3e-3 not reached** (MVP compressor limit);
   - GasLib-11: unchanged (distribution reference).
+- **June 2026 follow-up (compressor outer fallback + CDF multi-scale)**:
+  - Post-continuation compressor blend fallback (≥200 nodes, transport compressors);
+  - CDF screening at multiple demand scales; fragmentation penalty on large networks;
+  - GasLib-582 unchanged (~8.95 m³/s, ~13 min test with CDF screening); GasLib-135 regression fixed (outer loop no longer nested inside continuation steps).
 - **Next step for 582 convergence**: compressor outer loop or `.cs` maps (see `limitations.md` §5).
 
 ---

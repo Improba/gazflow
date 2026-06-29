@@ -171,6 +171,7 @@ where
             tolerance: step_tolerance,
             snapshot_every,
             gas_composition: steady_config.gas_composition,
+            enable_compressor_outer_loop: false,
         };
 
         let step_network = network_with_scaled_compressor_lift(network, scale);
@@ -253,6 +254,7 @@ where
         max_iter: preset.max_iter,
         tolerance: preset.tolerance,
         snapshot_every: preset.snapshot_every,
+        enable_compressor_outer_loop: true,
     };
 
     if preset.uses_continuation() {
@@ -262,15 +264,31 @@ where
             auto_bridges: preset.continuation_auto_bridges,
             min_gap: 0.02,
         };
-        solve_steady_state_with_continuation(
+        let mut progress = on_progress;
+        match solve_steady_state_with_continuation(
             network,
             demands,
             initial_pressures,
             steady_config,
             &continuation,
-            on_progress,
+            &mut progress,
             on_continuation_step,
-        )
+        ) {
+            Ok(result) => Ok(result),
+            Err(err) => match super::steady_state::solve_compressor_outer_fallback(
+                network,
+                demands,
+                initial_pressures,
+                steady_config,
+                &mut progress,
+            ) {
+                Ok(result) => Ok(result),
+                Err(fallback_err) => {
+                    tracing::debug!(fallback_err = %fallback_err, "compressor outer fallback skipped or failed");
+                    Err(err)
+                }
+            },
+        }
     } else {
         solve_steady_state_with_progress(
             network,
@@ -338,6 +356,7 @@ mod tests {
             max_iter: 500,
             tolerance: 1e-4,
             snapshot_every: 0,
+            enable_compressor_outer_loop: true,
         };
         let cont = ContinuationConfig::from_scales(vec![1.0]);
         let result = solve_steady_state_with_continuation(
@@ -364,6 +383,7 @@ mod tests {
             max_iter: 300,
             tolerance: 1e-3,
             snapshot_every: 0,
+            enable_compressor_outer_loop: true,
         };
         let cont = ContinuationConfig::from_scales(vec![0.3, 1.0]);
         let mut steps = Vec::new();
@@ -391,6 +411,7 @@ mod tests {
             max_iter: 300,
             tolerance: 1e-3,
             snapshot_every: 0,
+            enable_compressor_outer_loop: true,
         };
         let cont = ContinuationConfig {
             scales: vec![0.3, 1.0],

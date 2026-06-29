@@ -34,6 +34,8 @@ This document describes the known limits of the solver in its current state. It 
 - **`.cdf` routing**: when a `.cdf` file exists next to the loaded `.net` (including versioned symlinks such as `GasLib-582.net` → `GasLib-582-v2-….net`), the solver selects combined routing decisions before the steady-state solve (screening + optional full validation of top candidates). Connectivity of the active subgraph to all demand and fixed-pressure nodes is required.
 - **Transport scenarios**: a single pressure slack node is detected heuristically (e.g. `sink_109` on GasLib-582); its imposed flow is removed before solve so pressure and flow are not over-constrained.
 - Disable automatic routing with `GAZFLOW_SKIP_CDF_ROUTING=1` (or `GAZFLOW_SKIP_CDF=1`).
+- **Compressor outer loop (fallback)**: after continuation failure on transport networks (≥200 nodes with high-ratio compressors), a progressive blend schedule ramps `compressor_ratio_max` toward nominal (`GAZFLOW_SKIP_COMPRESSOR_OUTER=1` to disable; `GAZFLOW_COMPRESSOR_OUTER=1` to force on smaller networks).
+- **CDF screening**: multi-scale evaluation via `GAZFLOW_CDF_SCREEN_SCALES` (default `0.15,0.4` for N>500); routings that fragment the active graph (multiple components without fixed pressure) are rejected on large networks.
 
 ## 3. Data and validation limits
 

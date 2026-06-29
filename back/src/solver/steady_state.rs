@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use serde::Serialize;
 
 use crate::graph::{ConnectionKind, EquipmentSpec, GasNetwork, Pipe};
@@ -448,6 +448,99 @@ pub fn network_with_scaled_compressor_lift(network: &GasNetwork, demand_scale: f
         pipe.compressor_ratio_max = Some(1.0 + (nominal - 1.0) * blend);
     }
     net
+}
+
+const MAX_COMPRESSOR_OUTER: usize = 8;
+const COMPRESSOR_BLEND_STEPS: [f64; MAX_COMPRESSOR_OUTER] =
+    [0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 0.95, 1.0];
+
+fn network_has_transport_compressors(network: &GasNetwork) -> bool {
+    network.pipes().any(|pipe| {
+        if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
+            return false;
+        }
+        pipe.equipment.compressor_nominal_ratio.is_some()
+            || pipe.compressor_ratio_max.unwrap_or(1.0) > 1.5
+    })
+}
+
+fn apply_compressor_blend(network: &GasNetwork, blend: f64) -> GasNetwork {
+    let mut net = network.clone();
+    let blend = blend.clamp(0.0, 1.0);
+    for pipe in net.pipes_mut() {
+        if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
+            continue;
+        }
+        let nominal = pipe
+            .equipment
+            .compressor_nominal_ratio
+            .or(pipe.compressor_ratio_max)
+            .unwrap_or(1.08)
+            .max(1.0);
+        pipe.compressor_ratio_max = Some(1.0 + (nominal - 1.0) * blend);
+    }
+    net
+}
+
+fn should_try_compressor_outer_fallback(network: &GasNetwork) -> bool {
+    if env_bool("GAZFLOW_SKIP_COMPRESSOR_OUTER", false) {
+        return false;
+    }
+    if !network_has_transport_compressors(network) {
+        return false;
+    }
+    env_bool("GAZFLOW_COMPRESSOR_OUTER", false) || network.node_count() >= 200
+}
+
+/// Dernier recours après échec de continuation sur réseaux transport compresseurs.
+pub(crate) fn solve_compressor_outer_fallback<F>(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    initial_pressures: Option<&HashMap<String, f64>>,
+    config: SteadyStateConfig,
+    on_progress: &mut F,
+) -> Result<SolverResult>
+where
+    F: FnMut(SolverProgress) -> SolverControl,
+{
+    if !should_try_compressor_outer_fallback(network) {
+        bail!("compressor outer fallback not applicable");
+    }
+
+    tracing::info!("trying compressor outer loop after continuation failure");
+    let mut warm_start = initial_pressures.cloned();
+    let mut total_iterations = 0usize;
+    let mut last_error: Option<anyhow::Error> = None;
+
+    for blend in COMPRESSOR_BLEND_STEPS {
+        let blended = apply_compressor_blend(network, blend);
+        match solve_steady_state_newton_core(
+            &blended,
+            demands,
+            warm_start.as_ref(),
+            config,
+            &mut *on_progress,
+        ) {
+            Ok(mut result) => {
+                total_iterations += result.iterations;
+                warm_start = Some(result.pressures.clone());
+                result.iterations = total_iterations;
+                if result.residual <= config.tolerance {
+                    return Ok(result);
+                }
+                last_error = Some(anyhow!(
+                    "compressor outer stage blend={blend:.2} residual={:.3e}",
+                    result.residual
+                ));
+            }
+            Err(err) => {
+                tracing::warn!(blend, error = %err, "compressor outer stage failed");
+                last_error = Some(err);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("compressor outer loop exhausted all blends")))
 }
 
 /// Résout le réseau en régime permanent via Newton complet + line-search.

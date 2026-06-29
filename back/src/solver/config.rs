@@ -9,6 +9,8 @@ pub struct SteadyStateConfig {
     pub max_iter: usize,
     pub tolerance: f64,
     pub snapshot_every: usize,
+    /// Désactivé pendant les paliers de continuation (le ramping compresseur y est géré à part).
+    pub enable_compressor_outer_loop: bool,
 }
 
 impl Default for SteadyStateConfig {
@@ -18,6 +20,7 @@ impl Default for SteadyStateConfig {
             max_iter: 500,
             tolerance: 1e-6,
             snapshot_every: 0,
+            enable_compressor_outer_loop: true,
         }
     }
 }
@@ -54,6 +57,7 @@ mod tests {
         assert_eq!(cfg.max_iter, 500);
         assert!((cfg.tolerance - 1e-6).abs() < f64::EPSILON);
         assert_eq!(cfg.snapshot_every, 0);
+        assert!(cfg.enable_compressor_outer_loop);
         assert_eq!(cfg.gas_composition, GasComposition::g20_nominal());
     }
 

@@ -127,6 +127,7 @@ where
         max_iter,
         tolerance,
         snapshot_every,
+        enable_compressor_outer_loop: _,
     } = *config;
     let n = network.node_count();
     if n == 0 {

@@ -130,7 +130,9 @@ Transport `.cdf` routing (optional env):
 - `GAZFLOW_SKIP_CDF_ROUTING` / `GAZFLOW_SKIP_CDF`: disable automatic combined-decision selection.
 - `GAZFLOW_CDF_MAX_COMBINATIONS` (default 512 for N > 500): cap for exhaustive routing search.
 - `GAZFLOW_CDF_SCREEN_MAX_ITER`, `GAZFLOW_CDF_SCREEN_TOL`, `GAZFLOW_CDF_SCREEN_SCALE`, `GAZFLOW_CDF_SCREEN_TIMEOUT_MS`: fast screening preset.
+- `GAZFLOW_CDF_SCREEN_SCALES` (default `0.15,0.4` for N > 500): multi-scale routing screening.
 - `GAZFLOW_CDF_FULL_SOLVE_CANDIDATES` (default 5): number of top routing candidates validated with the robust preset.
+- `GAZFLOW_SKIP_COMPRESSOR_OUTER` / `GAZFLOW_COMPRESSOR_OUTER`: control post-continuation compressor blend fallback.
 
 Advanced (optional) parameters for large smoke tuning:
 - `GAZFLOW_LARGE_TEST_MAX_ITER` (e.g. `300`)
