@@ -4,12 +4,24 @@ Natural gas network flow simulator, inspired by SIMONE.
 
 ## Visual overview
 
-
-|                  |                    |                   |
-| ---------------- | ------------------ | ----------------- |
-|                  |                    |                   |
-| *3D network map* | *Scenario control* | *Reading results* |
-
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/assets/overview-3d-network.png" alt="3D view of the transport network in GazFlow" />
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/assets/scenario-control-panel.png" alt="GazFlow simulation control panel" />
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/assets/simulation-results-convergence.png" alt="Hydraulic results and convergence in GazFlow" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><em>3D network map</em></td>
+    <td align="center"><em>Scenario control</em></td>
+    <td align="center"><em>Reading results</em></td>
+  </tr>
+</table>
 
 ## What GazFlow does (business vision)
 
