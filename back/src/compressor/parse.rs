@@ -54,6 +54,7 @@ fn parse_compressor_catalog<R: BufRead>(reader: &mut Reader<R>) -> Result<Compre
     let mut current_turbo: Option<String> = None;
     let mut measurement_block = MeasurementBlock::None;
     let mut current_measurement: Option<PendingMeasurement> = None;
+    let mut inside_configuration = false;
 
     fn push_measurement(
         catalog: &mut CompressorCatalog,
@@ -133,6 +134,17 @@ fn parse_compressor_catalog<R: BufRead>(reader: &mut Reader<R>) -> Result<Compre
                             catalog
                                 .station_mut(station_id)
                                 .push_configuration(conf_id, stages);
+                            inside_configuration = true;
+                        }
+                    }
+                    "compressor" if inside_configuration && current_turbo.is_none() => {
+                        if let (Some(station_id), Some(comp_id)) = (
+                            current_station.as_deref(),
+                            read_attr_string(reader, &e, "id"),
+                        ) {
+                            catalog
+                                .station_mut(station_id)
+                                .link_turbo_to_last_configuration(&comp_id);
                         }
                     }
                     "speedmin" => {
@@ -257,6 +269,17 @@ fn parse_compressor_catalog<R: BufRead>(reader: &mut Reader<R>) -> Result<Compre
                             catalog
                                 .station_mut(station_id)
                                 .push_configuration(conf_id, stages);
+                            inside_configuration = true;
+                        }
+                    }
+                    "compressor" if inside_configuration && current_turbo.is_none() => {
+                        if let (Some(station_id), Some(comp_id)) = (
+                            current_station.as_deref(),
+                            read_attr_string(reader, &e, "id"),
+                        ) {
+                            catalog
+                                .station_mut(station_id)
+                                .link_turbo_to_last_configuration(&comp_id);
                         }
                     }
                     "speedmin" => {
@@ -380,9 +403,13 @@ fn parse_compressor_catalog<R: BufRead>(reader: &mut Reader<R>) -> Result<Compre
                     "surgelinemeasurements" | "characteristicdiagrammeasurements" => {
                         measurement_block = MeasurementBlock::None;
                     }
+                    "configuration" => {
+                        inside_configuration = false;
+                    }
                     "compressorstation" => {
                         current_station = None;
                         current_turbo = None;
+                        inside_configuration = false;
                     }
                     "turbocompressor" => {
                         current_turbo = None;
@@ -577,6 +604,8 @@ mod tests {
         }
         let catalog = super::load_compressor_catalog(path).expect("582 catalog");
         assert_eq!(catalog.stations.len(), 5);
+        let cs1 = catalog.station("compressorStation_1").expect("CS1");
+        assert_eq!(cs1.default_conf_turbo_id(), Some("compressor_6"));
         for id in [
             "compressorStation_1",
             "compressorStation_2",

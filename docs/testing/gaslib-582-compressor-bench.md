@@ -63,6 +63,17 @@ La recherche 1D + `effective_ratio_with_nominal` aligne la cible carte sur le li
 
 Leviers v4 : `guarded_compressor_ratio_step` (pas de baisse transport avant convergence), `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED=1` (défaut measurement/biquadratic), parsing turbo + eval biquadratique GasLib.
 
+## Résultats v8 (confId→turbo config_2, juin 2026)
+
+Fix : `preferred_turbo` résout `config_2` → `compressor_6` (582 CS1) au lieu de `compressor_5` (min id).
+
+| Mode | Résidu | `map_target` CS1–3 | `ratio_max` post-handoff |
+|------|--------|--------------------|--------------------------|
+| measurement | **8,22 m³/s** | **~1,51** | **~1,29** (relax 0,5 depuis 1,08) |
+| biquadratic | à bench | ~1,51 | ~1,29 |
+
+Le ratio carte transport passe de 1,08 à **~1,51** à Q≈18 m³/s ; le résidu Newton reste 8,22 (prochain levier : convergence avec lift ~1,3–1,5).
+
 ## Résultats v7 (recouplage Q estimé + garde carte upward, juin 2026)
 
 | Mode | Résidu | `map_eval_q` | `map_target` (st. 1–3) | Notes |

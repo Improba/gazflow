@@ -126,6 +126,8 @@ impl TurboCompressorModel {
 pub struct CompressorConfiguration {
     pub conf_id: Option<String>,
     pub nr_of_serial_stages: usize,
+    /// Turbos référencés par les étages (premier compresseur de chaque étage série).
+    pub turbo_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -157,6 +159,12 @@ impl StationModel {
             return None;
         }
 
+        if let Some(turbo_id) = self.default_conf_turbo_id() {
+            if let Some(turbo) = self.turbos.get(turbo_id) {
+                return Some(turbo);
+            }
+        }
+
         if let Some(default_conf_id) = self.default_conf_id() {
             if let Some(turbo) = self.turbos.get(default_conf_id) {
                 return Some(turbo);
@@ -170,11 +178,34 @@ impl StationModel {
         self.turbos.values().min_by(|a, b| a.id.cmp(&b.id))
     }
 
+    /// Turbo actif pour la configuration par défaut (config_2 si présente).
+    pub fn default_conf_turbo_id(&self) -> Option<&str> {
+        let conf_id = self.default_conf_id()?;
+        self.turbo_id_for_conf(conf_id)
+    }
+
+    pub fn turbo_id_for_conf(&self, conf_id: &str) -> Option<&str> {
+        self.configurations
+            .iter()
+            .find(|cfg| cfg.conf_id.as_deref() == Some(conf_id))
+            .and_then(|cfg| cfg.turbo_ids.first())
+            .map(String::as_str)
+    }
+
     pub fn push_configuration(&mut self, conf_id: Option<String>, nr_of_serial_stages: usize) {
         self.configurations.push(CompressorConfiguration {
             conf_id,
             nr_of_serial_stages: nr_of_serial_stages.max(1),
+            turbo_ids: Vec::new(),
         });
+    }
+
+    pub fn link_turbo_to_last_configuration(&mut self, turbo_id: &str) {
+        if let Some(cfg) = self.configurations.last_mut() {
+            if !cfg.turbo_ids.iter().any(|id| id == turbo_id) {
+                cfg.turbo_ids.push(turbo_id.to_string());
+            }
+        }
     }
 
     pub fn push_characteristic_measurement(&mut self, measurement: TurboMeasurement) {
@@ -327,12 +358,26 @@ mod tests {
     fn test_preferred_turbo_uses_default_conf_id() {
         let mut station = StationModel::default();
         station.push_configuration(Some("config_1".into()), 1);
+        station.link_turbo_to_last_configuration("turbo_a");
         station.push_configuration(Some("config_2".into()), 2);
+        station.link_turbo_to_last_configuration("turbo_b");
 
-        station.turbo_mut("config_1");
-        station.turbo_mut("config_2");
+        station.turbo_mut("turbo_a");
+        station.turbo_mut("turbo_b");
 
         let preferred = station.preferred_turbo().expect("preferred turbo");
+        assert_eq!(preferred.id, "turbo_b");
+        assert_eq!(station.default_conf_turbo_id(), Some("turbo_b"));
+    }
+
+    #[test]
+    fn test_preferred_turbo_legacy_conf_key_fallback() {
+        let mut station = StationModel::default();
+        station.push_configuration(Some("config_2".into()), 1);
+        station.turbo_mut("config_2");
+        station.turbo_mut("compressor_other");
+
+        let preferred = station.preferred_turbo().expect("legacy key turbo");
         assert_eq!(preferred.id, "config_2");
     }
 }

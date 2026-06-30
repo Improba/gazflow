@@ -801,6 +801,27 @@ mod tests {
     }
 
     #[test]
+    fn test_gaslib_582_preferred_turbo_is_config_2_compressor() {
+        use std::path::Path;
+
+        use crate::gaslib::load_network;
+
+        let net_path = Path::new("dat/GasLib-582.net");
+        if !net_path.exists() {
+            eprintln!("skip: GasLib-582.net not found");
+            return;
+        }
+        let net = load_network(net_path).expect("582 net");
+        let station = net
+            .compressor_catalog
+            .as_ref()
+            .and_then(|c| c.station("compressorStation_1"))
+            .expect("CS1");
+        assert_eq!(station.default_conf_turbo_id(), Some("compressor_6"));
+        assert_eq!(station.preferred_turbo().expect("turbo").id, "compressor_6");
+    }
+
+    #[test]
     fn test_gaslib_582_map_ratio_rises_with_estimated_transport_flow() {
         use std::path::Path;
 
@@ -838,8 +859,8 @@ mod tests {
         );
         assert!(point.is_some(), "expected feasible operating point on 582 CS1 envelope");
         assert!(
-            (ratio - 1.08).abs() < 0.02,
-            "582 CS1 map at mild_618 estimate should stay near catalogue lift (ratio={ratio:.4})"
+            ratio > 1.09,
+            "582 CS1 config_2 turbo should exceed catalogue 1.08 at mild_618 estimate (ratio={ratio:.4})"
         );
     }
 }
