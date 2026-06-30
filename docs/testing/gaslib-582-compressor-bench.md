@@ -63,6 +63,17 @@ La recherche 1D + `effective_ratio_with_nominal` aligne la cible carte sur le li
 
 Leviers v4 : `guarded_compressor_ratio_step` (pas de baisse transport avant convergence), `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED=1` (défaut measurement/biquadratic), parsing turbo + eval biquadratique GasLib.
 
+## Résultats v10 (débit hub transport + refine continuation, juin 2026)
+
+| Mode | Résidu | `map_target` CS1–3 | eval_q transport |
+|------|--------|--------------------|------------------|
+| measurement | **5,0 m³/s** | **~1,51** | **30 m³/s** (90/3 hub) |
+| biquadratic | **5,0 m³/s** | ~1,51 | 30 |
+
+Leviers : split transport cap≥3 vs distribution, continuation refine [0,92→1,0], clamp Q solver absurdes, diag map cohérent.
+
+**Plancher ~5 m³/s** avec ratios carte cohérents : prochain levier = débit **topologique** (CS1 ≈ flux hub ~90, pas 30) ou hydraulique MVP au-delà du ratio.
+
 ## Résultats v9 (Newton partiel + handoff carte Q estimé, juin 2026)
 
 | Mode | Résidu | Statut | Notes |

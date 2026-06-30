@@ -10,7 +10,8 @@ use crate::solver::gas_properties::DEFAULT_GAS_TEMPERATURE_K;
 
 use super::config::SteadyStateConfig;
 use super::steady_state::{
-    SolverControl, SolverProgress, SolverResult, solve_steady_state_with_progress,
+    SolverControl, SolverProgress, SolverResult, network_with_scaled_compressor_lift,
+    solve_steady_state_with_progress,
 };
 
 const LEGACY_BLEND_STEPS: [f64; 8] = [0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 0.95, 1.0];
@@ -23,6 +24,10 @@ const FLOW_UPDATE_THRESHOLD_M3S: f64 = 0.01;
 const TRANSPORT_NOMINAL_THRESHOLD: f64 = 2.0;
 const MAP_CONTINUATION_COUPLING_MIN_SCALE: f64 = 0.5;
 const CONTINUATION_HANDOFF_RELAX: f64 = 1.0;
+const MAP_REFINE_SCALES: &[f64] = &[0.92, 0.96, 1.0];
+const HANDOFF_PREFER_ESTIMATED_RESIDUAL: f64 = 7.0;
+const MAX_PLAUSIBLE_COMPRESSOR_FLOW_M3S: f64 = 250.0;
+const HIGH_TRANSPORT_CAP_THRESHOLD: f64 = 3.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressorMapMode {
@@ -182,20 +187,114 @@ pub fn estimate_station_norm_flow(
     estimate_total_delivery_flow_m3s(demands, demand_scale) / active_compressors as f64
 }
 
+fn is_transport_compressor(pipe: &Pipe) -> bool {
+    pipe.equipment
+        .compressor_pressure_cap_ratio
+        .unwrap_or(1.0)
+        >= TRANSPORT_NOMINAL_THRESHOLD
+}
+
+fn is_high_transport_compressor(pipe: &Pipe) -> bool {
+    pipe.equipment
+        .compressor_pressure_cap_ratio
+        .unwrap_or(1.0)
+        >= HIGH_TRANSPORT_CAP_THRESHOLD
+}
+
+fn count_high_transport_compressors(network: &GasNetwork) -> usize {
+    network
+        .pipes()
+        .filter(|p| {
+            p.kind == ConnectionKind::CompressorStation
+                && p.hydraulically_active()
+                && is_high_transport_compressor(p)
+        })
+        .count()
+}
+
+fn count_distribution_compressors(network: &GasNetwork) -> usize {
+    network
+        .pipes()
+        .filter(|p| {
+            p.kind == ConnectionKind::CompressorStation
+                && p.hydraulically_active()
+                && is_transport_compressor(p)
+                && !is_high_transport_compressor(p)
+        })
+        .count()
+}
+
+/// Débit carte : transport = livraison / nb transport (hub ~flux total/n), sinon split égal.
+fn estimated_map_flow_m3s(
+    pipe: &Pipe,
+    high_transport_count: usize,
+    distribution_count: usize,
+    active_compressors: usize,
+    demands: &HashMap<String, f64>,
+    demand_scale: f64,
+) -> f64 {
+    let total = estimate_total_delivery_flow_m3s(demands, demand_scale);
+    if is_high_transport_compressor(pipe) && high_transport_count > 0 {
+        return total / high_transport_count as f64;
+    }
+    if is_transport_compressor(pipe) && distribution_count > 0 {
+        return total / distribution_count as f64;
+    }
+    estimate_station_norm_flow(active_compressors, demands, demand_scale)
+}
+
+/// Débit normal estimé pour l'évaluation carte (transport = total / nb transport).
+pub fn estimated_compressor_map_flow_m3s(
+    network: &GasNetwork,
+    pipe: &Pipe,
+    demands: &HashMap<String, f64>,
+    demand_scale: f64,
+) -> f64 {
+    let active = network
+        .pipes()
+        .filter(|p| p.kind == ConnectionKind::CompressorStation && p.hydraulically_active())
+        .count();
+    estimated_map_flow_m3s(
+        pipe,
+        count_high_transport_compressors(network),
+        count_distribution_compressors(network),
+        active,
+        demands,
+        demand_scale,
+    )
+}
+
+fn prefer_estimated_flow_for_map(result: &SolverResult, tolerance: f64) -> bool {
+    result.residual > tolerance.max(HANDOFF_PREFER_ESTIMATED_RESIDUAL)
+}
+
+fn plausible_solver_flow(q_m3s: f64) -> bool {
+    q_m3s >= FLOW_UPDATE_THRESHOLD_M3S && q_m3s <= MAX_PLAUSIBLE_COMPRESSOR_FLOW_M3S
+}
+
 fn effective_flow_for_map_update(
     result: &SolverResult,
+    high_transport_count: usize,
+    distribution_count: usize,
     active_compressors: usize,
     demands: &HashMap<String, f64>,
     pipe: &Pipe,
     demand_scale: f64,
     prefer_estimated: bool,
 ) -> f64 {
-    let estimated = estimate_station_norm_flow(active_compressors, demands, demand_scale);
+    let estimated = estimated_map_flow_m3s(
+        pipe,
+        high_transport_count,
+        distribution_count,
+        active_compressors,
+        demands,
+        demand_scale,
+    );
     if prefer_estimated && estimated >= FLOW_UPDATE_THRESHOLD_M3S {
         return estimated;
     }
     let solver_q = result.flows.get(&pipe.id).copied().unwrap_or(0.0).abs();
-    if solver_q >= FLOW_UPDATE_THRESHOLD_M3S {
+    if plausible_solver_flow(solver_q) {
         return solver_q;
     }
     if estimated >= FLOW_UPDATE_THRESHOLD_M3S {
@@ -371,6 +470,8 @@ fn apply_compressor_map_updates(
         .pipes()
         .filter(|p| p.kind == ConnectionKind::CompressorStation && p.hydraulically_active())
         .count();
+    let high_transport_count = count_high_transport_compressors(network);
+    let distribution_count = count_distribution_compressors(network);
     let mut stats = RatioUpdateStats::default();
     for pipe in network.pipes_mut() {
         if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
@@ -378,6 +479,8 @@ fn apply_compressor_map_updates(
         }
         let q_m3s_norm = effective_flow_for_map_update(
             result,
+            high_transport_count,
+            distribution_count,
             active_compressors,
             demands,
             pipe,
@@ -444,7 +547,7 @@ pub fn apply_map_ratios_after_continuation_step(
     if catalog.stations.is_empty() {
         return RatioUpdateStats::default();
     }
-    let prefer_estimated = result.residual > tolerance;
+    let prefer_estimated = prefer_estimated_flow_for_map(result, tolerance);
     apply_compressor_map_updates(
         network,
         result,
@@ -458,6 +561,45 @@ pub fn apply_map_ratios_after_continuation_step(
         true,
         prefer_estimated,
     )
+}
+
+fn refine_map_with_demand_continuation<F>(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    warm_start: Option<&HashMap<String, f64>>,
+    config: SteadyStateConfig,
+    mode: CompressorMapMode,
+    on_progress: &mut F,
+) -> Result<SolverResult>
+where
+    F: FnMut(SolverProgress) -> SolverControl,
+{
+    let mut warm = warm_start.cloned();
+    let mut total_iterations = 0usize;
+    let mut nominal_result: Option<SolverResult> = None;
+    for &scale in MAP_REFINE_SCALES {
+        let scaled_demands: HashMap<String, f64> = demands
+            .iter()
+            .map(|(id, q)| (id.clone(), q * scale))
+            .collect();
+        let step_network = network_with_scaled_compressor_lift(network, scale);
+        let mut step_config = steady_config_for_outer_iter(config, mode, f64::INFINITY);
+        step_config.accept_partial_solution = true;
+        let mut result = solve_steady_state_with_progress(
+            &step_network,
+            &scaled_demands,
+            warm.as_ref(),
+            step_config,
+            &mut *on_progress,
+        )?;
+        total_iterations += result.iterations;
+        result.iterations = total_iterations;
+        warm = Some(result.pressures.clone());
+        if (scale - 1.0).abs() < 1e-9 {
+            nominal_result = Some(result);
+        }
+    }
+    nominal_result.ok_or_else(|| anyhow!("map refinement continuation produced no result"))
 }
 
 fn solve_with_compressor_map<F>(
@@ -548,7 +690,7 @@ where
             demands,
             1.0,
             true,
-            result.residual > config.tolerance,
+            prefer_estimated_flow_for_map(&result, config.tolerance),
         );
 
         if result.residual <= config.tolerance
@@ -596,6 +738,22 @@ where
                 "compressor map outer loop improved via legacy ratio blend polish"
             );
             return Ok(blended);
+        }
+        if let Ok(refined) = refine_map_with_demand_continuation(
+            &adjusted_network,
+            demands,
+            warm_start.as_ref(),
+            config,
+            mode,
+            &mut *on_progress,
+        ) && refined.residual < result.residual
+        {
+            tracing::info!(
+                before = result.residual,
+                after = refined.residual,
+                "compressor map outer loop improved via demand continuation refine"
+            );
+            return Ok(refined);
         }
         tracing::info!(
             residual = result.residual,

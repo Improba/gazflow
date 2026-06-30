@@ -15,12 +15,15 @@ use gazflow_back::graph::{ConnectionKind, GasNetwork};
 use gazflow_back::solver::{
     ContinuationStepEvent, GasComposition, SolverControl, SolverResult,
     apply_map_ratios_after_continuation_step, compressor_map_mode, compressor_pressure_from_coeff,
-    estimate_station_norm_flow, preset_robust, solve_steady_state_with_preset, CompressorMapMode,
+    estimate_station_norm_flow, estimated_compressor_map_flow_m3s, preset_robust,
+    solve_steady_state_with_preset, CompressorMapMode,
 };
 use serde::Serialize;
 
 const DEFAULT_GAS_TEMPERATURE_K: f64 = 288.15;
 const FLOW_EVAL_THRESHOLD_M3S: f64 = 0.01;
+const MAX_PLAUSIBLE_COMPRESSOR_FLOW_M3S: f64 = 250.0;
+const HANDOFF_PREFER_ESTIMATED_RESIDUAL: f64 = 7.0;
 /// Pression amont indicative transport quand le solve échoue avant convergence (582 mild_618).
 const TRANSPORT_FALLBACK_INLET_BAR: f64 = 40.0;
 
@@ -218,15 +221,10 @@ fn compressor_station_rows(
     result: &SolverResult,
     demands: &std::collections::HashMap<String, f64>,
     demand_scale: f64,
+    tolerance: f64,
 ) -> Vec<CompressorStationDiag> {
     let catalog = network.compressor_catalog.as_ref();
-    let active_compressors = network
-        .pipes()
-        .filter(|pipe| {
-            pipe.kind == ConnectionKind::CompressorStation && pipe.hydraulically_active()
-        })
-        .count();
-    let estimated_q = estimate_station_norm_flow(active_compressors, demands, demand_scale);
+    let prefer_estimated = result.residual > tolerance.max(HANDOFF_PREFER_ESTIMATED_RESIDUAL);
     let mut rows: Vec<CompressorStationDiag> = network
         .pipes()
         .filter(|pipe| {
@@ -236,7 +234,13 @@ fn compressor_station_rows(
             let ratio_max = pipe.compressor_ratio_max.unwrap_or(1.08);
             let flow_m3s = result.flows.get(&pipe.id).copied().unwrap_or(0.0);
             let solver_q = flow_m3s.abs();
-            let map_eval_q = if solver_q >= FLOW_EVAL_THRESHOLD_M3S {
+            let estimated_q =
+                estimated_compressor_map_flow_m3s(network, pipe, demands, demand_scale);
+            let map_eval_q = if prefer_estimated && estimated_q >= FLOW_EVAL_THRESHOLD_M3S {
+                estimated_q
+            } else if solver_q >= FLOW_EVAL_THRESHOLD_M3S
+                && solver_q <= MAX_PLAUSIBLE_COMPRESSOR_FLOW_M3S
+            {
                 solver_q
             } else if estimated_q >= FLOW_EVAL_THRESHOLD_M3S {
                 estimated_q
@@ -460,7 +464,7 @@ fn main() -> Result<()> {
                     preset.tolerance,
                 );
             }
-            compressor_station_rows(&report_network, result, &demands, demand_scale)
+            compressor_station_rows(&report_network, result, &demands, demand_scale, preset.tolerance)
         }
         Err(err) => {
             let err_text = format!("{err:#}");
@@ -481,7 +485,7 @@ fn main() -> Result<()> {
                     preset.tolerance,
                 );
             }
-            compressor_station_rows(&report_network, &preview, &demands, 1.0)
+            compressor_station_rows(&report_network, &preview, &demands, 1.0, preset.tolerance)
         }
     };
 
