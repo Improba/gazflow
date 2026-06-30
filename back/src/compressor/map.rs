@@ -799,4 +799,47 @@ mod tests {
         let ratio = effective_ratio_with_nominal_for_mode(&station, &ctx, Some(1.2), Some(5.0), true);
         assert!(ratio >= 1.0);
     }
+
+    #[test]
+    fn test_gaslib_582_map_ratio_rises_with_estimated_transport_flow() {
+        use std::path::Path;
+
+        use crate::gaslib::load_network;
+
+        let net_path = Path::new("dat/GasLib-582.net");
+        if !net_path.exists() {
+            eprintln!("skip: GasLib-582.net not found");
+            return;
+        }
+        let net = load_network(net_path).expect("582 net");
+        let cs1 = net
+            .pipes()
+            .find(|p| p.id == "compressorStation_1")
+            .expect("CS1");
+        let catalog = net.compressor_catalog.as_ref().expect("catalog");
+        let station = catalog.station("compressorStation_1").expect("CS1 station");
+
+        // Débit normal ~18 m³/s ; aspiration > surgeline min (~0,43 m³/s) ⇒ p_in ≲ 42 bar.
+        let ctx = CompressorOperatingContext {
+            q_m3s_norm: 18.0,
+            p_in_bar: 40.0,
+            t_in_k: 288.15,
+        };
+        let suction_q = ctx.suction_volumetric_flow_m3s();
+        let point = find_operating_point(station, &ctx);
+        let ratio = effective_ratio_with_nominal(
+            station,
+            &ctx,
+            cs1.equipment.compressor_nominal_ratio,
+            cs1.equipment.compressor_pressure_cap_ratio,
+        );
+        eprintln!(
+            "582 CS1 Q_norm=18 p_in=40: suction_q={suction_q:.4} point={point:?} ratio={ratio:.4}"
+        );
+        assert!(point.is_some(), "expected feasible operating point on 582 CS1 envelope");
+        assert!(
+            (ratio - 1.08).abs() < 0.02,
+            "582 CS1 map at mild_618 estimate should stay near catalogue lift (ratio={ratio:.4})"
+        );
+    }
 }

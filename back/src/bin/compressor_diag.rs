@@ -14,11 +14,15 @@ use gazflow_back::gaslib::{
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
 use gazflow_back::solver::{
     ContinuationStepEvent, GasComposition, SolverControl, SolverResult,
-    compressor_pressure_from_coeff, preset_robust, solve_steady_state_with_preset,
+    apply_map_ratios_after_continuation_step, compressor_map_mode, compressor_pressure_from_coeff,
+    estimate_station_norm_flow, preset_robust, solve_steady_state_with_preset, CompressorMapMode,
 };
 use serde::Serialize;
 
 const DEFAULT_GAS_TEMPERATURE_K: f64 = 288.15;
+const FLOW_EVAL_THRESHOLD_M3S: f64 = 0.01;
+/// Pression amont indicative transport quand le solve échoue avant convergence (582 mild_618).
+const TRANSPORT_FALLBACK_INLET_BAR: f64 = 40.0;
 
 #[derive(Debug)]
 struct CliArgs {
@@ -44,6 +48,8 @@ struct CompressorStationDiag {
     from: String,
     to: String,
     flow_m3s: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    map_eval_q_m3s: Option<f64>,
     ratio_max: f64,
     effective_r2: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -170,6 +176,37 @@ fn apply_map_mode_env(mode: &str) -> Result<()> {
     }
 }
 
+fn map_eval_inlet_pressure_bar(pipe: &gazflow_back::graph::Pipe, inlet: Option<f64>) -> f64 {
+    let transport = pipe
+        .equipment
+        .compressor_pressure_cap_ratio
+        .unwrap_or(1.0)
+        >= 2.0;
+    inlet.filter(|p| *p > 1.5).unwrap_or(if transport {
+        TRANSPORT_FALLBACK_INLET_BAR
+    } else {
+        1.01325
+    })
+}
+
+fn synthetic_result_for_map_preview(
+    network: &GasNetwork,
+    residual: f64,
+) -> SolverResult {
+    let mut result = SolverResult::default();
+    result.residual = residual;
+    for pipe in network.pipes() {
+        if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
+            continue;
+        }
+        result.pressures.insert(
+            pipe.from.clone(),
+            map_eval_inlet_pressure_bar(pipe, None),
+        );
+    }
+    result
+}
+
 fn map_mode_label(cli: &CliArgs) -> String {
     cli.map_mode.clone().unwrap_or_else(|| {
         std::env::var("GAZFLOW_COMPRESSOR_MAP_MODE").unwrap_or_else(|_| "legacy".into())
@@ -179,8 +216,17 @@ fn map_mode_label(cli: &CliArgs) -> String {
 fn compressor_station_rows(
     network: &GasNetwork,
     result: &SolverResult,
+    demands: &std::collections::HashMap<String, f64>,
+    demand_scale: f64,
 ) -> Vec<CompressorStationDiag> {
     let catalog = network.compressor_catalog.as_ref();
+    let active_compressors = network
+        .pipes()
+        .filter(|pipe| {
+            pipe.kind == ConnectionKind::CompressorStation && pipe.hydraulically_active()
+        })
+        .count();
+    let estimated_q = estimate_station_norm_flow(active_compressors, demands, demand_scale);
     let mut rows: Vec<CompressorStationDiag> = network
         .pipes()
         .filter(|pipe| {
@@ -189,14 +235,22 @@ fn compressor_station_rows(
         .map(|pipe| {
             let ratio_max = pipe.compressor_ratio_max.unwrap_or(1.08);
             let flow_m3s = result.flows.get(&pipe.id).copied().unwrap_or(0.0);
+            let solver_q = flow_m3s.abs();
+            let map_eval_q = if solver_q >= FLOW_EVAL_THRESHOLD_M3S {
+                solver_q
+            } else if estimated_q >= FLOW_EVAL_THRESHOLD_M3S {
+                estimated_q
+            } else {
+                solver_q
+            };
             let inlet_pressure_bar = result.pressures.get(&pipe.from).copied();
+            let p_in = map_eval_inlet_pressure_bar(pipe, inlet_pressure_bar);
             let map_target_ratio = catalog.and_then(|cat| {
                 let station = cat.station(&pipe.id)?;
-                let p_in = inlet_pressure_bar.unwrap_or(1.01325).max(1e-3);
                 Some(effective_ratio_with_nominal(
                     station,
                     &CompressorOperatingContext {
-                        q_m3s_norm: flow_m3s.abs(),
+                        q_m3s_norm: map_eval_q,
                         p_in_bar: p_in,
                         t_in_k: DEFAULT_GAS_TEMPERATURE_K,
                     },
@@ -209,10 +263,11 @@ fn compressor_station_rows(
                 from: pipe.from.clone(),
                 to: pipe.to.clone(),
                 flow_m3s,
+                map_eval_q_m3s: ((map_eval_q - solver_q).abs() > 1e-9).then_some(map_eval_q),
                 ratio_max,
                 effective_r2: compressor_pressure_from_coeff(pipe),
                 map_target_ratio,
-                inlet_pressure_bar,
+                inlet_pressure_bar: Some(p_in),
             }
         })
         .collect();
@@ -388,8 +443,46 @@ fn main() -> Result<()> {
     );
 
     let stations = match &solve_result {
-        Ok(result) => compressor_station_rows(&network, result),
-        Err(_) => compressor_station_rows(&network, &SolverResult::default()),
+        Ok(result) => {
+            let mut report_network = network.clone();
+            let demand_scale = result.demand_scale_achieved.unwrap_or(1.0);
+            let mode = compressor_map_mode();
+            if matches!(
+                mode,
+                CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
+            ) {
+                apply_map_ratios_after_continuation_step(
+                    &mut report_network,
+                    &demands,
+                    demand_scale,
+                    result,
+                    mode,
+                    preset.tolerance,
+                );
+            }
+            compressor_station_rows(&report_network, result, &demands, demand_scale)
+        }
+        Err(err) => {
+            let err_text = format!("{err:#}");
+            let residual = parse_residual_from_error(&err_text).unwrap_or(8.0);
+            let mut report_network = network.clone();
+            let preview = synthetic_result_for_map_preview(&report_network, residual);
+            let mode = compressor_map_mode();
+            if matches!(
+                mode,
+                CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
+            ) {
+                apply_map_ratios_after_continuation_step(
+                    &mut report_network,
+                    &demands,
+                    1.0,
+                    &preview,
+                    mode,
+                    preset.tolerance,
+                );
+            }
+            compressor_station_rows(&report_network, &preview, &demands, 1.0)
+        }
     };
 
     let output = match solve_result {

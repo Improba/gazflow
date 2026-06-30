@@ -25,13 +25,13 @@ const R2_CAP_RESIDUAL_FACTOR: f64 = 10.0;
 const MAP_CONTINUATION_COUPLING_MIN_SCALE: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CompressorMapMode {
+pub enum CompressorMapMode {
     Legacy,
     Measurement,
     Biquadratic,
 }
 
-pub(crate) fn compressor_map_mode() -> CompressorMapMode {
+pub fn compressor_map_mode() -> CompressorMapMode {
     let Some(raw) = std::env::var("GAZFLOW_COMPRESSOR_MAP_MODE").ok() else {
         return CompressorMapMode::Legacy;
     };
@@ -147,11 +147,13 @@ fn guarded_compressor_ratio_step(
         if !is_transport {
             return None;
         }
-        if current >= ctx.nominal_ratio {
+        // Au nominal (allow_map_target), monter vers max(nominal, carte) sans jamais baisser.
+        let upward_goal = map_target.max(ctx.nominal_ratio);
+        if current >= upward_goal {
             return None;
         }
-        let next = (current + ctx.relax * (ctx.nominal_ratio - current))
-            .clamp(current, MAX_COMPRESSOR_RATIO);
+        let cap = ctx.pressure_cap_ratio.min(MAX_COMPRESSOR_RATIO);
+        let next = (current + ctx.relax * (upward_goal - current)).clamp(current, cap);
         return ratio_step_if_changed(current, next);
     }
 
@@ -182,7 +184,7 @@ pub(crate) fn estimate_total_delivery_flow_m3s(
 }
 
 /// Estimation de débit normal par station quand le Newton n'a pas encore convergé (Q≈0).
-pub(crate) fn estimate_station_norm_flow(
+pub fn estimate_station_norm_flow(
     active_compressors: usize,
     demands: &HashMap<String, f64>,
     demand_scale: f64,
@@ -336,7 +338,7 @@ fn target_ratio_from_catalog(
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct RatioUpdateStats {
+pub struct RatioUpdateStats {
     updated: usize,
     max_delta: f64,
 }
@@ -412,7 +414,7 @@ fn apply_compressor_map_updates(
 }
 
 /// Couplage Q–ratio après un palier de continuation réussi (scale ≥ 0.5).
-pub(crate) fn apply_map_ratios_after_continuation_step(
+pub fn apply_map_ratios_after_continuation_step(
     network: &mut GasNetwork,
     demands: &HashMap<String, f64>,
     demand_scale: f64,
@@ -660,7 +662,16 @@ mod tests {
 
     #[test]
     fn guarded_ratio_skips_non_transport_before_convergence() {
-        let update = guarded_compressor_ratio_step(1.2, 1.5, ctx(1.0, 0.1, 1e-6, 1.08, 0.5));
+        let ctx = RatioUpdateContext {
+            q_m3s_norm: 1.0,
+            residual: 0.1,
+            tolerance: 1e-6,
+            nominal_ratio: 1.08,
+            pressure_cap_ratio: 1.5,
+            relax: 0.5,
+            allow_map_target: true,
+        };
+        let update = guarded_compressor_ratio_step(1.2, 1.5, ctx);
         assert!(update.is_none());
     }
 
@@ -691,6 +702,20 @@ mod tests {
         let mut ctx = ctx(1.0, 1e-7, 1e-6, 4.09, 0.5);
         ctx.allow_map_target = false;
         let update = guarded_compressor_ratio_step(3.0, 2.0, ctx);
+        assert!(update.is_none());
+    }
+
+    #[test]
+    fn guarded_ratio_transport_moves_upward_toward_map_target_before_convergence() {
+        let update = guarded_compressor_ratio_step(1.08, 1.11, ctx(18.0, 8.0, 3e-3, 1.08, 0.5))
+            .expect("map target above nominal should update upward");
+        assert!(update > 1.08);
+        assert!(update <= 1.11);
+    }
+
+    #[test]
+    fn guarded_ratio_transport_blocks_downward_toward_map_before_convergence() {
+        let update = guarded_compressor_ratio_step(1.2, 1.11, ctx(18.0, 8.0, 3e-3, 1.08, 0.5));
         assert!(update.is_none());
     }
 

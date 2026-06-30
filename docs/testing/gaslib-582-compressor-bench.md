@@ -63,6 +63,15 @@ La recherche 1D + `effective_ratio_with_nominal` aligne la cible carte sur le li
 
 Leviers v4 : `guarded_compressor_ratio_step` (pas de baisse transport avant convergence), `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED=1` (défaut measurement/biquadratic), parsing turbo + eval biquadratique GasLib.
 
+## Résultats v7 (recouplage Q estimé + garde carte upward, juin 2026)
+
+| Mode | Résidu | `map_eval_q` | `map_target` (st. 1–3) | Notes |
+|------|--------|--------------|------------------------|-------|
+| measurement | **8,22 m³/s** | **~18 m³/s** | **1,08** | diag : p_in fallback 40 bar si solve échoue |
+| biquadratic | **8,22 m³/s** | ~18 | 1,08 | idem |
+
+Le recouplage Q fonctionne (`map_eval_q_m3s` ≈ livraison/5). Le ratio reste au catalogue car la carte 582 à Q≈18 norm / p_in≈40 bar donne **~1,08** (pas 1,11) : `find_operating_point` trouve un point mais la tête ne dépasse pas le operating `.cs`.
+
 ## Résultats v6 (Option 1 — sémantique ratio operating vs pressure cap, juin 2026)
 
 Décision documentée : `docs/testing/gaslib-582-compressor-diagnosis.md`.

@@ -48,4 +48,4 @@ Interprétation :
 2. Avec la sémantique corrigée, le solveur n'atteint plus ce faux équilibre ; le résidu remonte à **8,22 m³/s** (proche du no-cap v1–v4).
 3. `map_target` reste au catalogue **1,08** tant que Q compresseur ≈ 0 (échec Newton avant recouplage carte).
 
-Prochaine étape Phase I-A : recoupler Q–ratio avec débit estimé hub et point carte ~1,11 à Q≈18 m³/s (sans réintroduire 4,09 comme cible d'exploitation).
+Prochaine étape Phase I-A : le blocage n'est plus le recouplage Q (eval_q≈18) mais la **carte** : `find_operating_point` OK à p_in≈40 bar mais ratio carte ≈ **1,08** (pas ~1,11). Piste : confId→turbo, vitesse libre, ou tête/ratio sous-estimés.

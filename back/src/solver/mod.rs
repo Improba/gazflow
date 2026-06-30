@@ -30,6 +30,10 @@ pub use continuation::{
     ContinuationConfig, ContinuationStepEvent, solve_steady_state_with_continuation,
     solve_steady_state_with_preset,
 };
+pub use compressor_loop::{
+    apply_map_ratios_after_continuation_step, estimate_station_norm_flow, CompressorMapMode,
+    RatioUpdateStats, compressor_map_mode,
+};
 pub use demand::{ClientCategory, DemandProfile, normalize_daily_weights, resolve_demands};
 pub use gas_properties::GasComposition;
 pub use presets::{
