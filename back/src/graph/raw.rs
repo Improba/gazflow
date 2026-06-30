@@ -1,6 +1,7 @@
 //! Modèle intermédiaire entre importeurs et `GasNetwork`.
 
 use super::ConnectionKind;
+use crate::compressor::CompressorCatalog;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawNodeRole {
@@ -78,6 +79,18 @@ pub struct RawNetwork {
     pub nodes: Vec<RawNode>,
     pub pipes: Vec<RawPipe>,
     pub source: Option<String>,
+    pub compressor_catalog: Option<CompressorCatalog>,
+}
+
+impl Default for RawNetwork {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            pipes: Vec::new(),
+            source: None,
+            compressor_catalog: None,
+        }
+    }
 }
 
 #[cfg(test)]

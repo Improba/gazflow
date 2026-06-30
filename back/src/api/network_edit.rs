@@ -441,6 +441,7 @@ fn network_to_raw(network: &GasNetwork) -> RawNetwork {
         nodes,
         pipes,
         source,
+        compressor_catalog: network.compressor_catalog.clone(),
     }
 }
 

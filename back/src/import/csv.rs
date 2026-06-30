@@ -29,6 +29,7 @@ pub fn import_csv_str(
         nodes,
         pipes,
         source: Some("csv:inline".to_string()),
+        compressor_catalog: None,
     })
 }
 

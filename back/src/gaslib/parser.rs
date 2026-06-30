@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use quick_xml::de::from_str;
 use serde::Deserialize;
 
-use super::compressor::load_compressor_ratios;
+use crate::compressor::{load_compressor_catalog, ratios_from_catalog};
 use crate::graph::{
     ConnectionKind, EquipmentSpec, GasNetwork, RawNetwork, RawNode, RawNodeRole, RawPipe,
 };
@@ -280,20 +280,24 @@ pub fn load_network_raw<P: AsRef<Path>>(path: P) -> Result<RawNetwork> {
 
     let raw_xml: XmlNetwork = from_str(&xml).with_context(|| "parsing XML GasLib")?;
     let cs_path = path_ref.with_extension("cs");
-    let compressor_ratios = if cs_path.exists() {
-        match load_compressor_ratios(&cs_path) {
-            Ok(map) => map,
+    let compressor_catalog = if cs_path.exists() {
+        match load_compressor_catalog(&cs_path) {
+            Ok(catalog) => Some(catalog),
             Err(err) => {
                 tracing::warn!(
                     "unable to load compressor station file {:?}: {err:#}",
                     cs_path
                 );
-                HashMap::new()
+                None
             }
         }
     } else {
-        HashMap::new()
+        None
     };
+    let compressor_ratios = compressor_catalog
+        .as_ref()
+        .map(ratios_from_catalog)
+        .unwrap_or_default();
 
     let mut nodes = Vec::new();
     for entry in &raw_xml.nodes.entries {
@@ -360,7 +364,7 @@ pub fn load_network_raw<P: AsRef<Path>>(path: P) -> Result<RawNetwork> {
         } else {
             None
         };
-        let mut compressor_ratio_max = compressor_ratio_nominal;
+        let compressor_ratio_max = compressor_ratio_nominal;
         let mut equipment = EquipmentSpec::default();
         if kind == ConnectionKind::CompressorStation {
             if let Some(ratio) = compressor_ratio_nominal {
@@ -405,6 +409,7 @@ pub fn load_network_raw<P: AsRef<Path>>(path: P) -> Result<RawNetwork> {
         nodes,
         pipes,
         source: Some(format!("gaslib:{}", path_ref.display())),
+        compressor_catalog,
     })
 }
 

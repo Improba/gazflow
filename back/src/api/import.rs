@@ -729,6 +729,7 @@ mod tests {
                 equipment: EquipmentSpec::default(),
             }],
             source: None,
+            compressor_catalog: None,
         };
         let mapping = MappingConfig {
             format: "geojson".into(),

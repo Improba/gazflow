@@ -49,6 +49,7 @@ pub fn import_shapefile_pair_bytes(
         nodes,
         pipes,
         source: Some("shapefile:pair".to_string()),
+        compressor_catalog: None,
     })
 }
 

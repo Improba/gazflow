@@ -10,6 +10,8 @@ use anyhow::{Result, bail};
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
 
+use crate::compressor::CompressorCatalog;
+
 pub use equipment::EquipmentSpec;
 pub use raw::{RawNetwork, RawNode, RawNodeRole, RawPipe};
 pub use scenarios::{NetworkDiff, NetworkSnapshot, apply_diff, compute_diff};
@@ -144,6 +146,7 @@ impl Pipe {
 pub struct GasNetwork {
     pub graph: DiGraph<Node, Pipe>,
     id_to_index: HashMap<String, NodeIndex>,
+    pub compressor_catalog: Option<CompressorCatalog>,
 }
 
 impl Default for GasNetwork {
@@ -157,6 +160,7 @@ impl GasNetwork {
         Self {
             graph: DiGraph::new(),
             id_to_index: HashMap::new(),
+            compressor_catalog: None,
         }
     }
 
@@ -207,9 +211,7 @@ impl GasNetwork {
     }
 
     pub fn pipe_mut(&mut self, id: &str) -> Option<&mut Pipe> {
-        self.graph
-            .edge_weights_mut()
-            .find(|pipe| pipe.id == id)
+        self.graph.edge_weights_mut().find(|pipe| pipe.id == id)
     }
 
     /// Applique des surcharges d'équipement par identifiant de conduite (simulation).
@@ -266,6 +268,7 @@ impl GasNetwork {
                 equipment: pipe.equipment,
             });
         }
+        net.compressor_catalog = raw.compressor_catalog;
         Ok(net)
     }
 }
@@ -373,6 +376,7 @@ mod tests {
                 equipment: EquipmentSpec::default(),
             }],
             source: Some("test".into()),
+            compressor_catalog: None,
         };
 
         let net = GasNetwork::from_raw(raw).expect("from_raw");

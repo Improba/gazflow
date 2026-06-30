@@ -208,6 +208,7 @@ mod tests {
                 equipment: EquipmentSpec::default(),
             }],
             source: None,
+            compressor_catalog: None,
         }
     }
 
@@ -252,6 +253,7 @@ mod tests {
             nodes: vec![],
             pipes: vec![],
             source: None,
+            compressor_catalog: None,
         };
         assert_eq!(validate_topology(&raw), Err(ValidationError::EmptyNetwork));
     }
@@ -372,6 +374,7 @@ mod tests {
                 },
             ],
             source: None,
+            compressor_catalog: None,
         };
         assert!(matches!(
             validate_topology(&raw),

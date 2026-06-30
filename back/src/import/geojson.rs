@@ -30,6 +30,7 @@ pub fn import_geojson_str(contents: &[&str], mapping: &MappingConfig) -> Result<
         nodes,
         pipes,
         source: Some(format!("geojson:{}_chunks", contents.len())),
+        compressor_catalog: None,
     })
 }
 
