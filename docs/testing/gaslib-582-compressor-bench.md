@@ -63,6 +63,18 @@ La recherche 1D + `effective_ratio_with_nominal` aligne la cible carte sur le li
 
 Leviers v4 : `guarded_compressor_ratio_step` (pas de baisse transport avant convergence), `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED=1` (défaut measurement/biquadratic), parsing turbo + eval biquadratique GasLib.
 
+## Résultats v11 (débit carte topologique hub/branche, juin 2026)
+
+| Mode | Résidu | `map_target` CS1 | CS2–3 | eval_q CS1 / CS2 |
+|------|--------|------------------|-------|------------------|
+| measurement | **5,0 m³/s** | **~1,46** | ~1,50 | **90 / 45 m³/s** |
+
+Leviers : BFS aval sans traverser compresseurs (`flow_topology.rs`) — CS1 détecté merger hub (≥2 branches), CS2/CS3 branches parallèles → Q = total / 2.
+
+Comparaison v10 → v11 : eval_q transport **30 → 90** (CS1), ratios carte **~1,51 → ~1,46–1,50**. Résidu inchangé au plancher **5 m³/s** : la topologie corrige le débit carte mais le goulot reste hydraulique Newton, pas le split Q.
+
+Artefact : `/tmp/582-v11.json`.
+
 ## Résultats v10 (débit hub transport + refine continuation, juin 2026)
 
 | Mode | Résidu | `map_target` CS1–3 | eval_q transport |

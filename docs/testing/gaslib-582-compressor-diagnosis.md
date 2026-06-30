@@ -23,7 +23,8 @@ Le ratio **4,09 n'est pas un degré de liberté d'exploitation** : c'est une bor
 
 - Livraison hors slack : **90,13 m³/s** norm.
 - CS2 et CS3 → hub `innode_14` (parallèle) ; CS1 lift final 14 → 389.
-- Q estimé split égal (5 CS) : **18 m³/s** / station (approximation ; CS1 devrait porter ~le flux hub en régime convergé).
+- Q estimé split égal (5 CS) : **18 m³/s** / station (approximation v7–v9).
+- **v11 topologie** : CS1 **90 m³/s**, CS2/CS3 **45 m³/s** chacun (branches parallèles → hub `innode_14`).
 
 ## Changement code (unique)
 
@@ -48,4 +49,4 @@ Interprétation :
 2. Avec la sémantique corrigée, le solveur n'atteint plus ce faux équilibre ; le résidu remonte à **8,22 m³/s** (proche du no-cap v1–v4).
 3. `map_target` reste au catalogue **1,08** tant que Q compresseur ≈ 0 (échec Newton avant recouplage carte).
 
-Prochaine étape : débit carte **topologique** (CS1 = flux hub ~90 m³/s) ; objectif 5 → 3×10⁻³.
+Prochaine étape (post v11) : hydraulique MVP au-delà du ratio seul, ou affinage CS4/CS5 sud ; le plancher **5 m³/s** persiste malgré eval_q topologique correct.

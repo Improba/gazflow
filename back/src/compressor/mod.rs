@@ -4,6 +4,7 @@ use std::path::Path;
 use anyhow::Result;
 
 mod catalog;
+mod flow_topology;
 mod map;
 mod parse;
 mod station;
@@ -15,6 +16,7 @@ pub use map::{
     effective_ratio_with_nominal_for_mode, eval_biquadratic_head, eval_quadratic,
     find_operating_point, find_operating_point_for_mode, had_to_pressure_ratio, interpolate_head,
 };
+pub use flow_topology::estimated_map_flow_m3s;
 pub use parse::load_compressor_catalog;
 pub use station::{
     BiquadraticCoeffs, CompressorConfiguration, QuadraticCurve, StationModel, TurboCompressorModel,

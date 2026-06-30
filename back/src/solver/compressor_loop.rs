@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::compressor::{
     CompressorCatalog, CompressorOperatingContext, effective_ratio_with_nominal_for_mode,
+    estimated_map_flow_m3s,
 };
 use crate::graph::{ConnectionKind, GasNetwork, Pipe};
 use crate::solver::gas_properties::DEFAULT_GAS_TEMPERATURE_K;
@@ -27,7 +28,6 @@ const CONTINUATION_HANDOFF_RELAX: f64 = 1.0;
 const MAP_REFINE_SCALES: &[f64] = &[0.92, 0.96, 1.0];
 const HANDOFF_PREFER_ESTIMATED_RESIDUAL: f64 = 7.0;
 const MAX_PLAUSIBLE_COMPRESSOR_FLOW_M3S: f64 = 250.0;
-const HIGH_TRANSPORT_CAP_THRESHOLD: f64 = 3.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressorMapMode {
@@ -187,63 +187,7 @@ pub fn estimate_station_norm_flow(
     estimate_total_delivery_flow_m3s(demands, demand_scale) / active_compressors as f64
 }
 
-fn is_transport_compressor(pipe: &Pipe) -> bool {
-    pipe.equipment
-        .compressor_pressure_cap_ratio
-        .unwrap_or(1.0)
-        >= TRANSPORT_NOMINAL_THRESHOLD
-}
-
-fn is_high_transport_compressor(pipe: &Pipe) -> bool {
-    pipe.equipment
-        .compressor_pressure_cap_ratio
-        .unwrap_or(1.0)
-        >= HIGH_TRANSPORT_CAP_THRESHOLD
-}
-
-fn count_high_transport_compressors(network: &GasNetwork) -> usize {
-    network
-        .pipes()
-        .filter(|p| {
-            p.kind == ConnectionKind::CompressorStation
-                && p.hydraulically_active()
-                && is_high_transport_compressor(p)
-        })
-        .count()
-}
-
-fn count_distribution_compressors(network: &GasNetwork) -> usize {
-    network
-        .pipes()
-        .filter(|p| {
-            p.kind == ConnectionKind::CompressorStation
-                && p.hydraulically_active()
-                && is_transport_compressor(p)
-                && !is_high_transport_compressor(p)
-        })
-        .count()
-}
-
-/// Débit carte : transport = livraison / nb transport (hub ~flux total/n), sinon split égal.
-fn estimated_map_flow_m3s(
-    pipe: &Pipe,
-    high_transport_count: usize,
-    distribution_count: usize,
-    active_compressors: usize,
-    demands: &HashMap<String, f64>,
-    demand_scale: f64,
-) -> f64 {
-    let total = estimate_total_delivery_flow_m3s(demands, demand_scale);
-    if is_high_transport_compressor(pipe) && high_transport_count > 0 {
-        return total / high_transport_count as f64;
-    }
-    if is_transport_compressor(pipe) && distribution_count > 0 {
-        return total / distribution_count as f64;
-    }
-    estimate_station_norm_flow(active_compressors, demands, demand_scale)
-}
-
-/// Débit normal estimé pour l'évaluation carte (transport = total / nb transport).
+/// Débit normal estimé pour l'évaluation carte (topologie hub/branche + split distribution).
 pub fn estimated_compressor_map_flow_m3s(
     network: &GasNetwork,
     pipe: &Pipe,
@@ -254,14 +198,8 @@ pub fn estimated_compressor_map_flow_m3s(
         .pipes()
         .filter(|p| p.kind == ConnectionKind::CompressorStation && p.hydraulically_active())
         .count();
-    estimated_map_flow_m3s(
-        pipe,
-        count_high_transport_compressors(network),
-        count_distribution_compressors(network),
-        active,
-        demands,
-        demand_scale,
-    )
+    let total = estimate_total_delivery_flow_m3s(demands, demand_scale);
+    estimated_map_flow_m3s(network, pipe, total, active)
 }
 
 fn prefer_estimated_flow_for_map(result: &SolverResult, tolerance: f64) -> bool {
@@ -273,23 +211,16 @@ fn plausible_solver_flow(q_m3s: f64) -> bool {
 }
 
 fn effective_flow_for_map_update(
+    network: &GasNetwork,
     result: &SolverResult,
-    high_transport_count: usize,
-    distribution_count: usize,
     active_compressors: usize,
     demands: &HashMap<String, f64>,
     pipe: &Pipe,
     demand_scale: f64,
     prefer_estimated: bool,
 ) -> f64 {
-    let estimated = estimated_map_flow_m3s(
-        pipe,
-        high_transport_count,
-        distribution_count,
-        active_compressors,
-        demands,
-        demand_scale,
-    );
+    let total = estimate_total_delivery_flow_m3s(demands, demand_scale);
+    let estimated = estimated_map_flow_m3s(network, pipe, total, active_compressors);
     if prefer_estimated && estimated >= FLOW_UPDATE_THRESHOLD_M3S {
         return estimated;
     }
@@ -470,23 +401,30 @@ fn apply_compressor_map_updates(
         .pipes()
         .filter(|p| p.kind == ConnectionKind::CompressorStation && p.hydraulically_active())
         .count();
-    let high_transport_count = count_high_transport_compressors(network);
-    let distribution_count = count_distribution_compressors(network);
+    let map_flow_by_id: HashMap<String, f64> = network
+        .pipes()
+        .filter(|p| p.kind == ConnectionKind::CompressorStation && p.hydraulically_active())
+        .map(|pipe| {
+            (
+                pipe.id.clone(),
+                effective_flow_for_map_update(
+                    network,
+                    result,
+                    active_compressors,
+                    demands,
+                    pipe,
+                    demand_scale,
+                    prefer_estimated_flow,
+                ),
+            )
+        })
+        .collect();
     let mut stats = RatioUpdateStats::default();
     for pipe in network.pipes_mut() {
         if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
             continue;
         }
-        let q_m3s_norm = effective_flow_for_map_update(
-            result,
-            high_transport_count,
-            distribution_count,
-            active_compressors,
-            demands,
-            pipe,
-            demand_scale,
-            prefer_estimated_flow,
-        );
+        let q_m3s_norm = map_flow_by_id.get(&pipe.id).copied().unwrap_or(0.0);
         let ctx_op = CompressorOperatingContext {
             q_m3s_norm,
             p_in_bar: map_inlet_pressure_bar(pipe, result).max(1e-3),
