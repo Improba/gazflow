@@ -398,6 +398,7 @@ where
                 snapshot_every: config.inner_snapshot_every,
                 enable_compressor_outer_loop: true,
                 disable_compressor_r2_cap: false,
+                accept_partial_solution: false,
             },
             |progress| {
                 let cp = ConstrainedProgress {

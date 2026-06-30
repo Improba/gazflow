@@ -63,6 +63,15 @@ La recherche 1D + `effective_ratio_with_nominal` aligne la cible carte sur le li
 
 Leviers v4 : `guarded_compressor_ratio_step` (pas de baisse transport avant convergence), `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED=1` (défaut measurement/biquadratic), parsing turbo + eval biquadratique GasLib.
 
+## Résultats v9 (Newton partiel + handoff carte Q estimé, juin 2026)
+
+| Mode | Résidu | Statut | Notes |
+|------|--------|--------|-------|
+| measurement | **5,0 m³/s** | ok (partiel) | handoff relax=1,0, Q estimé si non convergé, r² cap off en outer |
+| biquadratic | à bench | | idem pipeline |
+
+Retour au plateau **5 m³/s** avec sémantique ratio correcte (~1,33–1,51 transport) vs faux 5 m³/s d’avant (cap r² + ratio `.net`).
+
 ## Résultats v8 (confId→turbo config_2, juin 2026)
 
 Fix : `preferred_turbo` résout `config_2` → `compressor_6` (582 CS1) au lieu de `compressor_5` (min id).

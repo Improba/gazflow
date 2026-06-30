@@ -21,8 +21,8 @@ const MAX_COMPRESSOR_RATIO: f64 = 5.0;
 const RATIO_SETTLE_EPS: f64 = 1e-4;
 const FLOW_UPDATE_THRESHOLD_M3S: f64 = 0.01;
 const TRANSPORT_NOMINAL_THRESHOLD: f64 = 2.0;
-const R2_CAP_RESIDUAL_FACTOR: f64 = 10.0;
 const MAP_CONTINUATION_COUPLING_MIN_SCALE: f64 = 0.5;
+const CONTINUATION_HANDOFF_RELAX: f64 = 1.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressorMapMode {
@@ -82,29 +82,16 @@ fn compressor_relax() -> f64 {
     env_f64("GAZFLOW_COMPRESSOR_RELAX", DEFAULT_RELAX).clamp(0.0, 1.0)
 }
 
-fn compressor_r2_cap_until_converged_enabled(mode: CompressorMapMode) -> bool {
-    let default = matches!(
-        mode,
-        CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
-    );
-    env_bool("GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED", default)
-}
-
 fn steady_config_for_outer_iter(
     base: SteadyStateConfig,
     mode: CompressorMapMode,
-    residual: f64,
+    _residual: f64,
 ) -> SteadyStateConfig {
     let mut config = base;
-    if !matches!(
+    if matches!(
         mode,
         CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
     ) {
-        return config;
-    }
-    if compressor_r2_cap_until_converged_enabled(mode) {
-        config.disable_compressor_r2_cap = residual <= config.tolerance * R2_CAP_RESIDUAL_FACTOR;
-    } else {
         config.disable_compressor_r2_cap = true;
     }
     config
@@ -201,16 +188,40 @@ fn effective_flow_for_map_update(
     demands: &HashMap<String, f64>,
     pipe: &Pipe,
     demand_scale: f64,
+    prefer_estimated: bool,
 ) -> f64 {
+    let estimated = estimate_station_norm_flow(active_compressors, demands, demand_scale);
+    if prefer_estimated && estimated >= FLOW_UPDATE_THRESHOLD_M3S {
+        return estimated;
+    }
     let solver_q = result.flows.get(&pipe.id).copied().unwrap_or(0.0).abs();
     if solver_q >= FLOW_UPDATE_THRESHOLD_M3S {
         return solver_q;
     }
-    let estimated = estimate_station_norm_flow(active_compressors, demands, demand_scale);
     if estimated >= FLOW_UPDATE_THRESHOLD_M3S {
         estimated
     } else {
         solver_q
+    }
+}
+
+fn map_inlet_pressure_bar(pipe: &Pipe, result: &SolverResult) -> f64 {
+    let transport = pipe
+        .equipment
+        .compressor_pressure_cap_ratio
+        .unwrap_or(1.0)
+        >= TRANSPORT_NOMINAL_THRESHOLD;
+    let p_in = result
+        .pressures
+        .get(&pipe.from)
+        .copied()
+        .unwrap_or(0.0);
+    if p_in > 1.5 {
+        p_in
+    } else if transport {
+        40.0
+    } else {
+        1.01325
     }
 }
 
@@ -354,6 +365,7 @@ fn apply_compressor_map_updates(
     demands: &HashMap<String, f64>,
     demand_scale: f64,
     allow_map_target: bool,
+    prefer_estimated_flow: bool,
 ) -> RatioUpdateStats {
     let active_compressors = network
         .pipes()
@@ -364,16 +376,17 @@ fn apply_compressor_map_updates(
         if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
             continue;
         }
-        let q_m3s_norm =
-            effective_flow_for_map_update(result, active_compressors, demands, pipe, demand_scale);
+        let q_m3s_norm = effective_flow_for_map_update(
+            result,
+            active_compressors,
+            demands,
+            pipe,
+            demand_scale,
+            prefer_estimated_flow,
+        );
         let ctx_op = CompressorOperatingContext {
             q_m3s_norm,
-            p_in_bar: result
-                .pressures
-                .get(&pipe.from)
-                .copied()
-                .unwrap_or(1.01325)
-                .max(1e-3),
+            p_in_bar: map_inlet_pressure_bar(pipe, result).max(1e-3),
             t_in_k: t_in_k.max(1.0),
         };
         let nominal = pipe
@@ -431,17 +444,19 @@ pub fn apply_map_ratios_after_continuation_step(
     if catalog.stations.is_empty() {
         return RatioUpdateStats::default();
     }
+    let prefer_estimated = result.residual > tolerance;
     apply_compressor_map_updates(
         network,
         result,
         &catalog,
         mode,
-        compressor_relax(),
+        CONTINUATION_HANDOFF_RELAX,
         DEFAULT_GAS_TEMPERATURE_K,
         tolerance,
         demands,
         demand_scale,
         true,
+        prefer_estimated,
     )
 }
 
@@ -487,9 +502,10 @@ where
     let mut adjusted_network = network.clone();
     let mut total_iterations = 0usize;
     let mut last_result: Option<SolverResult> = None;
+    let mut best_result: Option<SolverResult> = None;
 
     for outer in 0..max_iters {
-        let steady_config = if outer == 0 {
+        let mut steady_config = if outer == 0 {
             steady_config_for_outer_iter(config, mode, f64::INFINITY)
         } else {
             steady_config_for_outer_iter(
@@ -501,7 +517,8 @@ where
                     .unwrap_or(f64::INFINITY),
             )
         };
-        let mut result = solve_steady_state_with_progress(
+        steady_config.accept_partial_solution = true;
+        let result = solve_steady_state_with_progress(
             &adjusted_network,
             demands,
             warm_start.as_ref(),
@@ -509,9 +526,16 @@ where
             &mut *on_progress,
         )?;
         total_iterations += result.iterations;
+        let mut result = result;
         result.iterations = total_iterations;
         warm_start = Some(result.pressures.clone());
         last_result = Some(result.clone());
+        if best_result
+            .as_ref()
+            .is_none_or(|best| result.residual < best.residual)
+        {
+            best_result = Some(result.clone());
+        }
 
         let updates = apply_compressor_map_updates(
             &mut adjusted_network,
@@ -524,6 +548,7 @@ where
             demands,
             1.0,
             true,
+            result.residual > config.tolerance,
         );
 
         if result.residual <= config.tolerance
@@ -536,10 +561,11 @@ where
             if result.residual <= config.tolerance {
                 return Ok(result);
             }
-            if outer == 0 && result.residual > config.tolerance {
-                // Warm-start convergé depuis continuation : ne pas casser avec des ratios figés.
-                break;
-            }
+            tracing::debug!(
+                outer = outer + 1,
+                residual = result.residual,
+                "compressor map outer loop: ratios settled, stopping"
+            );
             break;
         }
 
@@ -550,6 +576,33 @@ where
             residual = result.residual,
             "compressor map outer iteration updated ratios"
         );
+    }
+
+    if let Some(result) = best_result {
+        if result.residual <= config.tolerance {
+            return Ok(result);
+        }
+        if let Ok(blended) = solve_legacy_blend_sequence(
+            &adjusted_network,
+            demands,
+            warm_start.as_ref(),
+            config,
+            &mut *on_progress,
+        ) && blended.residual < result.residual
+        {
+            tracing::info!(
+                before = result.residual,
+                after = blended.residual,
+                "compressor map outer loop improved via legacy ratio blend polish"
+            );
+            return Ok(blended);
+        }
+        tracing::info!(
+            residual = result.residual,
+            tolerance = config.tolerance,
+            "compressor map outer loop returning best partial hydraulic state"
+        );
+        return Ok(result);
     }
 
     if let Some(result) = last_result

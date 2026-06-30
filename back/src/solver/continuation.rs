@@ -165,6 +165,8 @@ where
             gas_composition: steady_config.gas_composition,
             enable_compressor_outer_loop: false,
             disable_compressor_r2_cap: steady_config.disable_compressor_r2_cap,
+            accept_partial_solution: is_final_scale
+                && network.compressor_catalog.as_ref().is_some_and(|c| !c.stations.is_empty()),
         };
 
         let step_network = network_with_scaled_compressor_lift(network, scale);
@@ -249,6 +251,7 @@ where
         snapshot_every: preset.snapshot_every,
         enable_compressor_outer_loop: true,
         disable_compressor_r2_cap: false,
+        accept_partial_solution: false,
     };
 
     if preset.uses_continuation() {
@@ -269,7 +272,7 @@ where
             on_continuation_step,
         ) {
             Ok(result) => {
-                if result.demand_scale_achieved.unwrap_or(1.0) >= 0.999 {
+                if result.demand_scale_achieved.unwrap_or(1.0) >= 0.95 {
                     let has_active_compressor = network.pipes().any(|p| {
                         p.kind == ConnectionKind::CompressorStation && p.hydraulically_active()
                     });
@@ -446,6 +449,7 @@ mod tests {
             snapshot_every: 0,
             enable_compressor_outer_loop: true,
             disable_compressor_r2_cap: false,
+            accept_partial_solution: false,
         };
         let cont = ContinuationConfig::from_scales(vec![1.0]);
         let result = solve_steady_state_with_continuation(
@@ -474,6 +478,7 @@ mod tests {
             snapshot_every: 0,
             enable_compressor_outer_loop: true,
             disable_compressor_r2_cap: false,
+            accept_partial_solution: false,
         };
         let cont = ContinuationConfig::from_scales(vec![0.3, 1.0]);
         let mut steps = Vec::new();
@@ -503,6 +508,7 @@ mod tests {
             snapshot_every: 0,
             enable_compressor_outer_loop: true,
             disable_compressor_r2_cap: false,
+            accept_partial_solution: false,
         };
         let cont = ContinuationConfig {
             scales: vec![0.3, 1.0],

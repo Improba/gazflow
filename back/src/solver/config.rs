@@ -13,6 +13,8 @@ pub struct SteadyStateConfig {
     pub enable_compressor_outer_loop: bool,
     /// Désactive le plafond MVP r²≤9 (mode carte compresseur ou bench H2).
     pub disable_compressor_r2_cap: bool,
+    /// Retourne le dernier itéré Newton même si le résidu dépasse la tolérance (boucle carte).
+    pub accept_partial_solution: bool,
 }
 
 impl Default for SteadyStateConfig {
@@ -24,6 +26,7 @@ impl Default for SteadyStateConfig {
             snapshot_every: 0,
             enable_compressor_outer_loop: true,
             disable_compressor_r2_cap: false,
+            accept_partial_solution: false,
         }
     }
 }

@@ -48,4 +48,4 @@ Interprétation :
 2. Avec la sémantique corrigée, le solveur n'atteint plus ce faux équilibre ; le résidu remonte à **8,22 m³/s** (proche du no-cap v1–v4).
 3. `map_target` reste au catalogue **1,08** tant que Q compresseur ≈ 0 (échec Newton avant recouplage carte).
 
-Prochaine étape : convergence Newton avec ratio effectif ~1,3–1,5 (outer loop / warm-start) ; bench biquadratic vs measurement.
+Prochaine étape : fermer l'écart 5 → 3×10⁻³ (tol preset) ; affiner diag Ok (map_target avec Q estimé).

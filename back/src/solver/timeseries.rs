@@ -126,6 +126,7 @@ pub fn simulate_timeseries_with_progress(
         snapshot_every: 0,
         enable_compressor_outer_loop: true,
         disable_compressor_r2_cap: false,
+        accept_partial_solution: false,
     };
 
     for step in weather {

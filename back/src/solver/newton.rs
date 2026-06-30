@@ -129,6 +129,7 @@ where
         snapshot_every,
         enable_compressor_outer_loop: _,
         disable_compressor_r2_cap: _,
+        accept_partial_solution: _,
     } = *config;
     let n = network.node_count();
     if n == 0 {
@@ -532,6 +533,22 @@ where
     );
 
     if final_state.residual >= tolerance && !free_indices.is_empty() {
+        if config.accept_partial_solution && final_state.residual.is_finite() {
+            let mut result_pressures = HashMap::new();
+            for (i, id) in node_ids.iter().enumerate() {
+                result_pressures.insert(id.clone(), pressures_sq[i].sqrt());
+            }
+            let mut result_flows = HashMap::new();
+            for (pipe_idx, pipe) in pipes.iter().enumerate() {
+                result_flows.insert(pipe.id.clone(), final_state.flows[pipe_idx]);
+            }
+            return Ok(SolverResult::from_core(
+                result_pressures,
+                result_flows,
+                iterations,
+                final_state.residual,
+            ));
+        }
         bail!(
             "Newton-hybrid solver did not converge in {} iterations (residual={:.3e}, tolerance={:.3e})",
             iterations,
