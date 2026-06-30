@@ -62,7 +62,7 @@
                ┌──────────▼──────────┐
                │   GasLib Parser     │  (quick-xml)
                │   .net + .scn       │
-               │   + .cdf routing    │  (transport, at solve time)
+               │   + .cdf routing    │  (transport: baseline guard, skip if N>500 connected)
                └──────────┬──────────┘
                           │
                ┌──────────▼──────────┐

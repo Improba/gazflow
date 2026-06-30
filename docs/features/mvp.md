@@ -1,5 +1,7 @@
 # MVP features — GazFlow
 
+> **Note:** this document describes the **initial MVP scope** (Phase 1–2). The codebase has since grown (GasLib-135/582 transport, `.cdf` routing, regulators, timeseries, N-1, calibration, transient). See [limitations.md](../science/limitations.md) and [implementation-plan.md](../plans/implementation-plan.md) for the current state.
+
 ## Included in the MVP
 
 1. **GasLib network loading**

@@ -73,7 +73,7 @@ Common alternative:
 npx vitest run
 ```
 
-Current baseline (2026-06-15): **240** Rust lib tests, **64** frontend tests (`vitest`).
+Current baseline (2026-06-30): **~270** Rust lib tests, **64** frontend tests (`vitest`).
 
 Current frontend coverage includes:
 - `src/services/ws.spec.ts`, `apiContracts.spec.ts`, `gas-presets.spec.ts`

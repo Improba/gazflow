@@ -35,7 +35,7 @@ This document describes the known limits of the solver in its current state. It 
 - **Transport scenarios**: a single pressure slack node is detected heuristically (e.g. `sink_109` on GasLib-582); its imposed flow is removed before solve so pressure and flow are not over-constrained.
 - Disable automatic routing with `GAZFLOW_SKIP_CDF_ROUTING=1` (or `GAZFLOW_SKIP_CDF=1`).
 - **Compressor outer loop (fallback)**: after continuation failure on transport networks (≥200 nodes with high-ratio compressors), a progressive blend schedule ramps `compressor_ratio_max` toward nominal (`GAZFLOW_SKIP_COMPRESSOR_OUTER=1` to disable; `GAZFLOW_COMPRESSOR_OUTER=1` to force on smaller networks).
-- **CDF screening**: multi-scale evaluation via `GAZFLOW_CDF_SCREEN_SCALES` (default `0.15,0.4` for N>500); routings that fragment the active graph (multiple components without fixed pressure) are rejected on large networks. On large connected baselines (no floating components), screening is skipped when the greedy `.cdf` choice does not improve connectivity.
+- **CDF screening**: multi-scale evaluation via `GAZFLOW_CDF_SCREEN_SCALES` (default `0.15,0.4` for N>500); routings that fragment the active graph (multiple components without fixed pressure) are rejected on large networks. On large connected baselines (no floating components, N>500), CDF screening is **skipped by default**; set `GAZFLOW_FORCE_CDF_ROUTING=1` to run it anyway.
 
 ## 3. Data and validation limits
 

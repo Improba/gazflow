@@ -117,12 +117,14 @@ The `Cargo.toml` and `package.json` files are on the shared volume: changes are 
 ## Tests
 
 ```bash
-./scripts/back-test.sh     # Rust tests (240 lib tests)
+./scripts/back-test.sh     # Rust tests (~270 lib tests)
 ./scripts/front-test.sh    # Frontend tests (64 tests)
 ./scripts/ci.sh            # Full CI (+ corpus verification step)
 ```
 
-Current baseline (2026-06-15): `cargo test --lib` 240/240, `npm test` 64/64.
+Current baseline (2026-06-30): `cargo test --lib` ~270 tests, `npm test` 64/64.
+
+Large transport networks (GasLib-582, GasLib-4197): optional smoke tests and env knobs are documented in [Testing](docs/testing/README.md). Model limits (compressor MVP, `.cdf` routing, convergence) are in [Limitations](docs/science/limitations.md).
 
 ## Documentation
 
@@ -132,6 +134,7 @@ Current baseline (2026-06-15): `cargo test --lib` 240/240, `npm test` 64/64.
 - [API stub (OpenAPI)](docs/contracts/openapi-stub.yaml)
 - [Physical equations](docs/science/equations.md)
 - [Model limitations](docs/science/limitations.md)
+- [Testing & validation](docs/testing/README.md)
 - [Operational roadmap P6–P13](docs/plans/operational-roadmap.md)
 - [Completion plan](docs/plans/completion-plan.md)
 - [Production sprint plan](docs/plans/production-sprint-plan.md)
