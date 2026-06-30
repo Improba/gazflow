@@ -180,12 +180,6 @@ where
         demands_vec[idx] += demand;
     }
 
-    let node_bounds: Vec<(Option<f64>, Option<f64>)> = network
-        .nodes()
-        .map(|node| (node.pressure_lower_bar, node.pressure_upper_bar))
-        .collect();
-    debug_assert_eq!(node_bounds.len(), n);
-
     let node_heights: HashMap<String, f64> = network
         .nodes()
         .map(|node| (node.id.clone(), node.height_m))
@@ -245,39 +239,27 @@ where
             continue;
         }
 
-        // On ancre chaque composante flottante pour lever la singularite du bloc Laplacien.
+        // Stabilisation numérique uniquement : une pression de référence par composante
+        // flottante (pas une condition aux limites GasLib ; pressureMin/Max ne sont pas utilisés).
         let anchor = component
             .iter()
             .copied()
-            .filter_map(|idx| node_bounds[idx].1.map(|upper_bar| (idx, upper_bar)))
-            .min_by_key(|(idx, _)| *idx)
-            .or_else(|| {
-                component
-                    .iter()
-                    .copied()
-                    .filter_map(|idx| node_bounds[idx].0.map(|lower_bar| (idx, lower_bar)))
-                    .min_by_key(|(idx, _)| *idx)
+            .filter(|&idx| demands_vec[idx].abs() > 0.0)
+            .max_by(|&a, &b| {
+                demands_vec[a]
+                    .abs()
+                    .total_cmp(&demands_vec[b].abs())
+                    .then_with(|| b.cmp(&a))
             })
-            .or_else(|| {
-                component
-                    .iter()
-                    .copied()
-                    .filter(|&idx| demands_vec[idx].abs() > 0.0)
-                    .max_by(|&a, &b| {
-                        demands_vec[a]
-                            .abs()
-                            .total_cmp(&demands_vec[b].abs())
-                            .then_with(|| b.cmp(&a))
-                    })
-                    .map(|idx| (idx, pressures_sq[idx].sqrt()))
-            })
+            .map(|idx| (idx, pressures_sq[idx].sqrt()))
             .or_else(|| {
                 component
                     .iter()
                     .copied()
                     .min()
-                    .map(|idx| (idx, pressures_sq[idx].sqrt()))
-            });
+                    .map(|idx| (idx, pressures_sq[idx].sqrt().max(1.0)))
+            })
+            .or_else(|| component.iter().copied().min().map(|idx| (idx, 70.0)));
 
         if let Some((anchor_idx, anchor_pressure_bar)) = anchor {
             let p_sq = anchor_pressure_bar * anchor_pressure_bar;

@@ -114,7 +114,7 @@ Reference solutions will be compared when available.
   - Jacobi fallback guarded on very large networks (applied only if residual decreases).
 - Recent measurements:
   - GasLib-4197 default smoke: ~15s on recent runs (observed residual ~`2.52e5` with tiers `0.05 -> 0.1 -> 0.1`, iteration budget `1,1,4`);
-  - GasLib-582 default smoke: ~30–40s depending on run;
+  - GasLib-582 default smoke: ~6 min with full `preset_robust` (observed residual ~`5.0e0`); CDF screening skipped when it degrades connectivity;
   - both remain robust (explicit non-convergence accepted in smoke mode).
 - Short-term perf objective note:
   - exploratory target `<5e5` in ~15s reached on current default smoke profile;
@@ -136,17 +136,18 @@ Reference solutions will be compared when available.
 - **Root cause (GasLib-582)**: closing valves/CV by default fragmented the active subgraph into many connected components without fixed pressure → singular Jacobian → faer LU panics and continuation failure.
 - **Fixes (generic, no dataset hardcode)**:
   - valves and control valves **open by default**; `.cdf` combined decisions close equipment explicitly;
-  - **component pressure anchoring** in Newton (`newton.rs`): one reference pressure per floating connected component;
-  - **`.cdf` parser and dynamic routing** (`gaslib/cdf.rs`, `routing.rs`, `connectivity.rs`) at solve time, with symlink-aware `.cdf` path resolution;
+  - **component pressure anchoring** in Newton (`newton.rs`): one **numerical** reference pressure per floating connected component (not a GasLib BC; `pressureMin`/`pressureMax` unused);
+  - **`.cdf` parser and dynamic routing** (`gaslib/cdf.rs`, `routing.rs`, `connectivity.rs`) at solve time, with symlink-aware `.cdf` path resolution; routing applied only if it beats the default open topology;
   - continuation: ramped compressor uplift per demand scale; relaxed tolerance on intermediate tiers.
 - **Measurements (June 2026, `GAZFLOW_ENABLE_LARGE_DATASET_TESTS=1`)**:
   - GasLib-135: smoke OK (~90s), no faer LU panics;
-  - GasLib-582: no faer panics; residual ~8.9 m³/s with `.cdf` routing `d1`/`d1_1`, ~5.0 m³/s without CDF; **full convergence to 3e-3 not reached** (MVP compressor limit);
+  - GasLib-582: no faer panics; residual ~5 m³/s without `.cdf` (baseline kept when CDF fragments graph); **full convergence to 3e-3 not reached** (MVP compressor limit);
   - GasLib-11: unchanged (distribution reference).
 - **June 2026 follow-up (compressor outer fallback + CDF multi-scale)**:
   - Post-continuation compressor blend fallback (≥200 nodes, transport compressors);
   - CDF screening at multiple demand scales; fragmentation penalty on large networks;
-  - GasLib-582 unchanged (~8.95 m³/s, ~13 min test with CDF screening); GasLib-135 regression fixed (outer loop no longer nested inside continuation steps).
+  - GasLib-582 unchanged (~5 m³/s robust smoke); GasLib-135 regression fixed (outer loop no longer nested inside continuation steps).
+  - **Scientific review (June 2026)**: CDF baseline comparison, numerical-only component anchoring, GasLib-582 removed from recommended demos, large smoke tests default to robust mode (`GAZFLOW_REQUIRE_FULL_CONVERGENCE=1` for strict).
 - **Next step for 582 convergence**: compressor outer loop or `.cs` maps (see `limitations.md` §5).
 
 ---

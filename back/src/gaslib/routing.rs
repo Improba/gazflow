@@ -94,17 +94,103 @@ pub fn resolve_and_apply_cdf_routing(
 
     let config = CdfRoutingConfig::from_env(network.node_count());
     let topology = network.clone();
-    let candidates = select_cdf_routing_candidates(&topology, &cdf, demands, &config);
-    let (chosen, full_solve) =
+    let node_count = network.node_count();
+    let baseline_rank = active_connectivity_rank(&topology);
+
+    if node_count > 500 && baseline_rank.0 == 0 && !force_cdf_routing() {
+        info!(
+            baseline_rank = ?baseline_rank,
+            "Routage `.cdf` ignoré : baseline connectée (grands réseaux, sans GAZFLOW_FORCE_CDF_ROUTING=1)"
+        );
+        return Ok(None);
+    }
+
+    let greedy = greedy_routing(&topology, &cdf, demands, &config, node_count);
+    let mut greedy_trial = topology.clone();
+    apply_cdf_decisions(&mut greedy_trial, &greedy.decisions);
+    let greedy_rank = active_connectivity_rank(&greedy_trial);
+
+    if connectivity_rank_worse(greedy_rank, baseline_rank) {
+        info!(
+            baseline_rank = ?baseline_rank,
+            greedy_rank = ?greedy_rank,
+            greedy_decisions = ?greedy.routing.decision_ids,
+            "Routage `.cdf` ignoré : le greedy dégrade la connectivité active"
+        );
+        return Ok(None);
+    }
+
+    let candidates =
+        select_cdf_routing_candidates(&topology, &cdf, demands, &config, Some(&greedy));
+    let Some(best_candidate) = candidates.first().cloned() else {
+        return Ok(None);
+    };
+
+    let decisions = decisions_for_routing(&cdf, &best_candidate);
+    let mut best_trial = topology.clone();
+    apply_cdf_decisions(&mut best_trial, &decisions);
+    let best_rank = active_connectivity_rank(&best_trial);
+
+    if connectivity_rank_worse(best_rank, baseline_rank) {
+        info!(
+            baseline_rank = ?baseline_rank,
+            best_rank = ?best_rank,
+            decisions = ?best_candidate.decision_ids,
+            "Routage `.cdf` ignoré : meilleur candidat dégrade la connectivité"
+        );
+        return Ok(None);
+    }
+
+    let needs_score_comparison = best_rank == baseline_rank;
+    let baseline_score = if needs_score_comparison {
+        score_routing(&topology, demands, &config, node_count)
+    } else {
+        f64::INFINITY
+    };
+
+    if needs_score_comparison
+        && !routing_topology_beats(
+            &topology,
+            &best_trial,
+            baseline_score,
+            best_candidate.screen_score,
+        )
+    {
+        info!(
+            baseline_score,
+            best_score = best_candidate.screen_score,
+            "Routage `.cdf` ignoré : baseline préférée au screening"
+        );
+        return Ok(None);
+    }
+
+    let (chosen, full_solve) = if needs_score_comparison {
         pick_routing_with_full_solve(&topology, &cdf, demands, &candidates, solve_preset)
-            .unwrap_or_else(|| {
-                (
-                    candidates.into_iter().next().expect("at least one candidate"),
-                    None,
-                )
-            });
-    let decisions = decisions_for_routing(&cdf, &chosen);
-    apply_cdf_decisions(network, &decisions);
+            .unwrap_or_else(|| (best_candidate.clone(), None))
+    } else {
+        (best_candidate.clone(), None)
+    };
+
+    let final_decisions = decisions_for_routing(&cdf, &chosen);
+    let mut final_trial = topology.clone();
+    apply_cdf_decisions(&mut final_trial, &final_decisions);
+    if !routing_topology_beats(
+        &topology,
+        &final_trial,
+        baseline_score,
+        chosen.screen_score,
+    ) {
+        info!(
+            baseline_score,
+            chosen_score = chosen.screen_score,
+            baseline_rank = ?baseline_rank,
+            chosen_rank = ?active_connectivity_rank(&final_trial),
+            "Routage `.cdf` ignoré : topologie par défaut préférée après validation"
+        );
+        return Ok(None);
+    }
+
+    apply_cdf_decisions(network, &final_decisions);
     info!(
         groups = ?chosen.group_ids,
         decisions = ?chosen.decision_ids,
@@ -232,11 +318,12 @@ fn pick_routing_with_full_solve(
     best.map(|(routing, _, _)| (routing, None))
 }
 
-fn select_cdf_routing_candidates(
+fn select_cdf_routing_candidates<'a>(
     topology: &GasNetwork,
     cdf: &CombinedDecisions,
     demands: &HashMap<String, f64>,
     config: &CdfRoutingConfig,
+    precomputed_greedy: Option<&RoutingSelection<'a>>,
 ) -> Vec<ResolvedCdfRouting> {
     let node_count = topology.node_count();
     let total = total_combinations(cdf);
@@ -244,6 +331,11 @@ fn select_cdf_routing_candidates(
 
     if total <= config.max_exhaustive_combinations {
         scored = exhaustive_routing_scores(topology, cdf, demands, config, node_count);
+    } else if let Some(greedy) = precomputed_greedy {
+        scored.push(greedy.routing.clone());
+        if let Some(refined) = local_refine(topology, cdf, demands, config, node_count, greedy) {
+            scored.push(refined.routing);
+        }
     } else {
         let greedy = greedy_routing(topology, cdf, demands, config, node_count);
         scored.push(greedy.routing.clone());
@@ -252,13 +344,12 @@ fn select_cdf_routing_candidates(
         }
     }
 
-    scored.sort_by(|a, b| {
-        a.screen_score
-            .partial_cmp(&b.screen_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    scored.retain(|r| r.screen_score.is_finite());
+    sort_routing_candidates_by_connectivity(topology, cdf, &mut scored);
     scored.dedup_by(|a, b| a.decision_ids == b.decision_ids);
+    let has_finite_score = scored.iter().any(|r| r.screen_score.is_finite());
+    if has_finite_score {
+        scored.retain(|r| r.screen_score.is_finite());
+    }
     if scored.is_empty() {
         scored.push(
             first_decision_fallback(cdf, topology, demands, config, node_count)
@@ -266,6 +357,82 @@ fn select_cdf_routing_candidates(
         );
     }
     scored
+}
+
+fn active_connectivity_rank(network: &GasNetwork) -> (usize, usize) {
+    let (total, without_fixed) = active_component_stats(network);
+    (without_fixed, total)
+}
+
+fn connectivity_rank_strictly_better(candidate: (usize, usize), baseline: (usize, usize)) -> bool {
+    candidate.0 < baseline.0 || (candidate.0 == baseline.0 && candidate.1 < baseline.1)
+}
+
+fn connectivity_rank_worse(candidate: (usize, usize), baseline: (usize, usize)) -> bool {
+    connectivity_rank_strictly_better(baseline, candidate)
+}
+
+fn sort_routing_candidates_by_connectivity(
+    topology: &GasNetwork,
+    cdf: &CombinedDecisions,
+    scored: &mut Vec<ResolvedCdfRouting>,
+) {
+    let mut ranked: Vec<(ResolvedCdfRouting, (usize, usize))> = scored
+        .drain(..)
+        .map(|routing| {
+            let rank = candidate_connectivity_rank(topology, cdf, &routing);
+            (routing, rank)
+        })
+        .collect();
+    ranked.sort_by(|(a, rank_a), (b, rank_b)| {
+        rank_a
+            .0
+            .cmp(&rank_b.0)
+            .then_with(|| rank_a.1.cmp(&rank_b.1))
+            .then_with(|| {
+                a.screen_score
+                    .partial_cmp(&b.screen_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    scored.extend(ranked.into_iter().map(|(routing, _)| routing));
+}
+
+fn candidate_connectivity_rank(
+    topology: &GasNetwork,
+    cdf: &CombinedDecisions,
+    routing: &ResolvedCdfRouting,
+) -> (usize, usize) {
+    let mut trial = topology.clone();
+    apply_cdf_decisions(&mut trial, &decisions_for_routing(cdf, routing));
+    let (total, without_fixed) = active_component_stats(&trial);
+    (without_fixed, total)
+}
+
+/// Vrai si la topologie candidate améliore la baseline (connectivité d'abord, puis score).
+fn routing_topology_beats(
+    baseline: &GasNetwork,
+    candidate: &GasNetwork,
+    baseline_score: f64,
+    candidate_score: f64,
+) -> bool {
+    let (b_unfixed, b_total) = active_component_stats(baseline);
+    let (c_unfixed, c_total) = active_component_stats(candidate);
+    if c_unfixed != b_unfixed {
+        return c_unfixed < b_unfixed;
+    }
+    if c_total != b_total {
+        return c_total < b_total;
+    }
+    match (
+        baseline_score.is_finite(),
+        candidate_score.is_finite(),
+    ) {
+        (true, true) => candidate_score < baseline_score,
+        (_, true) => true,
+        (true, false) => false,
+        (false, false) => false,
+    }
 }
 
 fn greedy_routing<'a>(
@@ -581,6 +748,12 @@ fn skip_cdf_routing() -> bool {
         .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
+fn force_cdf_routing() -> bool {
+    std::env::var("GAZFLOW_FORCE_CDF_ROUTING")
+        .ok()
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key)
         .ok()
@@ -704,6 +877,77 @@ mod tests {
         });
         let demands = HashMap::new();
         assert!(!routing_fragmentation_penalty(&net, &demands).is_finite());
+    }
+
+    #[test]
+    fn routing_topology_beats_prefers_connected_baseline() {
+        let mut baseline = GasNetwork::new();
+        for id in ["A", "B", "C"] {
+            baseline.add_node(Node {
+                id: id.into(),
+                ..Default::default()
+            });
+        }
+        baseline.add_pipe(Pipe {
+            id: "P1".into(),
+            from: "A".into(),
+            to: "B".into(),
+            kind: ConnectionKind::Pipe,
+            ..Default::default()
+        });
+        baseline.add_pipe(Pipe {
+            id: "P2".into(),
+            from: "B".into(),
+            to: "C".into(),
+            kind: ConnectionKind::Pipe,
+            ..Default::default()
+        });
+
+        let mut fragmented = GasNetwork::new();
+        for id in ["A", "B", "C", "D"] {
+            fragmented.add_node(Node {
+                id: id.into(),
+                ..Default::default()
+            });
+        }
+        fragmented.add_pipe(Pipe {
+            id: "P1".into(),
+            from: "A".into(),
+            to: "B".into(),
+            kind: ConnectionKind::Pipe,
+            ..Default::default()
+        });
+        fragmented.add_pipe(Pipe {
+            id: "P2".into(),
+            from: "C".into(),
+            to: "D".into(),
+            kind: ConnectionKind::Pipe,
+            ..Default::default()
+        });
+
+        assert!(!routing_topology_beats(
+            &baseline,
+            &fragmented,
+            f64::INFINITY,
+            f64::INFINITY,
+        ));
+        assert!(routing_topology_beats(
+            &fragmented,
+            &baseline,
+            f64::INFINITY,
+            10.0,
+        ));
+    }
+
+    #[test]
+    fn connectivity_rank_helpers() {
+        let baseline = (0usize, 1usize);
+        let worse = (2, 5);
+        let better = (0, 1);
+        assert!(connectivity_rank_worse(worse, baseline));
+        assert!(!connectivity_rank_strictly_better(worse, baseline));
+        assert!(!connectivity_rank_strictly_better(better, baseline));
+        assert!(connectivity_rank_strictly_better((0, 1), (0, 2)));
     }
 
     #[test]

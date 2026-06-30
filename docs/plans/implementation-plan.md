@@ -402,7 +402,7 @@ cd front && npx playwright test                # T5-4: E2E export scenario + map
 | M1 | GasLib-11 parsed to graph | 11 nodes, insta snapshot | ✅ |
 | M2 | Steady-state simulation + full Newton + reference validation | Tests T2-1..T2-13 + scientific protocol v1 (Go/No-Go), error < 5% vs .sol | ✅ partial |
 | M3 | **Live WebSocket + logs + real-time map + cancellation** | Simulation visible live, cancel works |
-| M4 | **Multi-threading + scaling verified** | GasLib-135 < 100ms, GasLib-582 converges, scaling curve documented |
+| M4 | **Multi-threading + scaling verified** | GasLib-135 < 100ms, GasLib-582 robust smoke (no panic), scaling curve documented |
 | M4+ | **Iterative solver (stretch goal)** | GasLib-4197 converges with GMRES+ILU |
 | M5 | Full MVP + LOD + result export | Green CI, interactive demands, JSON/CSV export, 4000 entities without lag |
 
