@@ -1392,7 +1392,8 @@ fn load_dataset_from_disk(
     let scenario_path = data_dir.join(format!("{dataset_id}.scn"));
     let default_demands = if scenario_path.exists() {
         match gaslib::load_scenario_demands(&scenario_path) {
-            Ok(scenario) => {
+            Ok(mut scenario) => {
+                gaslib::enrich_scenario_with_balance_hub(&network, &mut scenario);
                 gaslib::apply_scenario_boundaries(&mut network, &scenario);
                 gaslib::demands_without_pressure_slack(&scenario.demands, &scenario)
             }

@@ -24,7 +24,8 @@ Le ratio **4,09 n'est pas un degré de liberté d'exploitation** : c'est une bor
 - Livraison hors slack : **90,13 m³/s** norm.
 - CS2 et CS3 → hub `innode_14` (parallèle) ; CS1 lift final 14 → 389.
 - Q estimé split égal (5 CS) : **18 m³/s** / station (approximation v7–v9).
-- **v11 topologie** : CS1 **90 m³/s**, CS2/CS3 **45 m³/s** chacun (branches parallèles → hub `innode_14`).
+- **v11 topologie** : CS1 **90 m³/s**, CS2/CS3 **45 m³/s** (branches → hub `innode_14`).
+- **v13 balance** : déséquilibre sur `sink_2` (−5 m³/s) → ancrage hub ; résidu **5 → 3 m³/s**.
 
 ## Changement code (unique)
 
@@ -49,4 +50,4 @@ Interprétation :
 2. Avec la sémantique corrigée, le solveur n'atteint plus ce faux équilibre ; le résidu remonte à **8,22 m³/s** (proche du no-cap v1–v4).
 3. `map_target` reste au catalogue **1,08** tant que Q compresseur ≈ 0 (échec Newton avant recouplage carte).
 
-Prochaine étape (post v12) : bilan massique nodal (identifier le nœud à ~5 m³/s), hydraulique tête/vitesse dans Newton, ou nomination / slack.
+Prochaine étape (post v13) : ancrage ou modèle hydraulique autour de `innode_381` (+3 m³/s) ; viser 3 → 3×10⁻³.

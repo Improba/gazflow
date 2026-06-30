@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use gazflow_back::compressor::{CompressorOperatingContext, effective_ratio_with_nominal};
 use gazflow_back::gaslib::{
-    apply_scenario_boundaries, demands_without_pressure_slack, load_network, load_scenario_demands,
+    apply_scenario_boundaries, demands_without_pressure_slack, enrich_scenario_with_balance_hub,
+    load_network, load_scenario_demands,
 };
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
 use gazflow_back::solver::{
-    ContinuationStepEvent, GasComposition, SolverControl, SolverResult,
+    ContinuationStepEvent, GasComposition, MassBalanceReport, SolverControl, SolverResult,
     apply_map_ratios_after_continuation_step, compressor_map_mode, compressor_pressure_from_coeff,
-    estimate_station_norm_flow, estimated_compressor_map_flow_m3s, preset_robust,
+    estimated_compressor_map_flow_m3s, mass_balance_report, preset_robust,
     solve_steady_state_with_preset, CompressorMapMode,
 };
 use serde::Serialize;
@@ -78,6 +79,8 @@ struct DiagOutput {
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mass_balance: Option<MassBalanceReport>,
 }
 
 fn parse_residual_from_error(err: &str) -> Option<f64> {
@@ -341,6 +344,7 @@ fn skipped_output(
         compressor_stations: Vec::new(),
         reason: Some(reason),
         error: None,
+        mass_balance: None,
     }
 }
 
@@ -430,7 +434,8 @@ fn main() -> Result<()> {
         preset: "robust",
     };
 
-    let scenario = load_scenario_demands(&scenario_path).context("load scenario")?;
+    let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;
+    enrich_scenario_with_balance_hub(&network, &mut scenario);
     apply_scenario_boundaries(&mut network, &scenario);
     let demands = demands_without_pressure_slack(&scenario.demands, &scenario);
 
@@ -490,20 +495,24 @@ fn main() -> Result<()> {
     };
 
     let output = match solve_result {
-        Ok(result) => DiagOutput {
-            status: "ok",
-            dataset: cli.dataset.clone(),
-            network: network_display,
-            scenario: Some(scenario_path.display().to_string()),
-            residual: Some(result.residual),
-            demand_scale: result.demand_scale_achieved,
-            iterations: Some(result.iterations),
-            continuation_scales,
-            flags,
-            compressor_stations: stations,
-            reason: None,
-            error: None,
-        },
+        Ok(result) => {
+            let mass_balance = Some(mass_balance_report(&network, &demands, &result));
+            DiagOutput {
+                status: "ok",
+                dataset: cli.dataset.clone(),
+                network: network_display,
+                scenario: Some(scenario_path.display().to_string()),
+                residual: Some(result.residual),
+                demand_scale: result.demand_scale_achieved,
+                iterations: Some(result.iterations),
+                continuation_scales,
+                flags,
+                compressor_stations: stations,
+                reason: None,
+                error: None,
+                mass_balance,
+            }
+        }
         Err(err) => {
             eprintln!("solve failed: {err:#}");
             let err_text = format!("{err:#}");
@@ -520,6 +529,7 @@ fn main() -> Result<()> {
                 compressor_stations: stations,
                 reason: None,
                 error: Some(err_text),
+                mass_balance: None,
             }
         }
     };

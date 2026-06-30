@@ -63,6 +63,19 @@ La recherche 1D + `effective_ratio_with_nominal` aligne la cible carte sur le li
 
 Leviers v4 : `guarded_compressor_ratio_step` (pas de baisse transport avant convergence), `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED=1` (défaut measurement/biquadratic), parsing turbo + eval biquadratique GasLib.
 
+## Résultats v13 (diagnostic massique + hub balance sink_2, juin 2026)
+
+| Mode | Résidu | Pire nœud libre | Notes |
+|------|--------|-----------------|-------|
+| measurement | **3,0 m³/s** (was **5,0**) | `innode_381` (+3) | `sink_2` ancré P=2,01 bar (hub Q=0 le plus connecté) |
+| biquadratic | **3,0 m³/s** | idem | |
+
+Leviers : `mass_balance_report` dans `compressor_diag` JSON ; détection `balance_hubs` (top 2 exits Q≈0 par degré topologique) ; ancrage pression locale.
+
+Cause racine du plancher 5 m³/s : **`sink_2`** portait tout le déséquilibre (hub junction sans DOF pression).
+
+Artefacts : `/tmp/582-v13.json`, `/tmp/582-v13-mass.json`.
+
 ## Résultats v12 (distribution sud + couplage pression/ratio, juin 2026)
 
 | Mode | Résidu | eval_q CS4/CS5 | `map_target` CS4/CS5 |

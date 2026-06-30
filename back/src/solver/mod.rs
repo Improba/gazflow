@@ -42,8 +42,9 @@ pub use presets::{
 };
 pub use regulator::{EquipmentState, RegulatorMode};
 pub use steady_state::{
-    SolverControl, SolverProgress, SolverResult, compressor_pressure_from_coeff,
-    solve_steady_state, solve_steady_state_jacobi, solve_steady_state_with_composition,
+    MassBalanceReport, NodeMassImbalance, SolverControl, SolverProgress, SolverResult,
+    compressor_pressure_from_coeff, mass_balance_report, solve_steady_state,
+    solve_steady_state_jacobi, solve_steady_state_with_composition,
     solve_steady_state_with_initial_pressures, solve_steady_state_with_progress,
 };
 pub use timeseries::{

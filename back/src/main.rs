@@ -56,14 +56,16 @@ async fn main() -> anyhow::Result<()> {
     let scenario_path = data_dir.join(format!("{active_dataset}.scn"));
     let (default_demands, mut network) = if scenario_path.exists() {
         match gaslib::load_scenario_demands(&scenario_path) {
-            Ok(scenario) => {
+            Ok(mut scenario) => {
+                gaslib::enrich_scenario_with_balance_hub(&network, &mut scenario);
                 gaslib::apply_scenario_boundaries(&mut network, &scenario);
                 tracing::info!(
-                    "Scénario chargé pour {} : id={:?}, {} demandes, slack={:?}",
+                    "Scénario chargé pour {} : id={:?}, {} demandes, slack={:?}, hub={:?}",
                     active_dataset,
                     scenario.scenario_id,
                     scenario.demands.len(),
-                    scenario.pressure_slack.as_ref().map(|s| &s.node_id)
+                    scenario.pressure_slack.as_ref().map(|s| &s.node_id),
+                    scenario.balance_hubs.first().map(|s| &s.node_id)
                 );
                 (
                     gaslib::demands_without_pressure_slack(&scenario.demands, &scenario),
