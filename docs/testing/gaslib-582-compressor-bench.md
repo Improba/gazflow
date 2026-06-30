@@ -42,4 +42,13 @@ Observations v2 :
 3. **Cause dominante actuelle** : modèle compresseur + couplage Q–ratio encore insuffisant ; résidu massique O(1–8 m³/s) au nominal.
 4. **Prochaine mesure (I-A)** : coeffs biquadratiques GasLib, sélection `confId`, faisabilité surgeline/chokeline, vitesse $n$ libre ; objectif convergence 582 ou blocage documenté.
 
-Artefacts JSON v2 : `/tmp/gazflow-582-bench-v2/{baseline,no-r2-cap,measurement}.json` (machine locale).
+Artefacts JSON v2 : `/tmp/gazflow-582-bench-v3/{baseline,measurement}.json` (machine locale).
+
+## Résultats v3 (recherche 1D vitesse + garde nominal transport, juin 2026)
+
+| Variante | Résidu | map_target_ratio (st. 1–3, Q=0 post-échec) |
+|----------|--------|-----------------------------------------------|
+| Baseline | 5,0 m³/s | **4,09** (nominal `.net`, plus 1,08) |
+| measurement | 8,22 m³/s | **4,09** |
+
+La recherche 1D + `effective_ratio_with_nominal` aligne la cible carte sur le lift transport ; le résidu measurement reste dégradé vs baseline (outer loop sans débit convergé).

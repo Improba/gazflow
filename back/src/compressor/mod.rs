@@ -10,7 +10,8 @@ mod station;
 
 pub use catalog::CompressorCatalog;
 pub use map::{
-    CompressorOperatingContext, effective_ratio_from_flow, effective_ratio_from_operating_point,
+    CompressorOperatingContext, OperatingPoint, effective_ratio_from_flow,
+    effective_ratio_from_operating_point, effective_ratio_with_nominal, find_operating_point,
     had_to_pressure_ratio, interpolate_head,
 };
 pub use parse::load_compressor_catalog;

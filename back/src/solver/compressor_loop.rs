@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::compressor::{CompressorCatalog, CompressorOperatingContext, effective_ratio_from_operating_point};
+use crate::compressor::{CompressorCatalog, CompressorOperatingContext, effective_ratio_with_nominal};
 use crate::graph::{ConnectionKind, GasNetwork, Pipe};
 use crate::solver::gas_properties::DEFAULT_GAS_TEMPERATURE_K;
 
@@ -218,7 +218,11 @@ fn target_ratio_from_catalog(
         );
     }
     let station = catalog.station(&pipe.id)?;
-    let ratio = effective_ratio_from_operating_point(station, ctx);
+    let nominal = pipe
+        .equipment
+        .compressor_nominal_ratio
+        .or(pipe.compressor_ratio_max);
+    let ratio = effective_ratio_with_nominal(station, ctx, nominal);
     Some(ratio.clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO))
 }
 

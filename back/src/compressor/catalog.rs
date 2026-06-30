@@ -24,7 +24,7 @@ mod tests {
     #[test]
     fn test_station_mut_creates_station() {
         let mut catalog = CompressorCatalog::default();
-        catalog.station_mut("CS-1").push_configuration(2);
+        catalog.station_mut("CS-1").push_configuration(None, 2);
 
         let station = catalog.station("CS-1").expect("station to exist");
         assert_eq!(station.max_serial_stages(), 2);

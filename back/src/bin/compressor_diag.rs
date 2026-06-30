@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use gazflow_back::compressor::{CompressorOperatingContext, effective_ratio_from_operating_point};
+use gazflow_back::compressor::{CompressorOperatingContext, effective_ratio_with_nominal};
 use gazflow_back::gaslib::{
     apply_scenario_boundaries, demands_without_pressure_slack, load_network, load_scenario_demands,
 };
@@ -193,13 +193,16 @@ fn compressor_station_rows(
             let map_target_ratio = catalog.and_then(|cat| {
                 let station = cat.station(&pipe.id)?;
                 let p_in = inlet_pressure_bar.unwrap_or(1.01325).max(1e-3);
-                Some(effective_ratio_from_operating_point(
+                Some(effective_ratio_with_nominal(
                     station,
                     &CompressorOperatingContext {
                         q_m3s_norm: flow_m3s.abs(),
                         p_in_bar: p_in,
                         t_in_k: DEFAULT_GAS_TEMPERATURE_K,
                     },
+                    pipe.equipment
+                        .compressor_nominal_ratio
+                        .or(Some(ratio_max)),
                 ))
             });
             CompressorStationDiag {

@@ -95,7 +95,10 @@ fn parse_compressor_catalog<R: BufRead>(reader: &mut Reader<R>) -> Result<Compre
                             current_station.as_deref(),
                             read_attr_string(reader, &e, "nrOfSerialStages").and_then(parse_usize),
                         ) {
-                            catalog.station_mut(station_id).push_configuration(stages);
+                            let conf_id = read_attr_string(reader, &e, "confId");
+                            catalog
+                                .station_mut(station_id)
+                                .push_configuration(conf_id, stages);
                         }
                     }
                     "speedmin" => {
@@ -160,7 +163,10 @@ fn parse_compressor_catalog<R: BufRead>(reader: &mut Reader<R>) -> Result<Compre
                             current_station.as_deref(),
                             read_attr_string(reader, &e, "nrOfSerialStages").and_then(parse_usize),
                         ) {
-                            catalog.station_mut(station_id).push_configuration(stages);
+                            let conf_id = read_attr_string(reader, &e, "confId");
+                            catalog
+                                .station_mut(station_id)
+                                .push_configuration(conf_id, stages);
                         }
                     }
                     "speedmin" => {

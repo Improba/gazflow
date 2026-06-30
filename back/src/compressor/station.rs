@@ -7,6 +7,7 @@ pub struct TurboMeasurement {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompressorConfiguration {
+    pub conf_id: Option<String>,
     pub nr_of_serial_stages: usize,
 }
 
@@ -22,8 +23,9 @@ pub struct StationModel {
 }
 
 impl StationModel {
-    pub fn push_configuration(&mut self, nr_of_serial_stages: usize) {
+    pub fn push_configuration(&mut self, conf_id: Option<String>, nr_of_serial_stages: usize) {
         self.configurations.push(CompressorConfiguration {
+            conf_id,
             nr_of_serial_stages: nr_of_serial_stages.max(1),
         });
     }
@@ -70,6 +72,31 @@ impl StationModel {
             .map(|cfg| cfg.nr_of_serial_stages.max(1))
             .max()
             .unwrap_or(1)
+    }
+
+    pub fn default_conf_id(&self) -> Option<&str> {
+        self.configurations
+            .iter()
+            .find(|cfg| cfg.conf_id.as_deref() == Some("config_2"))
+            .or_else(|| {
+                self.configurations
+                    .iter()
+                    .max_by_key(|cfg| cfg.nr_of_serial_stages)
+            })
+            .and_then(|cfg| cfg.conf_id.as_deref())
+    }
+
+    pub fn serial_stages_for_conf(&self, conf_id: Option<&str>) -> usize {
+        if let Some(id) = conf_id {
+            if let Some(cfg) = self
+                .configurations
+                .iter()
+                .find(|cfg| cfg.conf_id.as_deref() == Some(id))
+            {
+                return cfg.nr_of_serial_stages.max(1);
+            }
+        }
+        self.max_serial_stages()
     }
 
     pub fn speed_bounds(&self) -> Option<(f64, f64)> {
@@ -132,12 +159,20 @@ mod tests {
     }
 
     #[test]
+    fn test_default_conf_id_prefers_config_2() {
+        let mut station = StationModel::default();
+        station.push_configuration(Some("config_1".into()), 1);
+        station.push_configuration(Some("config_2".into()), 1);
+        assert_eq!(station.default_conf_id(), Some("config_2"));
+    }
+
+    #[test]
     fn test_station_model_max_serial_stages_defaults_to_one() {
         let mut station = StationModel::default();
         assert_eq!(station.max_serial_stages(), 1);
 
-        station.push_configuration(3);
-        station.push_configuration(2);
+        station.push_configuration(None, 3);
+        station.push_configuration(None, 2);
         assert_eq!(station.max_serial_stages(), 3);
     }
 }
