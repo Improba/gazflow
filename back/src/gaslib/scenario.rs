@@ -61,9 +61,10 @@ pub struct PressureSlackHint {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ZeroFlowExitAnchor {
+pub struct ZeroFlowBoundaryAnchor {
     pub node_id: String,
-    pub pressure_bar: f64,
+    /// Borne basse scénario ; complétée depuis le `.net` à l'enrichissement si absente.
+    pub scenario_pressure_bar: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,10 +73,12 @@ pub struct ScenarioDemands {
     pub demands: HashMap<String, f64>,
     /// Slack pression implicite (ex. sortie principale avec borne basse seule).
     pub pressure_slack: Option<PressureSlackHint>,
-    /// Hubs de balance transport (exits Q≈0 les plus connectés).
+    /// Hubs de balance transport (boundaries Q≈0 les plus connectés).
     pub balance_hubs: Vec<PressureSlackHint>,
-    /// Exits nominalement à Q=0 avec borne pression basse (candidats hub).
-    pub zero_flow_exit_anchors: Vec<ZeroFlowExitAnchor>,
+    /// Junctions internes fortement couplées à des boundaries Q≈0.
+    pub junction_anchors: Vec<PressureSlackHint>,
+    /// Boundaries nominalement à Q=0 (entries/exits).
+    pub zero_flow_boundary_anchors: Vec<ZeroFlowBoundaryAnchor>,
 }
 
 /// Applique les conditions aux limites du scénario au réseau (slack pression + hub balance).
@@ -91,6 +94,13 @@ pub fn apply_scenario_boundaries(network: &mut GasNetwork, scenario: &ScenarioDe
         if let Some(node) = network.node_mut(&hub.node_id) {
             if node.pressure_fixed_bar.is_none() {
                 node.pressure_fixed_bar = Some(hub.pressure_bar);
+            }
+        }
+    }
+    for anchor in &scenario.junction_anchors {
+        if let Some(node) = network.node_mut(&anchor.node_id) {
+            if node.pressure_fixed_bar.is_none() {
+                node.pressure_fixed_bar = Some(anchor.pressure_bar);
             }
         }
     }
@@ -146,14 +156,16 @@ fn parse_scenario_demands_from_str(xml: &str) -> Result<ScenarioDemands> {
         demands,
         pressure_slack: detect_pressure_slack(nodes),
         balance_hubs: Vec::new(),
-        zero_flow_exit_anchors: collect_zero_flow_exit_anchors(nodes),
+        junction_anchors: Vec::new(),
+        zero_flow_boundary_anchors: collect_zero_flow_boundary_anchors(nodes),
     })
 }
 
-fn collect_zero_flow_exit_anchors(nodes: &[XmlScenarioNode]) -> Vec<ZeroFlowExitAnchor> {
+fn collect_zero_flow_boundary_anchors(nodes: &[XmlScenarioNode]) -> Vec<ZeroFlowBoundaryAnchor> {
     let mut anchors = Vec::new();
     for node in nodes {
-        if node.node_type.as_deref() != Some("exit") {
+        let node_type = node.node_type.as_deref();
+        if node_type != Some("exit") && node_type != Some("entry") {
             continue;
         }
         let flow_mag = extract_flow_value(&node.flows).unwrap_or(0.0).abs();
@@ -166,18 +178,86 @@ fn collect_zero_flow_exit_anchors(nodes: &[XmlScenarioNode]) -> Vec<ZeroFlowExit
                 lower = Some(pressure_to_bar_absolute(p.value, p.unit.as_deref()));
             }
         }
-        let Some(pressure_bar) = lower else {
-            continue;
-        };
-        anchors.push(ZeroFlowExitAnchor {
+        anchors.push(ZeroFlowBoundaryAnchor {
             node_id: node.id.clone(),
-            pressure_bar,
+            scenario_pressure_bar: lower,
         });
     }
     anchors
 }
 
-/// Choisit les hubs de balance (exits Q≈0 les plus connectés) pour ancrer la pression locale.
+fn resolve_anchor_pressure_bar(
+    network: &GasNetwork,
+    node_id: &str,
+    scenario_lower: Option<f64>,
+) -> Option<f64> {
+    if let Some(p) = scenario_lower {
+        return Some(p);
+    }
+    network
+        .nodes()
+        .find(|n| n.id == node_id)
+        .and_then(|n| n.pressure_lower_bar)
+}
+
+fn zero_flow_boundary_kind_sets(
+    scenario: &ScenarioDemands,
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
+    let mut entries = std::collections::HashSet::new();
+    let mut exits = std::collections::HashSet::new();
+    for anchor in &scenario.zero_flow_boundary_anchors {
+        if anchor.node_id.starts_with("source_") {
+            entries.insert(anchor.node_id.clone());
+        } else if anchor.node_id.starts_with("sink_") {
+            exits.insert(anchor.node_id.clone());
+        }
+    }
+    (entries, exits)
+}
+
+fn count_mixed_zero_flow_neighbors(
+    network: &GasNetwork,
+    node_id: &str,
+    zero_flow_entries: &std::collections::HashSet<String>,
+    zero_flow_exits: &std::collections::HashSet<String>,
+) -> (usize, usize, bool) {
+    let mut neighbors = std::collections::HashSet::new();
+    for pipe in network.pipes().filter(|p| p.hydraulically_active()) {
+        if pipe.from == node_id {
+            neighbors.insert(pipe.to.as_str());
+        } else if pipe.to == node_id {
+            neighbors.insert(pipe.from.as_str());
+        }
+    }
+    let mut entry_neighbors = 0usize;
+    let mut exit_neighbors = 0usize;
+    for id in neighbors {
+        if zero_flow_entries.contains(id) {
+            entry_neighbors += 1;
+        }
+        if zero_flow_exits.contains(id) {
+            exit_neighbors += 1;
+        }
+    }
+    (
+        entry_neighbors,
+        exit_neighbors,
+        entry_neighbors > 0 && exit_neighbors > 0,
+    )
+}
+
+fn node_hydraulic_degree(network: &GasNetwork, node_id: &str) -> usize {
+    network
+        .pipes()
+        .filter(|p| p.hydraulically_active())
+        .filter(|p| p.from == node_id || p.to == node_id)
+        .count()
+}
+
+/// Choisit les hubs de balance (boundaries Q≈0 les plus connectés) pour ancrer la pression locale.
 pub fn detect_balance_hubs_for_network(
     network: &GasNetwork,
     scenario: &ScenarioDemands,
@@ -188,23 +268,21 @@ pub fn detect_balance_hubs_for_network(
         .as_ref()
         .map(|s| s.node_id.as_str());
     let mut ranked: Vec<(usize, PressureSlackHint)> = scenario
-        .zero_flow_exit_anchors
+        .zero_flow_boundary_anchors
         .iter()
         .filter(|a| Some(a.node_id.as_str()) != slack_id)
         .filter_map(|node| {
-            let degree = network
-                .pipes()
-                .filter(|p| p.hydraulically_active())
-                .filter(|p| p.from == node.node_id || p.to == node.node_id)
-                .count();
+            let degree = node_hydraulic_degree(network, &node.node_id);
             if degree == 0 {
                 return None;
             }
+            let pressure_bar =
+                resolve_anchor_pressure_bar(network, &node.node_id, node.scenario_pressure_bar)?;
             Some((
                 degree,
                 PressureSlackHint {
                     node_id: node.node_id.clone(),
-                    pressure_bar: node.pressure_bar,
+                    pressure_bar,
                 },
             ))
         })
@@ -217,12 +295,82 @@ pub fn detect_balance_hubs_for_network(
         .collect()
 }
 
-/// Enrichit le scénario avec les hubs de balance détectés sur le réseau chargé.
+const MIN_JUNCTION_DEGREE: usize = 4;
+const MIN_ZERO_FLOW_BOUNDARY_NEIGHBORS: usize = 2;
+
+/// Junctions internes (ex. `innode_381`) adjacentes à entry+exit Q≈0.
+pub fn detect_junction_balance_anchors(
+    network: &GasNetwork,
+    scenario: &ScenarioDemands,
+    max_anchors: usize,
+) -> Vec<PressureSlackHint> {
+    let (zero_flow_entries, zero_flow_exits) = zero_flow_boundary_kind_sets(scenario);
+    let reserved: std::collections::HashSet<String> = scenario
+        .pressure_slack
+        .iter()
+        .map(|s| s.node_id.clone())
+        .chain(scenario.balance_hubs.iter().map(|h| h.node_id.clone()))
+        .collect();
+
+    let mut ranked: Vec<(bool, usize, usize, PressureSlackHint)> = network
+        .nodes()
+        .filter(|node| node.pressure_fixed_bar.is_none())
+        .filter(|node| !reserved.contains(&node.id))
+        .filter(|node| {
+            scenario
+                .demands
+                .get(&node.id)
+                .map(|q| q.abs() <= 1e-6)
+                .unwrap_or(true)
+        })
+        .filter_map(|node| {
+            let degree = node_hydraulic_degree(network, &node.id);
+            if degree < MIN_JUNCTION_DEGREE {
+                return None;
+            }
+            let (entry_neighbors, exit_neighbors, mixed) = count_mixed_zero_flow_neighbors(
+                network,
+                &node.id,
+                &zero_flow_entries,
+                &zero_flow_exits,
+            );
+            let zf_neighbors = entry_neighbors + exit_neighbors;
+            if zf_neighbors < MIN_ZERO_FLOW_BOUNDARY_NEIGHBORS {
+                return None;
+            }
+            let pressure_bar = node.pressure_lower_bar?;
+            Some((
+                mixed,
+                zf_neighbors,
+                degree,
+                PressureSlackHint {
+                    node_id: node.id.clone(),
+                    pressure_bar,
+                },
+            ))
+        })
+        .collect();
+
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| a.3.node_id.cmp(&b.3.node_id))
+    });
+    ranked
+        .into_iter()
+        .take(max_anchors)
+        .map(|(_, _, _, anchor)| anchor)
+        .collect()
+}
+
+/// Enrichit le scénario avec les ancrages pression détectés sur le réseau chargé.
 pub fn enrich_scenario_with_balance_hub(
     network: &GasNetwork,
     scenario: &mut ScenarioDemands,
 ) {
     scenario.balance_hubs = detect_balance_hubs_for_network(network, scenario, 2);
+    scenario.junction_anchors = detect_junction_balance_anchors(network, scenario, 2);
 }
 
 /// Détecte le nœud slack pression pour les scénarios transport GasLib.
@@ -399,7 +547,8 @@ mod tests {
                 pressure_bar: 51.01325,
             }),
             balance_hubs: Vec::new(),
-            zero_flow_exit_anchors: Vec::new(),
+            junction_anchors: Vec::new(),
+            zero_flow_boundary_anchors: Vec::new(),
         };
 
         apply_scenario_boundaries(&mut net, &scenario);
@@ -479,7 +628,8 @@ mod tests {
                 pressure_bar: 51.01325,
             }),
             balance_hubs: Vec::new(),
-            zero_flow_exit_anchors: Vec::new(),
+            junction_anchors: Vec::new(),
+            zero_flow_boundary_anchors: Vec::new(),
         };
         let adjusted = demands_without_pressure_slack(&demands, &scenario);
         assert!(!adjusted.contains_key("sink_109"));
@@ -508,6 +658,18 @@ mod tests {
                 .balance_hubs
                 .iter()
                 .map(|h| &h.node_id)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            scenario
+                .junction_anchors
+                .iter()
+                .any(|a| a.node_id == "innode_381"),
+            "junction anchor should include innode_381, got {:?}",
+            scenario
+                .junction_anchors
+                .iter()
+                .map(|a| &a.node_id)
                 .collect::<Vec<_>>()
         );
     }

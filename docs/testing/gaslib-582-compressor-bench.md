@@ -76,6 +76,22 @@ Cause racine du plancher 5 m³/s : **`sink_2`** portait tout le déséquilibre (
 
 Artefacts : `/tmp/582-v13.json`, `/tmp/582-v13-mass.json`.
 
+## Résultats v14 (entries Q=0 + junction anchors mixtes, juin 2026)
+
+| Mode | Résidu | Pire nœud libre | Notes |
+|------|--------|-----------------|-------|
+| measurement | **2,0 m³/s** (was **3,0**) | `innode_420` (−2) | `innode_381` ancré (junction entry+exit Q≈0) |
+
+Leviers v14 :
+
+1. Boundaries Q≈0 : **entries + exits** (pression depuis scénario ou `.net`).
+2. `balance_hubs` : top 2 inchangé (`sink_2`, `sink_96`).
+3. `junction_anchors` : innodes degré ≥4 avec voisins entry **et** exit Q≈0 (priorité mixte) ; top **2** (`innode_381`, …).
+
+Sur-ancrage (8 hubs + 5 junctions) **dégrade** le résidu (3,6 m³/s) : trop de pressions fixées localement.
+
+Artefact : `/tmp/582-v14c.json`.
+
 ## Résultats v12 (distribution sud + couplage pression/ratio, juin 2026)
 
 | Mode | Résidu | eval_q CS4/CS5 | `map_target` CS4/CS5 |

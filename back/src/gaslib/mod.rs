@@ -20,7 +20,7 @@ pub use routing::{
     resolve_and_apply_cdf_routing,
 };
 pub use scenario::{
-    PressureSlackHint, ScenarioDemands, ZeroFlowExitAnchor, apply_scenario_boundaries,
+    PressureSlackHint, ScenarioDemands, ZeroFlowBoundaryAnchor, apply_scenario_boundaries,
     demands_without_pressure_slack, enrich_scenario_with_balance_hub, load_scenario_demands,
 };
 pub use solution::{ReferenceSolution, load_reference_solution};
