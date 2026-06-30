@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use quick_xml::de::from_str;
 use serde::Deserialize;
 
-use crate::graph::GasNetwork;
+use crate::graph::{ConnectionKind, GasNetwork};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename = "boundaryValue")]
@@ -77,6 +77,8 @@ pub struct ScenarioDemands {
     pub balance_hubs: Vec<PressureSlackHint>,
     /// Junctions internes fortement couplées à des boundaries Q≈0.
     pub junction_anchors: Vec<PressureSlackHint>,
+    /// Boundaries Q≈0 très connectées (source/sink), hors hubs balance.
+    pub boundary_spine_anchors: Vec<PressureSlackHint>,
     /// Boundaries nominalement à Q=0 (entries/exits).
     pub zero_flow_boundary_anchors: Vec<ZeroFlowBoundaryAnchor>,
 }
@@ -94,6 +96,13 @@ pub fn apply_scenario_boundaries(network: &mut GasNetwork, scenario: &ScenarioDe
         if let Some(node) = network.node_mut(&hub.node_id) {
             if node.pressure_fixed_bar.is_none() {
                 node.pressure_fixed_bar = Some(hub.pressure_bar);
+            }
+        }
+    }
+    for anchor in &scenario.boundary_spine_anchors {
+        if let Some(node) = network.node_mut(&anchor.node_id) {
+            if node.pressure_fixed_bar.is_none() {
+                node.pressure_fixed_bar = Some(anchor.pressure_bar);
             }
         }
     }
@@ -157,6 +166,7 @@ fn parse_scenario_demands_from_str(xml: &str) -> Result<ScenarioDemands> {
         pressure_slack: detect_pressure_slack(nodes),
         balance_hubs: Vec::new(),
         junction_anchors: Vec::new(),
+        boundary_spine_anchors: Vec::new(),
         zero_flow_boundary_anchors: collect_zero_flow_boundary_anchors(nodes),
     })
 }
@@ -257,6 +267,82 @@ fn node_hydraulic_degree(network: &GasNetwork, node_id: &str) -> usize {
         .count()
 }
 
+fn is_compressor_endpoint(network: &GasNetwork, node_id: &str) -> bool {
+    network.pipes().any(|pipe| {
+        pipe.kind == ConnectionKind::CompressorStation
+            && pipe.hydraulically_active()
+            && (pipe.from == node_id || pipe.to == node_id)
+    })
+}
+
+fn reserved_anchor_ids(scenario: &ScenarioDemands) -> std::collections::HashSet<String> {
+    scenario
+        .pressure_slack
+        .iter()
+        .map(|s| s.node_id.clone())
+        .chain(scenario.balance_hubs.iter().map(|h| h.node_id.clone()))
+        .chain(scenario.boundary_spine_anchors.iter().map(|h| h.node_id.clone()))
+        .collect()
+}
+
+const MIN_BOUNDARY_SPINE_DEGREE: usize = 4;
+
+/// Boundaries Q≈0 très connectées (ex. `source_17`) pour fermer les boucles locales.
+pub fn detect_boundary_spine_anchors(
+    network: &GasNetwork,
+    scenario: &ScenarioDemands,
+    max_anchors: usize,
+) -> Vec<PressureSlackHint> {
+    let (zero_flow_entries, zero_flow_exits) = zero_flow_boundary_kind_sets(scenario);
+    let reserved = reserved_anchor_ids(scenario);
+
+    let mut ranked: Vec<(bool, usize, usize, PressureSlackHint)> = scenario
+        .zero_flow_boundary_anchors
+        .iter()
+        .filter(|a| !reserved.contains(&a.node_id))
+        .filter(|a| a.node_id.starts_with("source_") || a.node_id.starts_with("sink_"))
+        .filter_map(|anchor| {
+            let degree = node_hydraulic_degree(network, &anchor.node_id);
+            if degree < MIN_BOUNDARY_SPINE_DEGREE {
+                return None;
+            }
+            let (entry_neighbors, exit_neighbors, mixed) = count_mixed_zero_flow_neighbors(
+                network,
+                &anchor.node_id,
+                &zero_flow_entries,
+                &zero_flow_exits,
+            );
+            let zf_neighbors = entry_neighbors + exit_neighbors;
+            if zf_neighbors < MIN_ZERO_FLOW_BOUNDARY_NEIGHBORS {
+                return None;
+            }
+            let pressure_bar =
+                resolve_anchor_pressure_bar(network, &anchor.node_id, anchor.scenario_pressure_bar)?;
+            Some((
+                mixed,
+                zf_neighbors,
+                degree,
+                PressureSlackHint {
+                    node_id: anchor.node_id.clone(),
+                    pressure_bar,
+                },
+            ))
+        })
+        .collect();
+
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| a.3.node_id.cmp(&b.3.node_id))
+    });
+    ranked
+        .into_iter()
+        .take(max_anchors)
+        .map(|(_, _, _, anchor)| anchor)
+        .collect()
+}
+
 /// Choisit les hubs de balance (boundaries Q≈0 les plus connectés) pour ancrer la pression locale.
 pub fn detect_balance_hubs_for_network(
     network: &GasNetwork,
@@ -296,7 +382,19 @@ pub fn detect_balance_hubs_for_network(
 }
 
 const MIN_JUNCTION_DEGREE: usize = 4;
+const MIN_JUNCTION_DEGREE_MIXED: usize = 3;
+const MIN_JUNCTION_DEGREE_EXIT_HUB: usize = 3;
 const MIN_ZERO_FLOW_BOUNDARY_NEIGHBORS: usize = 2;
+
+fn min_junction_degree(entry_neighbors: usize, exit_neighbors: usize, mixed: bool) -> usize {
+    if mixed {
+        return MIN_JUNCTION_DEGREE_MIXED;
+    }
+    if entry_neighbors == 0 && exit_neighbors >= MIN_ZERO_FLOW_BOUNDARY_NEIGHBORS {
+        return MIN_JUNCTION_DEGREE_EXIT_HUB;
+    }
+    MIN_JUNCTION_DEGREE
+}
 
 /// Junctions internes (ex. `innode_381`) adjacentes à entry+exit Q≈0.
 pub fn detect_junction_balance_anchors(
@@ -305,15 +403,12 @@ pub fn detect_junction_balance_anchors(
     max_anchors: usize,
 ) -> Vec<PressureSlackHint> {
     let (zero_flow_entries, zero_flow_exits) = zero_flow_boundary_kind_sets(scenario);
-    let reserved: std::collections::HashSet<String> = scenario
-        .pressure_slack
-        .iter()
-        .map(|s| s.node_id.clone())
-        .chain(scenario.balance_hubs.iter().map(|h| h.node_id.clone()))
-        .collect();
+    let reserved = reserved_anchor_ids(scenario);
 
     let mut ranked: Vec<(bool, usize, usize, PressureSlackHint)> = network
         .nodes()
+        .filter(|node| node.id.starts_with("innode_"))
+        .filter(|node| !is_compressor_endpoint(network, &node.id))
         .filter(|node| node.pressure_fixed_bar.is_none())
         .filter(|node| !reserved.contains(&node.id))
         .filter(|node| {
@@ -325,9 +420,6 @@ pub fn detect_junction_balance_anchors(
         })
         .filter_map(|node| {
             let degree = node_hydraulic_degree(network, &node.id);
-            if degree < MIN_JUNCTION_DEGREE {
-                return None;
-            }
             let (entry_neighbors, exit_neighbors, mixed) = count_mixed_zero_flow_neighbors(
                 network,
                 &node.id,
@@ -336,6 +428,10 @@ pub fn detect_junction_balance_anchors(
             );
             let zf_neighbors = entry_neighbors + exit_neighbors;
             if zf_neighbors < MIN_ZERO_FLOW_BOUNDARY_NEIGHBORS {
+                return None;
+            }
+            let min_degree = min_junction_degree(entry_neighbors, exit_neighbors, mixed);
+            if degree < min_degree {
                 return None;
             }
             let pressure_bar = node.pressure_lower_bar?;
@@ -370,6 +466,7 @@ pub fn enrich_scenario_with_balance_hub(
     scenario: &mut ScenarioDemands,
 ) {
     scenario.balance_hubs = detect_balance_hubs_for_network(network, scenario, 2);
+    scenario.boundary_spine_anchors = detect_boundary_spine_anchors(network, scenario, 1);
     scenario.junction_anchors = detect_junction_balance_anchors(network, scenario, 2);
 }
 
@@ -548,6 +645,7 @@ mod tests {
             }),
             balance_hubs: Vec::new(),
             junction_anchors: Vec::new(),
+            boundary_spine_anchors: Vec::new(),
             zero_flow_boundary_anchors: Vec::new(),
         };
 
@@ -629,6 +727,7 @@ mod tests {
             }),
             balance_hubs: Vec::new(),
             junction_anchors: Vec::new(),
+            boundary_spine_anchors: Vec::new(),
             zero_flow_boundary_anchors: Vec::new(),
         };
         let adjusted = demands_without_pressure_slack(&demands, &scenario);
@@ -662,10 +761,34 @@ mod tests {
         );
         assert!(
             scenario
+                .boundary_spine_anchors
+                .iter()
+                .any(|a| a.node_id == "source_17"),
+            "spine anchor should include source_17, got {:?}",
+            scenario
+                .boundary_spine_anchors
+                .iter()
+                .map(|a| &a.node_id)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            scenario
                 .junction_anchors
                 .iter()
                 .any(|a| a.node_id == "innode_381"),
             "junction anchor should include innode_381, got {:?}",
+            scenario
+                .junction_anchors
+                .iter()
+                .map(|a| &a.node_id)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            scenario
+                .junction_anchors
+                .iter()
+                .any(|a| a.node_id == "innode_385" || a.node_id == "innode_420"),
+            "junction anchor should include innode_385 or innode_420, got {:?}",
             scenario
                 .junction_anchors
                 .iter()

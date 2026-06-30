@@ -92,6 +92,21 @@ Sur-ancrage (8 hubs + 5 junctions) **dégrade** le résidu (3,6 m³/s) : trop de
 
 Artefact : `/tmp/582-v14c.json`.
 
+## Résultats v15 (spine boundary + junctions degré 3, juin 2026)
+
+| Mode | Résidu | Pire nœud libre | Notes |
+|------|--------|-----------------|-------|
+| measurement | **2,0 m³/s** (= v14) | `sink_24` (−2) | `source_17` spine + `innode_381`/`innode_385` |
+
+Leviers v15 :
+
+1. **`boundary_spine_anchors`** : boundaries Q≈0 source/sink degré ≥4 (`source_17`), séparées des junctions internes.
+2. **Junctions `innode_*` degré ≥3** si mix entry+exit Q≈0, ou hub exit-only (≥2 exits Q≈0).
+3. **Exclusion des extrémités compresseur** (`innode_402` évité).
+4. Sur-ancrage confirmé : 3+ junctions → régression (3,6 m³/s).
+
+Artefact : `/tmp/582-v15.json`.
+
 ## Résultats v12 (distribution sud + couplage pression/ratio, juin 2026)
 
 | Mode | Résidu | eval_q CS4/CS5 | `map_target` CS4/CS5 |
