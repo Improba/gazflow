@@ -17,7 +17,7 @@ use super::gas_properties::{
 use super::iterative::solve_sparse_gmres_ilu0;
 use super::steady_state::{
     NondimScaling, PipeElevationContext, SolverControl, SolverProgress, SolverResult,
-    compressor_pressure_from_coeff, effective_pipe_geometry, flow_reference_from_demands,
+    compressor_pressure_from_coeff_for_config, effective_pipe_geometry, flow_reference_from_demands,
     pipe_flow_with_gravity, pipe_resistance_at_pressure_with_composition,
     pressure_sq_reference_from_fixed,
 };
@@ -128,6 +128,7 @@ where
         tolerance,
         snapshot_every,
         enable_compressor_outer_loop: _,
+        disable_compressor_r2_cap: _,
     } = *config;
     let n = network.node_count();
     if n == 0 {
@@ -201,7 +202,7 @@ where
                 length_km,
                 diameter_mm,
                 roughness_mm,
-                pressure_from_coeff: compressor_pressure_from_coeff(pipe),
+                pressure_from_coeff: compressor_pressure_from_coeff_for_config(pipe, config),
                 height_from_m: node_heights.get(&pipe.from).copied().unwrap_or(0.0),
                 height_to_m: node_heights.get(&pipe.to).copied().unwrap_or(0.0),
             })
@@ -1193,7 +1194,7 @@ mod tests {
                     length_km,
                     diameter_mm,
                     roughness_mm,
-                    pressure_from_coeff: compressor_pressure_from_coeff(pipe),
+                    pressure_from_coeff: crate::solver::compressor_pressure_from_coeff(pipe),
                     height_from_m: node_heights.get(&pipe.from).copied().unwrap_or(0.0),
                     height_to_m: node_heights.get(&pipe.to).copied().unwrap_or(0.0),
                 })

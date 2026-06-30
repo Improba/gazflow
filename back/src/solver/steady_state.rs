@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use serde::Serialize;
 
-use crate::graph::{ConnectionKind, EquipmentSpec, GasNetwork, Pipe};
+use crate::graph::{ConnectionKind, GasNetwork, Pipe};
 use crate::solver::config::SteadyStateConfig;
 use crate::solver::gas_properties::{
     DEFAULT_GAS_TEMPERATURE_K, GasComposition, gas_density_kg_per_m3,
@@ -283,13 +283,44 @@ pub(crate) fn pressure_sq_reference_from_fixed(fixed: &HashMap<usize, f64>) -> f
     fixed.values().copied().fold(70.0_f64.powi(2), f64::max)
 }
 
-pub(crate) fn compressor_pressure_from_coeff(pipe: &Pipe) -> f64 {
+pub fn compressor_pressure_from_coeff(pipe: &Pipe) -> f64 {
+    compressor_pressure_from_coeff_with_options(pipe, compressor_r2_cap_disabled_from_env())
+}
+
+pub(crate) fn compressor_pressure_from_coeff_for_config(
+    pipe: &Pipe,
+    config: &SteadyStateConfig,
+) -> f64 {
+    compressor_pressure_from_coeff_with_options(pipe, compressor_r2_cap_disabled(config))
+}
+
+fn compressor_r2_cap_disabled_from_env() -> bool {
+    if env_bool("GAZFLOW_DISABLE_R2_CAP", false) {
+        return true;
+    }
+    matches!(
+        std::env::var("GAZFLOW_COMPRESSOR_MAP_MODE")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("measurement") | Some("biquadratic")
+    )
+}
+
+fn compressor_r2_cap_disabled(config: &SteadyStateConfig) -> bool {
+    config.disable_compressor_r2_cap || compressor_r2_cap_disabled_from_env()
+}
+
+pub(crate) fn compressor_pressure_from_coeff_with_options(
+    pipe: &Pipe,
+    disable_r2_cap: bool,
+) -> f64 {
     if pipe.kind != ConnectionKind::CompressorStation {
         return 1.0;
     }
     let ratio = pipe.compressor_ratio_max.unwrap_or(1.08).clamp(1.0, 5.0);
     let r2 = ratio * ratio;
-    if ratio > 3.0 {
+    if ratio > 3.0 && !disable_r2_cap {
         // Transport haute surpression : atténuation MVP pour éviter les instabilités Newton
         // tout en conservant une surpression significative (coeff plafonné ~9 → ratio eff. ~3).
         r2.min(9.0)
@@ -450,48 +481,6 @@ pub fn network_with_scaled_compressor_lift(network: &GasNetwork, demand_scale: f
     net
 }
 
-const MAX_COMPRESSOR_OUTER: usize = 8;
-const COMPRESSOR_BLEND_STEPS: [f64; MAX_COMPRESSOR_OUTER] =
-    [0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 0.95, 1.0];
-
-fn network_has_transport_compressors(network: &GasNetwork) -> bool {
-    network.pipes().any(|pipe| {
-        if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
-            return false;
-        }
-        pipe.equipment.compressor_nominal_ratio.is_some()
-            || pipe.compressor_ratio_max.unwrap_or(1.0) > 1.5
-    })
-}
-
-fn apply_compressor_blend(network: &GasNetwork, blend: f64) -> GasNetwork {
-    let mut net = network.clone();
-    let blend = blend.clamp(0.0, 1.0);
-    for pipe in net.pipes_mut() {
-        if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
-            continue;
-        }
-        let nominal = pipe
-            .equipment
-            .compressor_nominal_ratio
-            .or(pipe.compressor_ratio_max)
-            .unwrap_or(1.08)
-            .max(1.0);
-        pipe.compressor_ratio_max = Some(1.0 + (nominal - 1.0) * blend);
-    }
-    net
-}
-
-fn should_try_compressor_outer_fallback(network: &GasNetwork) -> bool {
-    if env_bool("GAZFLOW_SKIP_COMPRESSOR_OUTER", false) {
-        return false;
-    }
-    if !network_has_transport_compressors(network) {
-        return false;
-    }
-    env_bool("GAZFLOW_COMPRESSOR_OUTER", false) || network.node_count() >= 200
-}
-
 /// Dernier recours après échec de continuation sur réseaux transport compresseurs.
 pub(crate) fn solve_compressor_outer_fallback<F>(
     network: &GasNetwork,
@@ -503,44 +492,13 @@ pub(crate) fn solve_compressor_outer_fallback<F>(
 where
     F: FnMut(SolverProgress) -> SolverControl,
 {
-    if !should_try_compressor_outer_fallback(network) {
-        bail!("compressor outer fallback not applicable");
-    }
-
-    tracing::info!("trying compressor outer loop after continuation failure");
-    let mut warm_start = initial_pressures.cloned();
-    let mut total_iterations = 0usize;
-    let mut last_error: Option<anyhow::Error> = None;
-
-    for blend in COMPRESSOR_BLEND_STEPS {
-        let blended = apply_compressor_blend(network, blend);
-        match solve_steady_state_newton_core(
-            &blended,
-            demands,
-            warm_start.as_ref(),
-            config,
-            &mut *on_progress,
-        ) {
-            Ok(mut result) => {
-                total_iterations += result.iterations;
-                warm_start = Some(result.pressures.clone());
-                result.iterations = total_iterations;
-                if result.residual <= config.tolerance {
-                    return Ok(result);
-                }
-                last_error = Some(anyhow!(
-                    "compressor outer stage blend={blend:.2} residual={:.3e}",
-                    result.residual
-                ));
-            }
-            Err(err) => {
-                tracing::warn!(blend, error = %err, "compressor outer stage failed");
-                last_error = Some(err);
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| anyhow!("compressor outer loop exhausted all blends")))
+    super::compressor_loop::solve_compressor_outer_fallback(
+        network,
+        demands,
+        initial_pressures,
+        config,
+        on_progress,
+    )
 }
 
 /// Résout le réseau en régime permanent via Newton complet + line-search.
@@ -1130,10 +1088,10 @@ mod tests {
         apply_scenario_boundaries, demands_without_pressure_slack, load_network,
         load_reference_solution, load_scenario_demands,
     };
+    use crate::graph::{ConnectionKind, EquipmentSpec, GasNetwork, Node, Pipe};
+    use crate::solver::continuation::solve_steady_state_with_preset;
     use crate::solver::gas_properties::GasComposition;
     use crate::solver::presets::{preset_for_node_count, preset_robust};
-    use crate::solver::continuation::solve_steady_state_with_preset;
-    use crate::graph::{ConnectionKind, GasNetwork, Node, Pipe};
 
     fn two_node_network() -> GasNetwork {
         let mut net = GasNetwork::new();
@@ -1671,8 +1629,7 @@ mod tests {
         let network = load_network(network_path).expect("load GasLib-11 network");
         let scenario = load_scenario_demands(scenario_path).expect("load GasLib-11 scenario");
         let reference = load_reference_solution(solution_path).expect("load reference solution");
-        let effective_demands =
-            demands_without_pressure_slack(&scenario.demands, &scenario);
+        let effective_demands = demands_without_pressure_slack(&scenario.demands, &scenario);
         let result = solve_steady_state(&network, &effective_demands, 1200, 5e-4)
             .or_else(|_| solve_steady_state(&network, &effective_demands, 2000, 1e-3))
             .expect("solver should converge on GasLib-11");
@@ -1793,10 +1750,9 @@ mod tests {
             preset.continuation_scales.clone()
         };
         let continuation_max_seconds = if node_count > 500 {
-            let default_timeout_s = preset
-                .continuation_max_seconds
-                .unwrap_or(180);
-            let configured = env_usize("GAZFLOW_LARGE_TEST_MAX_SECONDS", default_timeout_s as usize);
+            let default_timeout_s = preset.continuation_max_seconds.unwrap_or(180);
+            let configured =
+                env_usize("GAZFLOW_LARGE_TEST_MAX_SECONDS", default_timeout_s as usize);
             (configured > 0).then_some(configured as u64)
         } else {
             preset.continuation_max_seconds
@@ -1842,8 +1798,7 @@ mod tests {
         {
             eprintln!(
                 "cdf routing converged in validation: decisions={:?}, residual={:.3e}",
-                outcome.routing.decision_ids,
-                result.residual
+                outcome.routing.decision_ids, result.residual
             );
             Ok(result)
         } else {
@@ -1874,14 +1829,12 @@ mod tests {
                         );
                         eprintln!(
                             "large dataset full convergence: residual={:.3e}, iters={}, scale={scale}",
-                            result.residual,
-                            result.iterations,
+                            result.residual, result.iterations,
                         );
                     } else {
                         eprintln!(
                             "large dataset smoke (robust): residual={:.3e}, iters={}, scale={scale}, tol={tolerance:.3e} (set GAZFLOW_REQUIRE_FULL_CONVERGENCE=1 for strict check)",
-                            result.residual,
-                            result.iterations,
+                            result.residual, result.iterations,
                         );
                     }
                 }
@@ -1925,7 +1878,9 @@ mod tests {
     #[test]
     #[ignore = "diagnostic léger GasLib-582 : nœuds isolés (sans solve)"]
     fn diag_gaslib_582_isolated_free_nodes() {
-        use crate::gaslib::{apply_cdf_decision_ids, cdf_path_for_network, load_combined_decisions};
+        use crate::gaslib::{
+            apply_cdf_decision_ids, cdf_path_for_network, load_combined_decisions,
+        };
         use std::collections::{HashMap, HashSet};
 
         let network_path = Path::new("dat/GasLib-582.net");
@@ -1969,8 +1924,12 @@ mod tests {
             // Composantes connexes du sous-graphe actif (union-find simple via BFS).
             let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
             for pipe in network.pipes().filter(|p| p.hydraulically_active()) {
-                adj.entry(pipe.from.as_str()).or_default().push(pipe.to.as_str());
-                adj.entry(pipe.to.as_str()).or_default().push(pipe.from.as_str());
+                adj.entry(pipe.from.as_str())
+                    .or_default()
+                    .push(pipe.to.as_str());
+                adj.entry(pipe.to.as_str())
+                    .or_default()
+                    .push(pipe.from.as_str());
             }
             let all_ids: Vec<&str> = network.nodes().map(|n| n.id.as_str()).collect();
             let mut seen: HashSet<&str> = HashSet::new();
@@ -2029,7 +1988,11 @@ mod tests {
         // 1. Réseau brut (defaults parser : CV fermées).
         let mut net_default = load_network(network_path).expect("load network");
         apply_scenario_boundaries(&mut net_default, &scenario);
-        report(&net_default, &demands, "defaults (tout ouvert, sans routage cdf)");
+        report(
+            &net_default,
+            &demands,
+            "defaults (tout ouvert, sans routage cdf)",
+        );
 
         // 2. Avec routage .cdf d1 + d1_1.
         let cdf_path = cdf_path_for_network(network_path).expect("cdf path");
@@ -2063,7 +2026,9 @@ mod tests {
     #[test]
     #[ignore = "diagnostic manuel GasLib-582"]
     fn diag_gaslib_582_cdf_routing_d1_d1_1() {
-        use crate::gaslib::{apply_cdf_decision_ids, cdf_path_for_network, load_combined_decisions};
+        use crate::gaslib::{
+            apply_cdf_decision_ids, cdf_path_for_network, load_combined_decisions,
+        };
         use crate::solver::presets::preset_robust;
         use crate::solver::{GasComposition, SolverControl, solve_steady_state_with_preset};
 
@@ -2094,9 +2059,7 @@ mod tests {
         match result {
             Ok(r) => eprintln!(
                 "d1+d1_1: residual={:.3e} scale={:?} iters={}",
-                r.residual,
-                r.demand_scale_achieved,
-                r.iterations
+                r.residual, r.demand_scale_achieved, r.iterations
             ),
             Err(e) => eprintln!("d1+d1_1 failed: {e:#}"),
         }
@@ -2186,6 +2149,22 @@ mod tests {
         assert!(
             high.pressures["sink"] > low.pressures["sink"],
             "higher compressor ratio should increase downstream pressure"
+        );
+    }
+
+    #[test]
+    fn test_compressor_r2_cap_disable_flag_path() {
+        let net = compressor_link_network_with_ratio(3.5);
+        let pipe = net.pipes().next().expect("compressor pipe");
+        let capped = compressor_pressure_from_coeff_with_options(pipe, false);
+        let uncapped = compressor_pressure_from_coeff_with_options(pipe, true);
+        assert!(
+            (capped - 9.0).abs() < 1e-9,
+            "expected cap at 9.0 when enabled, got {capped}"
+        );
+        assert!(
+            (uncapped - 12.25).abs() < 1e-9,
+            "expected uncapped r² when disabled, got {uncapped}"
         );
     }
 

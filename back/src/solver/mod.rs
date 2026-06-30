@@ -4,15 +4,16 @@
 //! Équations : Darcy-Weisbach pour la perte de charge.
 
 pub mod capacity;
+pub(crate) mod compressor_loop;
 pub mod config;
-pub mod continuation;
 pub mod contingency;
+pub mod continuation;
 pub mod demand;
 pub mod eos;
 pub mod gas_properties;
-pub mod presets;
 pub(crate) mod iterative;
 pub(crate) mod newton;
+pub mod presets;
 pub(crate) mod regulator;
 mod steady_state;
 pub mod timeseries;
@@ -20,26 +21,26 @@ pub mod transient;
 
 pub use capacity::{CapacityBounds, CapacityViolation, ConstrainedSolverResult};
 pub use config::SteadyStateConfig;
-pub use continuation::{
-    ContinuationConfig, ContinuationStepEvent, solve_steady_state_with_continuation,
-    solve_steady_state_with_preset,
-};
-pub use presets::{
-    NetworkTier, SolverPreset, preset_for_node_count, preset_from_request, preset_robust,
-    recommended_demo_for_dataset, tier_for_dataset, tier_for_node_count,
-};
 pub use contingency::{
     ContingencyAction, ContingencyCase, ContingencyElementType, ContingencyReport,
     ContingencyResult, PressureViolation, apply_contingency, evaluate_contingency_case,
     finalize_contingency_report, generate_n_minus_1_cases, run_contingency_analysis,
 };
+pub use continuation::{
+    ContinuationConfig, ContinuationStepEvent, solve_steady_state_with_continuation,
+    solve_steady_state_with_preset,
+};
 pub use demand::{ClientCategory, DemandProfile, normalize_daily_weights, resolve_demands};
 pub use gas_properties::GasComposition;
+pub use presets::{
+    NetworkTier, SolverPreset, preset_for_node_count, preset_from_request, preset_robust,
+    recommended_demo_for_dataset, tier_for_dataset, tier_for_node_count,
+};
 pub use regulator::{EquipmentState, RegulatorMode};
 pub use steady_state::{
-    SolverControl, SolverProgress, SolverResult, solve_steady_state, solve_steady_state_jacobi,
-    solve_steady_state_with_composition, solve_steady_state_with_initial_pressures,
-    solve_steady_state_with_progress,
+    SolverControl, SolverProgress, SolverResult, compressor_pressure_from_coeff,
+    solve_steady_state, solve_steady_state_jacobi, solve_steady_state_with_composition,
+    solve_steady_state_with_initial_pressures, solve_steady_state_with_progress,
 };
 pub use timeseries::{
     TimeseriesConfig, TimeseriesControl, TimeseriesResult, TimeseriesStepResult, WeatherStep,

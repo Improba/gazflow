@@ -5,7 +5,8 @@ use std::time::Instant;
 
 use anyhow::{Result, anyhow};
 
-use crate::graph::GasNetwork;
+use crate::graph::{ConnectionKind, GasNetwork};
+use crate::solver::compressor_loop::solve_with_compressor_loop;
 use crate::solver::config::SteadyStateConfig;
 use crate::solver::gas_properties::GasComposition;
 use crate::solver::steady_state::{
@@ -93,14 +94,9 @@ where
         );
     }
 
-    let per_scale_iters = continuation_iter_schedule(
-        steady_config.max_iter,
-        scales.len(),
-        network.node_count(),
-    );
-    let default_iter_budget = |n_scales: usize| {
-        (steady_config.max_iter / n_scales.max(1)).max(1)
-    };
+    let per_scale_iters =
+        continuation_iter_schedule(steady_config.max_iter, scales.len(), network.node_count());
+    let default_iter_budget = |n_scales: usize| (steady_config.max_iter / n_scales.max(1)).max(1);
     let snapshot_default = if network.node_count() > 2000 {
         1
     } else {
@@ -140,15 +136,12 @@ where
             });
         }
 
-        let iter_budget = continuation_iter_schedule(
-            steady_config.max_iter,
-            scales.len(),
-            network.node_count(),
-        )
-        .get(idx)
-        .copied()
-        .or_else(|| per_scale_iters.get(idx).copied())
-        .unwrap_or_else(|| default_iter_budget(scales.len()));
+        let iter_budget =
+            continuation_iter_schedule(steady_config.max_iter, scales.len(), network.node_count())
+                .get(idx)
+                .copied()
+                .or_else(|| per_scale_iters.get(idx).copied())
+                .unwrap_or_else(|| default_iter_budget(scales.len()));
         let scaled_demands: HashMap<String, f64> = demands
             .iter()
             .map(|(node_id, q)| (node_id.clone(), q * scale))
@@ -157,8 +150,7 @@ where
         let mut best_snapshot_pressures: Option<HashMap<String, f64>> = None;
         let mut best_snapshot_residual = f64::INFINITY;
 
-        let is_final_scale =
-            (scale - 1.0).abs() < 1e-9 || idx + 1 >= scales.len();
+        let is_final_scale = (scale - 1.0).abs() < 1e-9 || idx + 1 >= scales.len();
         let step_tolerance = if is_final_scale {
             steady_config.tolerance
         } else {
@@ -172,6 +164,7 @@ where
             snapshot_every,
             gas_composition: steady_config.gas_composition,
             enable_compressor_outer_loop: false,
+            disable_compressor_r2_cap: steady_config.disable_compressor_r2_cap,
         };
 
         let step_network = network_with_scaled_compressor_lift(network, scale);
@@ -255,6 +248,7 @@ where
         tolerance: preset.tolerance,
         snapshot_every: preset.snapshot_every,
         enable_compressor_outer_loop: true,
+        disable_compressor_r2_cap: false,
     };
 
     if preset.uses_continuation() {
@@ -274,7 +268,61 @@ where
             &mut progress,
             on_continuation_step,
         ) {
-            Ok(result) => Ok(result),
+            Ok(result) => {
+                if result.demand_scale_achieved.unwrap_or(1.0) >= 0.999 {
+                    let has_active_compressor = network.pipes().any(|p| {
+                        p.kind == ConnectionKind::CompressorStation && p.hydraulically_active()
+                    });
+                    if !has_active_compressor {
+                        return Ok(result);
+                    }
+                    if super::compressor_loop::compressor_map_mode()
+                        == super::compressor_loop::CompressorMapMode::Legacy
+                        && result.residual <= steady_config.tolerance
+                    {
+                        return Ok(result);
+                    }
+                    let continuation_iterations = result.iterations;
+                    let continuation_warnings = result.warnings.clone();
+                    let continuation_warm_start = result.pressures.clone();
+                    match solve_with_compressor_loop(
+                        network,
+                        demands,
+                        Some(&continuation_warm_start),
+                        steady_config,
+                        &mut progress,
+                    ) {
+                        Ok(mut outer) => {
+                            outer.iterations += continuation_iterations;
+                            outer.demand_scale_achieved = Some(1.0);
+                            outer.warnings.extend(continuation_warnings);
+                            Ok(outer)
+                        }
+                        Err(outer_err) => {
+                            match super::steady_state::solve_compressor_outer_fallback(
+                                network,
+                                demands,
+                                Some(&continuation_warm_start),
+                                steady_config,
+                                &mut progress,
+                            ) {
+                                Ok(mut fallback) => {
+                                    fallback.iterations += continuation_iterations;
+                                    fallback.demand_scale_achieved = Some(1.0);
+                                    fallback.warnings.extend(continuation_warnings);
+                                    Ok(fallback)
+                                }
+                                Err(fallback_err) => {
+                                    tracing::debug!(fallback_err = %fallback_err, "compressor fallback after continuation+outer loop failed");
+                                    Err(outer_err)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Ok(result)
+                }
+            }
             Err(err) => match super::steady_state::solve_compressor_outer_fallback(
                 network,
                 demands,
@@ -357,6 +405,7 @@ mod tests {
             tolerance: 1e-4,
             snapshot_every: 0,
             enable_compressor_outer_loop: true,
+            disable_compressor_r2_cap: false,
         };
         let cont = ContinuationConfig::from_scales(vec![1.0]);
         let result = solve_steady_state_with_continuation(
@@ -384,6 +433,7 @@ mod tests {
             tolerance: 1e-3,
             snapshot_every: 0,
             enable_compressor_outer_loop: true,
+            disable_compressor_r2_cap: false,
         };
         let cont = ContinuationConfig::from_scales(vec![0.3, 1.0]);
         let mut steps = Vec::new();
@@ -412,6 +462,7 @@ mod tests {
             tolerance: 1e-3,
             snapshot_every: 0,
             enable_compressor_outer_loop: true,
+            disable_compressor_r2_cap: false,
         };
         let cont = ContinuationConfig {
             scales: vec![0.3, 1.0],

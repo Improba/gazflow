@@ -11,6 +11,8 @@ pub struct SteadyStateConfig {
     pub snapshot_every: usize,
     /// Désactivé pendant les paliers de continuation (le ramping compresseur y est géré à part).
     pub enable_compressor_outer_loop: bool,
+    /// Désactive le plafond MVP r²≤9 (mode carte compresseur ou bench H2).
+    pub disable_compressor_r2_cap: bool,
 }
 
 impl Default for SteadyStateConfig {
@@ -21,6 +23,7 @@ impl Default for SteadyStateConfig {
             tolerance: 1e-6,
             snapshot_every: 0,
             enable_compressor_outer_loop: true,
+            disable_compressor_r2_cap: false,
         }
     }
 }
