@@ -50,4 +50,6 @@ Interprétation :
 2. Avec la sémantique corrigée, le solveur n'atteint plus ce faux équilibre ; le résidu remonte à **8,22 m³/s** (proche du no-cap v1–v4).
 3. `map_target` reste au catalogue **1,08** tant que Q compresseur ≈ 0 (échec Newton avant recouplage carte).
 
-Prochaine étape (post v13) : ancrage ou modèle hydraulique autour de `innode_381` (+3 m³/s) ; viser 3 → 3×10⁻³.
+4. **v17 in-Newton** : recouplage tête/vitesse à chaque itération Newton (défaut measurement) ; plancher **~2 m³/s** inchangé.
+
+Prochaine étape : assouplissement P/Q contractuel ou modèle compresseur complet ; viser 2 → 3×10⁻³.

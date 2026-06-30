@@ -8,18 +8,23 @@ use faer::prelude::Solve;
 use faer::sparse::{SparseColMat, Triplet};
 use rayon::prelude::*;
 
+use crate::compressor::{
+    CompressorCatalog, CompressorOperatingContext, effective_ratio_with_nominal_for_mode,
+};
 use crate::graph::{ConnectionKind, GasNetwork};
 
 use super::config::SteadyStateConfig;
+use super::compressor_loop::{compressor_map_mode, CompressorMapMode};
 use super::gas_properties::{
     DEFAULT_GAS_TEMPERATURE_K, GasComposition, gas_density_kg_per_m3_with_composition,
 };
 use super::iterative::solve_sparse_gmres_ilu0;
 use super::steady_state::{
     NondimScaling, PipeElevationContext, SolverControl, SolverProgress, SolverResult,
-    compressor_pressure_from_coeff_for_config, effective_compressor_pressure_from_coeff,
-    effective_pipe_geometry, flow_reference_from_demands, pipe_flow_with_gravity,
-    pipe_resistance_at_pressure_with_composition, pressure_sq_reference_from_fixed,
+    compressor_pressure_from_coeff_for_config, compressor_r2_cap_disabled,
+    effective_compressor_pressure_from_coeff, effective_pipe_geometry, flow_reference_from_demands,
+    pipe_flow_with_gravity, pipe_resistance_at_pressure_with_composition,
+    pressure_sq_reference_from_fixed,
 };
 
 const MIN_PRESSURE_SQ: f64 = 1.0;
@@ -73,12 +78,64 @@ struct IndexedPipe {
     id: String,
     from_idx: usize,
     to_idx: usize,
+    kind: ConnectionKind,
     length_km: f64,
     diameter_mm: f64,
     roughness_mm: f64,
     pressure_from_coeff: f64,
+    operating_ratio: Option<f64>,
+    pressure_cap_ratio: Option<f64>,
     height_from_m: f64,
     height_to_m: f64,
+}
+
+struct NewtonMapContext<'a> {
+    catalog: &'a CompressorCatalog,
+    prefer_biquadratic: bool,
+    disable_r2_cap: bool,
+}
+
+fn newton_compressor_map_enabled(_config: &SteadyStateConfig) -> bool {
+    env_bool(
+        "GAZFLOW_NEWTON_COMPRESSOR_MAP",
+        matches!(
+            compressor_map_mode(),
+            CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
+        ),
+    )
+}
+
+fn compressor_coeff_from_map(
+    pipe: &IndexedPipe,
+    pressures_sq: &[f64],
+    q_m3s_norm: f64,
+    map_ctx: &NewtonMapContext<'_>,
+) -> f64 {
+    let Some(station) = map_ctx.catalog.station(&pipe.id) else {
+        return pipe.pressure_from_coeff;
+    };
+    let p_in = pressures_sq[pipe.from_idx].sqrt().max(1e-3);
+    let ctx = CompressorOperatingContext {
+        q_m3s_norm: q_m3s_norm.abs().max(1e-3),
+        p_in_bar: p_in,
+        t_in_k: DEFAULT_GAS_TEMPERATURE_K,
+    };
+    let ratio = effective_ratio_with_nominal_for_mode(
+        station,
+        &ctx,
+        pipe.operating_ratio,
+        pipe.pressure_cap_ratio,
+        map_ctx.prefer_biquadratic,
+    );
+    let mut target_coeff = ratio.powi(2);
+    if ratio > 3.0 && !map_ctx.disable_r2_cap {
+        target_coeff = target_coeff.min(9.0);
+    }
+    effective_compressor_pressure_from_coeff(
+        target_coeff,
+        pressures_sq[pipe.from_idx],
+        pressures_sq[pipe.to_idx],
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -200,10 +257,15 @@ where
                 id: pipe.id.clone(),
                 from_idx,
                 to_idx,
+                kind: pipe.kind,
                 length_km,
                 diameter_mm,
                 roughness_mm,
                 pressure_from_coeff: compressor_pressure_from_coeff_for_config(pipe, config),
+                operating_ratio: pipe
+                    .compressor_ratio_max
+                    .or(pipe.equipment.compressor_nominal_ratio),
+                pressure_cap_ratio: pipe.equipment.compressor_pressure_cap_ratio,
                 height_from_m: node_heights.get(&pipe.from).copied().unwrap_or(0.0),
                 height_to_m: node_heights.get(&pipe.to).copied().unwrap_or(0.0),
             })
@@ -287,6 +349,15 @@ where
     );
     let active_regulator_nodes = collect_active_regulator_nodes(network, &id_pos, &fixed);
     let guard_jacobi_fallback = env_bool("GAZFLOW_GUARD_JACOBI_FALLBACK", n > 2000);
+    let newton_map_ctx = if newton_compressor_map_enabled(config) {
+        network.compressor_catalog.as_ref().map(|catalog| NewtonMapContext {
+            catalog,
+            prefer_biquadratic: matches!(compressor_map_mode(), CompressorMapMode::Biquadratic),
+            disable_r2_cap: compressor_r2_cap_disabled(config),
+        })
+    } else {
+        None
+    };
 
     if initial_pressures_bar.is_none()
         && !free_indices.is_empty()
@@ -305,6 +376,7 @@ where
             free_indices: &free_indices,
             scaling,
             gas_composition,
+            map_ctx: newton_map_ctx.as_ref(),
         };
         let baseline_residual = eval.evaluate(&pressures_sq).residual;
         let candidate_residual = eval.evaluate(&candidate).residual;
@@ -323,6 +395,7 @@ where
             &free_indices,
             scaling,
             gas_composition,
+            newton_map_ctx.as_ref(),
         );
         let residual = state.residual;
         iterations += 1;
@@ -417,6 +490,7 @@ where
                 &mut rhs,
                 scaling,
                 gas_composition,
+                newton_map_ctx.as_ref(),
             );
         }
 
@@ -457,6 +531,7 @@ where
                             free_indices: &free_indices,
                             scaling,
                             gas_composition,
+                            map_ctx: newton_map_ctx.as_ref(),
                         },
                     );
                 } else {
@@ -487,6 +562,7 @@ where
                 &free_indices,
                 scaling,
                 gas_composition,
+                newton_map_ctx.as_ref(),
             );
             if trial_state.residual < residual {
                 pressures_sq = trial_pressures;
@@ -510,6 +586,7 @@ where
                         free_indices: &free_indices,
                         scaling,
                         gas_composition,
+                        map_ctx: newton_map_ctx.as_ref(),
                     },
                 );
             } else {
@@ -530,6 +607,7 @@ where
         &free_indices,
         scaling,
         gas_composition,
+        newton_map_ctx.as_ref(),
     );
 
     if final_state.residual >= tolerance && !free_indices.is_empty() {
@@ -636,6 +714,7 @@ fn append_active_regulator_row_coupling(
     rhs: &mut [f64],
     scaling: NondimScaling,
     gas_composition: GasComposition,
+    map_ctx: Option<&NewtonMapContext<'_>>,
 ) {
     if active_regulator_nodes.is_empty() {
         return;
@@ -692,6 +771,7 @@ fn append_active_regulator_row_coupling(
             free_indices,
             scaling,
             gas_composition,
+            map_ctx,
         );
         let Some(&j_rr) = row_derivs.get(&reg_node_idx) else {
             continue;
@@ -733,6 +813,7 @@ fn finite_difference_node_row_derivatives(
     free_indices: &[usize],
     scaling: NondimScaling,
     gas_composition: GasComposition,
+    map_ctx: Option<&NewtonMapContext<'_>>,
 ) -> HashMap<usize, f64> {
     let mut derivs = HashMap::new();
     for &var_idx in variable_indices {
@@ -746,6 +827,7 @@ fn finite_difference_node_row_derivatives(
             free_indices,
             scaling,
             gas_composition,
+            map_ctx,
         );
         let d = (perturbed_state.f_node[row_node_idx] - base_row_residual) / h;
         if d.is_finite() {
@@ -766,11 +848,12 @@ fn pipe_flow_derivatives(
     pressures_sq: &[f64],
     scaling: NondimScaling,
     gas_composition: GasComposition,
+    map_ctx: Option<&NewtonMapContext<'_>>,
 ) -> PipeFlowDerivatives {
     let p_from = pressures_sq[pipe.from_idx].sqrt();
     let p_to = pressures_sq[pipe.to_idx].sqrt();
     let avg_p = 0.5 * (p_from + p_to);
-    let pressure_from_coeff = if pipe.pressure_from_coeff > 1.0 + 1e-6 {
+    let mut pressure_from_coeff = if pipe.pressure_from_coeff > 1.0 + 1e-6 {
         effective_compressor_pressure_from_coeff(
             pipe.pressure_from_coeff,
             pressures_sq[pipe.from_idx],
@@ -779,8 +862,6 @@ fn pipe_flow_derivatives(
     } else {
         pipe.pressure_from_coeff
     };
-    // P7.7 : le Jacobian Newton garde Re=10⁷ (Q=0) pour la stabilité numérique ;
-    // le Reynolds dynamique s'applique via pipe_resistance_hydraulic quand Q≠0.
     let resistance = pipe_resistance_at_pressure_with_composition(
         pipe.length_km,
         pipe.diameter_mm,
@@ -793,17 +874,30 @@ fn pipe_flow_derivatives(
     .max(MIN_ABS_DP);
     let rho =
         gas_density_kg_per_m3_with_composition(avg_p, DEFAULT_GAS_TEMPERATURE_K, &gas_composition);
+    let elev = PipeElevationContext {
+        height_from_m: pipe.height_from_m,
+        height_to_m: pipe.height_to_m,
+        density_kg_per_m3: rho,
+    };
+    let (q_boot, _, _) = pipe_flow_with_gravity(
+        pressures_sq[pipe.from_idx],
+        pressures_sq[pipe.to_idx],
+        pressure_from_coeff,
+        resistance,
+        scaling,
+        elev,
+    );
+    if pipe.kind == ConnectionKind::CompressorStation && map_ctx.is_some() {
+        pressure_from_coeff =
+            compressor_coeff_from_map(pipe, pressures_sq, q_boot.abs(), map_ctx.unwrap());
+    }
     let (q, conductance_from, conductance_to) = pipe_flow_with_gravity(
         pressures_sq[pipe.from_idx],
         pressures_sq[pipe.to_idx],
         pressure_from_coeff,
         resistance,
         scaling,
-        PipeElevationContext {
-            height_from_m: pipe.height_from_m,
-            height_to_m: pipe.height_to_m,
-            density_kg_per_m3: rho,
-        },
+        elev,
     );
     PipeFlowDerivatives {
         q,
@@ -819,6 +913,7 @@ fn evaluate_state(
     free_indices: &[usize],
     scaling: NondimScaling,
     gas_composition: GasComposition,
+    map_ctx: Option<&NewtonMapContext<'_>>,
 ) -> IterationState {
     let n = pressures_sq.len();
     let mut f_node = demands_vec.to_vec();
@@ -840,7 +935,8 @@ fn evaluate_state(
                     )
                 },
                 |(mut local_f, mut local_j, mut local_qg), (pipe_idx, pipe)| {
-                    let deriv = pipe_flow_derivatives(pipe, pressures_sq, scaling, gas_composition);
+                    let deriv =
+                        pipe_flow_derivatives(pipe, pressures_sq, scaling, gas_composition, map_ctx);
 
                     local_f[pipe.from_idx] -= deriv.q;
                     local_f[pipe.to_idx] += deriv.q;
@@ -884,7 +980,8 @@ fn evaluate_state(
         }
     } else {
         for (pipe_idx, pipe) in pipes.iter().enumerate() {
-            let deriv = pipe_flow_derivatives(pipe, pressures_sq, scaling, gas_composition);
+            let deriv =
+                pipe_flow_derivatives(pipe, pressures_sq, scaling, gas_composition, map_ctx);
 
             f_node[pipe.from_idx] -= deriv.q;
             f_node[pipe.to_idx] += deriv.q;
@@ -1217,10 +1314,15 @@ mod tests {
                     id: pipe.id.clone(),
                     from_idx,
                     to_idx,
+                    kind: pipe.kind,
                     length_km,
                     diameter_mm,
                     roughness_mm,
                     pressure_from_coeff: crate::solver::compressor_pressure_from_coeff(pipe),
+                    operating_ratio: pipe
+                        .compressor_ratio_max
+                        .or(pipe.equipment.compressor_nominal_ratio),
+                    pressure_cap_ratio: pipe.equipment.compressor_pressure_cap_ratio,
                     height_from_m: node_heights.get(&pipe.from).copied().unwrap_or(0.0),
                     height_to_m: node_heights.get(&pipe.to).copied().unwrap_or(0.0),
                 })
@@ -1233,6 +1335,7 @@ mod tests {
             &free_indices,
             scaling,
             GasComposition::pure_ch4(),
+            None,
         );
         let mp_idx = *id_pos.get("MP").expect("MP index");
         let fd = super::finite_difference_node_row_derivatives(
@@ -1245,6 +1348,7 @@ mod tests {
             &free_indices,
             scaling,
             GasComposition::pure_ch4(),
+            None,
         );
         let reg_pipe_idx = pipes
             .iter()
@@ -1273,6 +1377,7 @@ struct NewtonEvalContext<'a> {
     free_indices: &'a [usize],
     scaling: NondimScaling,
     gas_composition: GasComposition,
+    map_ctx: Option<&'a NewtonMapContext<'a>>,
 }
 
 impl NewtonEvalContext<'_> {
@@ -1284,6 +1389,7 @@ impl NewtonEvalContext<'_> {
             self.free_indices,
             self.scaling,
             self.gas_composition,
+            self.map_ctx,
         )
     }
 }

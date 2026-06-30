@@ -318,7 +318,7 @@ fn compressor_r2_cap_hybrid_until_converged() -> bool {
     env_bool("GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED", default)
 }
 
-fn compressor_r2_cap_disabled(config: &SteadyStateConfig) -> bool {
+pub(crate) fn compressor_r2_cap_disabled(config: &SteadyStateConfig) -> bool {
     if config.disable_compressor_r2_cap {
         return true;
     }

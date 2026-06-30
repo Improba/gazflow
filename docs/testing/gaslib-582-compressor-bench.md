@@ -123,6 +123,23 @@ Le plancher **~2 m³/s** persiste : les nœuds restants (`sink_24`, `source_20`)
 
 Artefact : `/tmp/582-v16b.json`.
 
+## Résultats v17 (carte compresseur in-Newton, juin 2026)
+
+| Mode | Résidu | Notes |
+|------|--------|-------|
+| measurement + `GAZFLOW_NEWTON_COMPRESSOR_MAP=1` (défaut) | **2,0 m³/s** | tête/vitesse → ratio P² à chaque itération Newton |
+| measurement + `GAZFLOW_NEWTON_COMPRESSOR_MAP=0` | **2,0 m³/s** | idem (outer loop pré-calibre déjà les ratios) |
+
+Leviers v17 :
+
+1. **`NewtonMapContext`** dans `newton.rs` : `find_operating_point_for_mode` + `had_to_pressure_ratio` recouplés au débit local bootstrap à chaque évaluation pipe compresseur.
+2. Env **`GAZFLOW_NEWTON_COMPRESSOR_MAP`** : activé par défaut en modes `measurement` / `biquadratic`.
+3. Jacobian : coefficient carte **gelé par itération** (semi-implicite), `effective_compressor_pressure_from_coeff` conservé.
+
+Le plancher **~2 m³/s** confirme un goulot **hors couplage Q–ratio** (boundaries Q imposées, partial accept). Prochain levier : modèle hydraulique complet compresseur ou assouplissement P/Q contractuel.
+
+Artefact : `/tmp/582-v17.json`.
+
 ## Résultats v12 (distribution sud + couplage pression/ratio, juin 2026)
 
 | Mode | Résidu | eval_q CS4/CS5 | `map_target` CS4/CS5 |
