@@ -116,8 +116,8 @@ struct RatioUpdateContext {
     residual: f64,
     tolerance: f64,
     nominal_ratio: f64,
+    pressure_cap_ratio: f64,
     relax: f64,
-    /// N'autoriser la relaxation vers la cible carte qu'au nominal (scale=1).
     allow_map_target: bool,
 }
 
@@ -132,7 +132,7 @@ fn guarded_compressor_ratio_step(
     }
 
     let converged = ctx.residual <= ctx.tolerance;
-    let is_transport = ctx.nominal_ratio >= TRANSPORT_NOMINAL_THRESHOLD;
+    let is_transport = ctx.pressure_cap_ratio >= TRANSPORT_NOMINAL_THRESHOLD;
 
     if !ctx.allow_map_target {
         if !converged && is_transport && current < ctx.nominal_ratio {
@@ -156,7 +156,7 @@ fn guarded_compressor_ratio_step(
     }
 
     let next = (current + ctx.relax * (map_target - current))
-        .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
+        .clamp(MIN_COMPRESSOR_RATIO, ctx.pressure_cap_ratio.min(MAX_COMPRESSOR_RATIO));
     ratio_step_if_changed(current, next)
 }
 
@@ -320,14 +320,16 @@ fn target_ratio_from_catalog(
     mode: CompressorMapMode,
 ) -> Option<f64> {
     let station = catalog.station(&pipe.id)?;
-    let nominal = pipe
+    let operating = pipe
         .equipment
         .compressor_nominal_ratio
         .or(pipe.compressor_ratio_max);
+    let cap = pipe.equipment.compressor_pressure_cap_ratio;
     let ratio = effective_ratio_with_nominal_for_mode(
         station,
         ctx,
-        nominal,
+        operating,
+        cap,
         mode == CompressorMapMode::Biquadratic,
     );
     Some(ratio.clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO))
@@ -384,15 +386,21 @@ fn apply_compressor_map_updates(
             .unwrap_or(1.08)
             .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
         let map_target = target_ratio_from_catalog(catalog, pipe, &ctx_op, mode).unwrap_or(current);
+        let pressure_cap = pipe
+            .equipment
+            .compressor_pressure_cap_ratio
+            .unwrap_or(MAX_COMPRESSOR_RATIO)
+            .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
         let update_ctx = RatioUpdateContext {
             q_m3s_norm,
             residual: result.residual,
             tolerance,
             nominal_ratio: nominal,
+            pressure_cap_ratio: pressure_cap,
             relax,
             allow_map_target,
         };
-        let Some(next) = guarded_compressor_ratio_step(current, map_target, update_ctx) else {
+        let Some(next) = guarded_compressor_ratio_step(current, map_target.min(pressure_cap), update_ctx) else {
             continue;
         };
         let delta = (next - current).abs();
@@ -630,6 +638,7 @@ mod tests {
             residual,
             tolerance,
             nominal_ratio: nominal,
+            pressure_cap_ratio: 4.09,
             relax,
             allow_map_target: true,
         }

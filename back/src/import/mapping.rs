@@ -217,6 +217,7 @@ fn equipment_from_properties(props: &Value, pm: &PipeMapping) -> EquipmentSpec {
             .as_deref()
             .and_then(|f| resolve_f64(props, f)),
         compressor_nominal_ratio: None,
+        compressor_pressure_cap_ratio: None,
         internal_bypass_required: None,
     }
 }

@@ -16,8 +16,10 @@ pub struct EquipmentSpec {
     pub control_valve_opening_pct: Option<f64>,
     /// Pression contractuelle minimale aval [bar] (poste livraison).
     pub delivery_min_pressure_bar: Option<f64>,
-    /// Ratio compresseur nominal (restauré quand actif après routage `.cdf`).
+    /// Ratio compresseur nominal d'exploitation (carte `.cs` / étages, pas les bornes pression `.net`).
     pub compressor_nominal_ratio: Option<f64>,
+    /// Plafond pression réseau `.net` (p_out_max / p_in_min) — contrainte, pas consigne d'exploitation.
+    pub compressor_pressure_cap_ratio: Option<f64>,
     /// Bypass interne GasLib autorisé si compresseur hors service.
     pub internal_bypass_required: Option<bool>,
 }
@@ -64,6 +66,7 @@ impl EquipmentSpec {
             && self.control_valve_opening_pct.is_none()
             && self.delivery_min_pressure_bar.is_none()
             && self.compressor_nominal_ratio.is_none()
+            && self.compressor_pressure_cap_ratio.is_none()
             && self.internal_bypass_required.is_none()
     }
 
@@ -86,6 +89,9 @@ impl EquipmentSpec {
         }
         if let Some(v) = patch.compressor_nominal_ratio {
             self.compressor_nominal_ratio = Some(v);
+        }
+        if let Some(v) = patch.compressor_pressure_cap_ratio {
+            self.compressor_pressure_cap_ratio = Some(v);
         }
         if let Some(v) = patch.internal_bypass_required {
             self.internal_bypass_required = Some(v);

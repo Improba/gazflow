@@ -200,7 +200,8 @@ fn compressor_station_rows(
                         p_in_bar: p_in,
                         t_in_k: DEFAULT_GAS_TEMPERATURE_K,
                     },
-                    pipe.equipment.compressor_nominal_ratio.or(Some(ratio_max)),
+                    pipe.equipment.compressor_nominal_ratio,
+                    pipe.equipment.compressor_pressure_cap_ratio,
                 ))
             });
             CompressorStationDiag {

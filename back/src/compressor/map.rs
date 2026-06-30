@@ -453,47 +453,48 @@ fn ratio_from_head(head_kj_per_kg: f64, ctx: &CompressorOperatingContext, stages
         .clamp(1.0, 5.0)
 }
 
-/// Ratio effectif avec garde sur le nominal `.net` pour les stations transport.
+/// Ratio effectif : carte à Q, borné par [operating, pressure_cap].
 pub fn effective_ratio_with_nominal_for_mode(
     station: &StationModel,
     ctx: &CompressorOperatingContext,
-    nominal_ratio: Option<f64>,
+    operating_ratio: Option<f64>,
+    pressure_cap_ratio: Option<f64>,
     prefer_biquadratic: bool,
 ) -> f64 {
     let stages = station
         .serial_stages_for_conf(station.default_conf_id())
         .max(1);
-    let fallback = nominal_ratio
+    let operating = operating_ratio
         .unwrap_or_else(|| stage_ratio_heuristic(stages))
         .clamp(1.0, 5.0);
+    let cap = pressure_cap_ratio.unwrap_or(5.0).clamp(operating, 5.0);
 
     let q_m3_s = ctx.suction_volumetric_flow_m3s();
     if q_m3_s <= 0.0 || !q_m3_s.is_finite() {
-        return fallback;
+        return operating;
     }
 
     let Some(point) = find_operating_point_for_mode(station, ctx, prefer_biquadratic) else {
-        return fallback;
+        return operating;
     };
 
     let map_ratio = ratio_from_head(point.head_kj_per_kg, ctx, stages);
-    let Some(nominal) = nominal_ratio.filter(|r| *r >= TRANSPORT_LIFT_THRESHOLD) else {
-        return map_ratio;
-    };
-
-    if map_ratio < nominal * 0.5 {
-        (0.35 * map_ratio + 0.65 * nominal).clamp(1.0, 5.0)
-    } else {
-        map_ratio.clamp(1.0, nominal.max(map_ratio))
-    }
+    map_ratio.clamp(operating, cap)
 }
 
 pub fn effective_ratio_with_nominal(
     station: &StationModel,
     ctx: &CompressorOperatingContext,
-    nominal_ratio: Option<f64>,
+    operating_ratio: Option<f64>,
+    pressure_cap_ratio: Option<f64>,
 ) -> f64 {
-    effective_ratio_with_nominal_for_mode(station, ctx, nominal_ratio, false)
+    effective_ratio_with_nominal_for_mode(
+        station,
+        ctx,
+        operating_ratio,
+        pressure_cap_ratio,
+        false,
+    )
 }
 
 fn representative_speed_rpm(
@@ -545,7 +546,7 @@ pub fn effective_ratio_from_operating_point(
     station: &StationModel,
     ctx: &CompressorOperatingContext,
 ) -> f64 {
-    effective_ratio_with_nominal_for_mode(station, ctx, None, false)
+    effective_ratio_with_nominal(station, ctx, None, None)
 }
 
 /// Compatibilité tests / appels legacy (pression et température par défaut).
@@ -693,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_ratio_with_nominal_preserves_transport_lift() {
+    fn test_effective_ratio_clamped_by_pressure_cap() {
         let mut station = StationModel::default();
         station.push_configuration(Some("config_2".into()), 1);
         station.update_speed_min(5_600.0);
@@ -709,10 +710,11 @@ mod tests {
             p_in_bar: 21.0,
             t_in_k: 288.15,
         };
-        let ratio = effective_ratio_with_nominal(&station, &ctx, Some(4.09));
+        let ratio = effective_ratio_with_nominal(&station, &ctx, Some(1.08), Some(4.09));
+        assert!(ratio >= 1.0 && ratio <= 4.09);
         assert!(
-            ratio > 2.0,
-            "transport nominal should dominate low map ratio"
+            ratio < 2.0,
+            "map ratio should stay near catalogue lift, not pressure cap 4.09"
         );
     }
 
@@ -794,7 +796,7 @@ mod tests {
         let point = find_operating_point_for_mode(&station, &ctx, true).expect("fallback point");
         assert_abs_diff_eq!(point.head_kj_per_kg, 80.0, epsilon = 1e-9);
 
-        let ratio = effective_ratio_with_nominal_for_mode(&station, &ctx, Some(1.2), true);
+        let ratio = effective_ratio_with_nominal_for_mode(&station, &ctx, Some(1.2), Some(5.0), true);
         assert!(ratio >= 1.0);
     }
 }

@@ -254,13 +254,22 @@ fn compressor_ratio_from_pressure_bounds(raw: &XmlConnectionRaw) -> Option<f64> 
     }
 }
 
-fn effective_compressor_ratio(net_ratio: Option<f64>, cs_ratio: Option<f64>) -> f64 {
-    /// Au-delà de ce ratio, on considère une station de transport et on utilise les bornes `.net`.
-    const TRANSPORT_LIFT_THRESHOLD: f64 = 2.0;
-    let cs = cs_ratio.unwrap_or(1.08);
-    match net_ratio {
-        Some(nr) if nr >= TRANSPORT_LIFT_THRESHOLD => nr.clamp(1.0, 5.0),
-        _ => cs.clamp(1.0, 5.0),
+/// Ratio d'exploitation (carte `.cs`) vs plafond pression `.net` (équipement).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CompressorRatioSemantics {
+    operating: f64,
+    pressure_cap: Option<f64>,
+}
+
+fn compressor_ratio_semantics(
+    net_ratio: Option<f64>,
+    cs_ratio: Option<f64>,
+) -> CompressorRatioSemantics {
+    let operating = cs_ratio.unwrap_or(1.08).clamp(1.0, 5.0);
+    let pressure_cap = net_ratio.map(|bound| bound.clamp(operating, 5.0));
+    CompressorRatioSemantics {
+        operating,
+        pressure_cap,
     }
 }
 
@@ -360,16 +369,19 @@ pub fn load_network_raw<P: AsRef<Path>>(path: P) -> Result<RawNetwork> {
         let compressor_ratio_nominal = if kind == ConnectionKind::CompressorStation {
             let net_ratio = compressor_ratio_from_pressure_bounds(src);
             let cs_ratio = compressor_ratios.get(&src.id).copied();
-            Some(effective_compressor_ratio(net_ratio, cs_ratio))
+            let semantics = compressor_ratio_semantics(net_ratio, cs_ratio);
+            Some(semantics.operating)
         } else {
             None
         };
         let compressor_ratio_max = compressor_ratio_nominal;
         let mut equipment = EquipmentSpec::default();
         if kind == ConnectionKind::CompressorStation {
-            if let Some(ratio) = compressor_ratio_nominal {
-                equipment.compressor_nominal_ratio = Some(ratio);
-            }
+            let net_ratio = compressor_ratio_from_pressure_bounds(src);
+            let cs_ratio = compressor_ratios.get(&src.id).copied();
+            let semantics = compressor_ratio_semantics(net_ratio, cs_ratio);
+            equipment.compressor_nominal_ratio = Some(semantics.operating);
+            equipment.compressor_pressure_cap_ratio = semantics.pressure_cap;
             equipment.internal_bypass_required = Some(internal_bypass_required(src));
         }
         pipes.push(RawPipe {
@@ -825,5 +837,38 @@ mod tests {
         let net = load_network(&path).expect("load_network");
         assert_eq!(net.node_count(), 2);
         assert_eq!(net.edge_count(), 1);
+    }
+
+    #[test]
+    fn test_compressor_semantics_operating_from_cs_cap_from_net() {
+        let semantics = compressor_ratio_semantics(Some(4.09), Some(1.08));
+        assert!((semantics.operating - 1.08).abs() < 1e-9);
+        assert!((semantics.pressure_cap.unwrap() - 4.09).abs() < 1e-3);
+
+        let distribution = compressor_ratio_semantics(Some(1.2), Some(1.08));
+        assert!((distribution.operating - 1.08).abs() < 1e-9);
+        assert!((distribution.pressure_cap.unwrap() - 1.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_load_gaslib_582_compressor_operating_not_net_bound() {
+        let path = Path::new("dat/GasLib-582.net");
+        if !path.exists() {
+            eprintln!("skip: GasLib-582.net not found");
+            return;
+        }
+        let net = load_network(path).expect("582");
+        let cs1 = net
+            .pipes()
+            .find(|p| p.id == "compressorStation_1")
+            .expect("CS1");
+        assert!(
+            cs1.compressor_ratio_max.unwrap_or(0.0) < 2.0,
+            "operating ratio should come from .cs not .net bound"
+        );
+        assert!(
+            cs1.equipment.compressor_pressure_cap_ratio.unwrap_or(0.0) > 3.0,
+            "pressure cap should retain .net bound"
+        );
     }
 }

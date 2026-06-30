@@ -63,6 +63,18 @@ La recherche 1D + `effective_ratio_with_nominal` aligne la cible carte sur le li
 
 Leviers v4 : `guarded_compressor_ratio_step` (pas de baisse transport avant convergence), `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED=1` (défaut measurement/biquadratic), parsing turbo + eval biquadratique GasLib.
 
+## Résultats v6 (Option 1 — sémantique ratio operating vs pressure cap, juin 2026)
+
+Décision documentée : `docs/testing/gaslib-582-compressor-diagnosis.md`.
+
+| Mode | Résidu | `compressor_ratio_max` (st. 1–3) | `map_target_ratio` |
+|------|--------|----------------------------------|--------------------|
+| legacy | **8,22 m³/s** | **1,08** (`.cs`) | 1,08 |
+| measurement | **8,22 m³/s** | 1,08 | 1,08 |
+| biquadratic | **8,22 m³/s** | 1,08 | 1,08 |
+
+Le plafond pression `.net` (4,09) est conservé dans `compressor_pressure_cap_ratio` mais n'est plus confondu avec le ratio d'exploitation. Le faux plateau baseline 5 m³/s disparaît.
+
 ## Résultats v5 (couplage Q–ratio continuation + débit estimé, juin 2026)
 
 Leviers : `apply_map_ratios_after_continuation_step` (scale ≥ 0.5), débit nominal estimé depuis les sinks quand Q solver ≈ 0, salvage si outer loop échoue après continuation convergée.
