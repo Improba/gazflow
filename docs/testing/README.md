@@ -156,6 +156,63 @@ Defaults (Large tier, e.g. GasLib-582 with `preset_robust`):
 - intermediate continuation tiers use relaxed tolerance (0.3 for 582);
 - GasLib-4197: very short smoke profile `max_iter=12`, `tol=1e-2`, `scales=0.05,0.1,0.2,0.4,0.7,1.0`, global timeout `240s` (explicit non-convergence accepted in smoke mode).
 
+## GasLib-582 compressor diagnostic (I-A0)
+
+Manual diagnostic for transport compressor behaviour on GasLib-582. This is **not** run in CI (full `preset_robust` solve takes ~6 min on a dev machine).
+
+### Protocol (frozen)
+
+| Step | Setting |
+|------|---------|
+| Network | `back/dat/GasLib-582.net` (symlink from `fetch_gaslib.sh`) |
+| Scenario | `nomination_mild_618.scn` if present under `back/dat/` (nominations archive), else `GasLib-582.scn` |
+| Demands | `demands_without_pressure_slack` (pressure slack node flow removed, e.g. `sink_109`) |
+| CDF routing | **off** — baseline connected topology (`GAZFLOW_SKIP_CDF_ROUTING=1`, set by the binary) |
+| Solver | `solve_steady_state_with_preset` + `preset_robust` |
+
+Download data first:
+
+```bash
+./scripts/fetch_gaslib.sh GasLib-582
+```
+
+Run diagnostic:
+
+```bash
+cd back
+cargo run --bin compressor_diag -- GasLib-582
+```
+
+Options:
+
+```bash
+cargo run --bin compressor_diag -- GasLib-582 --no-r2-cap
+cargo run --bin compressor_diag -- GasLib-582 --json /tmp/582-diag.json --csv /tmp/582-stations.csv
+```
+
+If `dat/GasLib-582.net` or a scenario file is missing, the binary exits gracefully with `status: "skipped"` JSON (no solve).
+
+Output JSON fields: `residual`, `demand_scale`, `compressor_stations` (per-station `flow_m3s`, `ratio_max`, `effective_r2`), and `flags` used.
+
+Bench results (I-A0, juin 2026) : [gaslib-582-compressor-bench.md](./gaslib-582-compressor-bench.md).
+
+### GAZFLOW_* flags (compressor / large transport)
+
+| Variable | Role | Default |
+|----------|------|---------|
+| `GAZFLOW_DISABLE_R2_CAP` | Disable MVP $r^2 \leq 9$ attenuation for `ratio > 3` (H2 diagnostic; `--no-r2-cap` on `compressor_diag`) | off |
+| `GAZFLOW_SKIP_COMPRESSOR_OUTER` / `GAZFLOW_COMPRESSOR_OUTER` | Post-continuation compressor blend fallback | outer on for networks $\geq$ 200 nodes |
+| `GAZFLOW_COMPRESSOR_MAP_MODE` | `legacy` (blend) \| `measurement` (carte `.cs` + outer loop) \| `biquadratic` (alias measurement, coeffs GasLib à venir) | `legacy` |
+| `GAZFLOW_COMPRESSOR_OUTER_MAX_ITERS` | Plafond boucle externe ratio | 12 |
+| `GAZFLOW_COMPRESSOR_RELAX` | Relaxation $\omega$ pour mises à jour ratio | 0.5 |
+| `GAZFLOW_DISABLE_R2_CAP` | Désactive le plafond MVP $r^2 \leq 9$ ; aussi désactivé automatiquement en mode `measurement` | off |
+| `GAZFLOW_SKIP_CDF_ROUTING` / `GAZFLOW_SKIP_CDF` | Disable automatic `.cdf` routing | off (forced on by `compressor_diag`) |
+| `GAZFLOW_FORCE_CDF_ROUTING` | Run CDF screening on large connected baselines | off when baseline connected and N > 500 |
+| `GAZFLOW_ENABLE_LARGE_DATASET_TESTS` | Enable `test_solve_gaslib_582` / 4197 in `cargo test` | off in CI |
+| `GAZFLOW_REQUIRE_FULL_CONVERGENCE` | Strict large-dataset smoke (residual < tol, scale $\geq$ 0.999) | off (robust log-only) |
+
+See also the transport `.cdf` routing variables in the [GasLib datasets](#gaslib-datasets-smokescaling) section above.
+
 ## Validation pack (backend)
 
 Single script to run T1→T10 in sequence:
