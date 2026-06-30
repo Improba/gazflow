@@ -63,6 +63,18 @@ La recherche 1D + `effective_ratio_with_nominal` aligne la cible carte sur le li
 
 Leviers v4 : `guarded_compressor_ratio_step` (pas de baisse transport avant convergence), `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED=1` (défaut measurement/biquadratic), parsing turbo + eval biquadratique GasLib.
 
+## Résultats v12 (distribution sud + couplage pression/ratio, juin 2026)
+
+| Mode | Résidu | eval_q CS4/CS5 | `map_target` CS4/CS5 |
+|------|--------|----------------|----------------------|
+| measurement | **5,0 m³/s** | **~10,4** (was 45) | ~1,31 / ~1,46 |
+
+Leviers : zone locale distribution (hors voisinage CS transport), repli peer CS4→CS5, relaxation bidirectionnelle ratio si résidu bloqué, coefficient P² compresseur adouci vs ratio pression atteint (Newton).
+
+Résidu inchangé au plancher **5 m³/s** ; les ratios sud étaient sur-estimés (Q=45) et sont corrigés.
+
+Artefact : `/tmp/582-v12.json`.
+
 ## Résultats v11 (débit carte topologique hub/branche, juin 2026)
 
 | Mode | Résidu | `map_target` CS1 | CS2–3 | eval_q CS1 / CS2 |

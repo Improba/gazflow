@@ -346,6 +346,27 @@ pub(crate) fn compressor_pressure_from_coeff_with_options(
     }
 }
 
+const COMPRESSOR_ACHIEVED_RATIO_OVERSHOOT: f64 = 1.03;
+
+/// Adoucit le coefficient P² compresseur si la cible dépasse le ratio pression atteint.
+pub(crate) fn effective_compressor_pressure_from_coeff(
+    target_coeff: f64,
+    pressure_from_sq: f64,
+    pressure_to_sq: f64,
+) -> f64 {
+    if target_coeff <= 1.0 + 1e-9 || pressure_from_sq <= 1.0 {
+        return target_coeff;
+    }
+    let achieved_ratio = (pressure_to_sq / pressure_from_sq).sqrt().max(1.0);
+    let target_ratio = target_coeff.sqrt();
+    let cap_ratio = achieved_ratio * COMPRESSOR_ACHIEVED_RATIO_OVERSHOOT;
+    if target_ratio > cap_ratio {
+        cap_ratio.powi(2).max(1.0)
+    } else {
+        target_coeff
+    }
+}
+
 pub(crate) fn flow_reference_from_demands(demands: &[f64]) -> f64 {
     demands
         .iter()

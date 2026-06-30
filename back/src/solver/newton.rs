@@ -17,9 +17,9 @@ use super::gas_properties::{
 use super::iterative::solve_sparse_gmres_ilu0;
 use super::steady_state::{
     NondimScaling, PipeElevationContext, SolverControl, SolverProgress, SolverResult,
-    compressor_pressure_from_coeff_for_config, effective_pipe_geometry, flow_reference_from_demands,
-    pipe_flow_with_gravity, pipe_resistance_at_pressure_with_composition,
-    pressure_sq_reference_from_fixed,
+    compressor_pressure_from_coeff_for_config, effective_compressor_pressure_from_coeff,
+    effective_pipe_geometry, flow_reference_from_demands, pipe_flow_with_gravity,
+    pipe_resistance_at_pressure_with_composition, pressure_sq_reference_from_fixed,
 };
 
 const MIN_PRESSURE_SQ: f64 = 1.0;
@@ -770,6 +770,15 @@ fn pipe_flow_derivatives(
     let p_from = pressures_sq[pipe.from_idx].sqrt();
     let p_to = pressures_sq[pipe.to_idx].sqrt();
     let avg_p = 0.5 * (p_from + p_to);
+    let pressure_from_coeff = if pipe.pressure_from_coeff > 1.0 + 1e-6 {
+        effective_compressor_pressure_from_coeff(
+            pipe.pressure_from_coeff,
+            pressures_sq[pipe.from_idx],
+            pressures_sq[pipe.to_idx],
+        )
+    } else {
+        pipe.pressure_from_coeff
+    };
     // P7.7 : le Jacobian Newton garde Re=10⁷ (Q=0) pour la stabilité numérique ;
     // le Reynolds dynamique s'applique via pipe_resistance_hydraulic quand Q≠0.
     let resistance = pipe_resistance_at_pressure_with_composition(
@@ -787,7 +796,7 @@ fn pipe_flow_derivatives(
     let (q, conductance_from, conductance_to) = pipe_flow_with_gravity(
         pressures_sq[pipe.from_idx],
         pressures_sq[pipe.to_idx],
-        pipe.pressure_from_coeff,
+        pressure_from_coeff,
         resistance,
         scaling,
         PipeElevationContext {

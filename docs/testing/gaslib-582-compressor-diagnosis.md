@@ -49,4 +49,4 @@ Interprétation :
 2. Avec la sémantique corrigée, le solveur n'atteint plus ce faux équilibre ; le résidu remonte à **8,22 m³/s** (proche du no-cap v1–v4).
 3. `map_target` reste au catalogue **1,08** tant que Q compresseur ≈ 0 (échec Newton avant recouplage carte).
 
-Prochaine étape (post v11) : hydraulique MVP au-delà du ratio seul, ou affinage CS4/CS5 sud ; le plancher **5 m³/s** persiste malgré eval_q topologique correct.
+Prochaine étape (post v12) : bilan massique nodal (identifier le nœud à ~5 m³/s), hydraulique tête/vitesse dans Newton, ou nomination / slack.

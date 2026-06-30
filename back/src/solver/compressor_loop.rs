@@ -28,6 +28,7 @@ const CONTINUATION_HANDOFF_RELAX: f64 = 1.0;
 const MAP_REFINE_SCALES: &[f64] = &[0.92, 0.96, 1.0];
 const HANDOFF_PREFER_ESTIMATED_RESIDUAL: f64 = 7.0;
 const MAX_PLAUSIBLE_COMPRESSOR_FLOW_M3S: f64 = 250.0;
+const STUCK_RESIDUAL_RATIO_THRESHOLD: f64 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressorMapMode {
@@ -139,12 +140,18 @@ fn guarded_compressor_ratio_step(
         if !is_transport {
             return None;
         }
+        let cap = ctx.pressure_cap_ratio.min(MAX_COMPRESSOR_RATIO);
+        if ctx.allow_map_target && ctx.residual > ctx.tolerance * STUCK_RESIDUAL_RATIO_THRESHOLD {
+            let goal = map_target.clamp(ctx.nominal_ratio, cap);
+            let next =
+                (current + ctx.relax * (goal - current)).clamp(MIN_COMPRESSOR_RATIO, cap);
+            return ratio_step_if_changed(current, next);
+        }
         // Au nominal (allow_map_target), monter vers max(nominal, carte) sans jamais baisser.
         let upward_goal = map_target.max(ctx.nominal_ratio);
         if current >= upward_goal {
             return None;
         }
-        let cap = ctx.pressure_cap_ratio.min(MAX_COMPRESSOR_RATIO);
         let next = (current + ctx.relax * (upward_goal - current)).clamp(current, cap);
         return ratio_step_if_changed(current, next);
     }
@@ -199,7 +206,7 @@ pub fn estimated_compressor_map_flow_m3s(
         .filter(|p| p.kind == ConnectionKind::CompressorStation && p.hydraulically_active())
         .count();
     let total = estimate_total_delivery_flow_m3s(demands, demand_scale);
-    estimated_map_flow_m3s(network, pipe, total, active)
+    estimated_map_flow_m3s(network, pipe, total, active, Some(demands), demand_scale)
 }
 
 fn prefer_estimated_flow_for_map(result: &SolverResult, tolerance: f64) -> bool {
@@ -220,7 +227,14 @@ fn effective_flow_for_map_update(
     prefer_estimated: bool,
 ) -> f64 {
     let total = estimate_total_delivery_flow_m3s(demands, demand_scale);
-    let estimated = estimated_map_flow_m3s(network, pipe, total, active_compressors);
+    let estimated = estimated_map_flow_m3s(
+        network,
+        pipe,
+        total,
+        active_compressors,
+        Some(demands),
+        demand_scale,
+    );
     if prefer_estimated && estimated >= FLOW_UPDATE_THRESHOLD_M3S {
         return estimated;
     }
@@ -826,7 +840,7 @@ mod tests {
 
     #[test]
     fn guarded_ratio_transport_moves_upward_toward_nominal_before_convergence() {
-        let update = guarded_compressor_ratio_step(2.5, 1.5, ctx(1.0, 0.1, 1e-6, 4.09, 0.5))
+        let update = guarded_compressor_ratio_step(2.5, 1.5, ctx(1.0, 0.01, 1e-6, 4.09, 0.5))
             .expect("transport should update upward");
         assert!(update > 2.5);
         assert!(update <= 4.09);
@@ -834,8 +848,17 @@ mod tests {
 
     #[test]
     fn guarded_ratio_transport_blocks_downward_before_convergence() {
-        let update = guarded_compressor_ratio_step(4.2, 1.5, ctx(1.0, 0.1, 1e-6, 4.09, 0.5));
+        let update =
+            guarded_compressor_ratio_step(4.2, 1.5, ctx(1.0, 5e-6, 1e-6, 4.09, 0.5));
         assert!(update.is_none());
+    }
+
+    #[test]
+    fn guarded_ratio_stuck_allows_bidirectional_toward_map_target() {
+        let update = guarded_compressor_ratio_step(1.5, 1.1, ctx(1.0, 0.05, 1e-3, 1.08, 0.5))
+            .expect("stuck residual should relax toward map target");
+        assert!(update < 1.5);
+        assert!((update - 1.3).abs() < 1e-9);
     }
 
     #[test]
@@ -863,9 +886,11 @@ mod tests {
     }
 
     #[test]
-    fn guarded_ratio_transport_blocks_downward_toward_map_before_convergence() {
-        let update = guarded_compressor_ratio_step(1.2, 1.11, ctx(18.0, 8.0, 3e-3, 1.08, 0.5));
-        assert!(update.is_none());
+    fn guarded_ratio_stuck_relaxes_downward_toward_map_before_convergence() {
+        let update = guarded_compressor_ratio_step(1.2, 1.11, ctx(18.0, 8.0, 3e-3, 1.08, 0.5))
+            .expect("stuck transport should relax toward map target");
+        assert!(update < 1.2);
+        assert!((update - 1.155).abs() < 1e-9);
     }
 
     #[test]
