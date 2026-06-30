@@ -1193,7 +1193,6 @@ pub struct MassBalanceRefinementOutcome {
 pub fn solve_with_mass_balance_refinement<G>(
     base_network: &GasNetwork,
     scenario: &mut crate::gaslib::ScenarioDemands,
-    demands: &HashMap<String, f64>,
     preset: &crate::solver::presets::SolverPreset,
     gas_composition: GasComposition,
     mut on_first_continuation_step: Option<G>,
@@ -1201,7 +1200,10 @@ pub fn solve_with_mass_balance_refinement<G>(
 where
     G: FnMut(crate::solver::continuation::ContinuationStepEvent),
 {
-    use crate::gaslib::{network_with_scenario_boundaries, try_add_mass_balance_anchor};
+    use crate::gaslib::{
+        effective_solver_demands, network_with_scenario_boundaries, try_add_mass_balance_anchor,
+        try_relax_contract_boundary,
+    };
     use crate::solver::continuation::solve_steady_state_with_preset;
 
     let max_passes = std::env::var("GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES")
@@ -1210,9 +1212,10 @@ where
         .unwrap_or(4);
 
     let mut network = network_with_scenario_boundaries(base_network, scenario);
+    let mut demands = effective_solver_demands(&scenario.demands, scenario);
     let mut result = solve_steady_state_with_preset(
         &network,
-        demands,
+        &demands,
         None,
         preset,
         gas_composition,
@@ -1223,25 +1226,30 @@ where
     let mut refinement_passes = 0usize;
     while refinement_passes < max_passes && result.residual >= preset.tolerance {
         let prev_residual = result.residual;
-        let report = mass_balance_report(&network, demands, &result);
+        let report = mass_balance_report(&network, &demands, &result);
         let imbalances: Vec<_> = report
             .top_free_imbalances
             .iter()
             .map(|n| (n.node_id.clone(), n.imbalance_m3s))
             .collect();
         let anchors_before = scenario.mass_balance_anchors.len();
-        if !try_add_mass_balance_anchor(
-            base_network,
-            scenario,
-            &imbalances,
-            Some(&result.pressures),
-        ) {
+        let relaxed_before = scenario.contract_flow_relaxed.len();
+        let contract_anchors_before = scenario.contract_pressure_anchors.len();
+        let refined = try_relax_contract_boundary(scenario, &imbalances, &result.pressures)
+            || try_add_mass_balance_anchor(
+                base_network,
+                scenario,
+                &imbalances,
+                Some(&result.pressures),
+            );
+        if !refined {
             break;
         }
         network = network_with_scenario_boundaries(base_network, scenario);
+        demands = effective_solver_demands(&scenario.demands, scenario);
         result = solve_steady_state_with_preset(
             &network,
-            demands,
+            &demands,
             None,
             preset,
             gas_composition,
@@ -1250,7 +1258,14 @@ where
         )?;
         if result.residual + 1e-6 >= prev_residual {
             scenario.mass_balance_anchors.truncate(anchors_before);
-            break;
+            let contract_added = scenario.contract_flow_relaxed.len() > relaxed_before;
+            if !contract_added {
+                scenario.contract_flow_relaxed.truncate(relaxed_before);
+                scenario
+                    .contract_pressure_anchors
+                    .truncate(contract_anchors_before);
+                break;
+            }
         }
         refinement_passes += 1;
     }

@@ -2,23 +2,24 @@
 
 Protocole figé : `compressor_diag`, réseau baseline connecté, CDF off, scénario `nomination_mild_618.scn`, slack pression retiré des demandes, preset `robust` (release).
 
-## Synthèse (état au commit `3e05662`, v17)
+## Synthèse (v18, juin 2026)
 
 | Indicateur | Valeur |
 |------------|--------|
-| Résidu measurement (mild_618) | **~2,0 m³/s** |
+| Résidu measurement (mild_618) | **~2,0 m³/s** (2,000 vs 2,045 v17) |
 | Tolérance preset robust | **3×10⁻³ m³/s** |
-| Convergence stricte | Non (partial accept) |
-| Pire nœud libre | `sink_24` (−2 m³/s, Q imposé) |
+| Convergence stricte | Non (partial accept ~2 m³/s) |
+| Pire nœud libre | `innode_402` (extrémité compresseur) |
+| Boundaries assouplies (v18) | `sink_24`, `source_20`, `sink_114`, `sink_120` |
 | Objectif Phase I | 3×10⁻³ m³/s |
 
 Progression du plancher :
 
 ```
-8,2 → 5,0 (v4) → 3,0 (v13) → 2,0 (v14–v17)
+8,2 → 5,0 (v4) → 3,0 (v13) → 2,045 (v14–v17) → ~2,000 (v18)
 ```
 
-Leviers épuisés pour le plancher 2 m³/s : ancrages pression (v13–v16), couplage carte in-Newton (v17). Goulot restant : boundaries avec **Q imposé** (`sink_24`, `source_20`, …) et modèle MVP P² compresseur.
+v18 : assouplissement itératif Q contractuel (`try_relax_contract_boundary`) dans `solve_with_mass_balance_refinement` — retire le débit nominatif sur les pires `source_*`/`sink_*` (max 3/passe, 4 passes). Gain marginal ; plancher ~2 m³/s lié au partial accept et au MVP P² compresseur.
 
 Référence architecture : [gaslib-582-compressor-diagnosis.md](./gaslib-582-compressor-diagnosis.md).
 
@@ -91,6 +92,17 @@ Artefact de référence v17 : `/tmp/582-v17.json`.
 
 ## Détail par version
 
+### v18 — assouplissement contractuel Q (itératif)
+
+`effective_solver_demands` + `try_relax_contract_boundary` : retire le Q nominatif sur les pires boundaries (`source_*`/`sink_*`, |imbalance| ≥ 1,5 m³/s), max 3/passe, 4 passes. JSON diag : `contract_flow_relaxed`.
+
+| Indicateur | mild_618 |
+|------------|----------|
+| Résidu | **~2,000 m³/s** (vs 2,045 v17) |
+| Boundaries assouplies | `sink_24`, `source_20`, `sink_114`, `sink_120` |
+
+Assouplissement massif upfront (`GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS=1`, 29 nœuds) : résidu **~2,11 m³/s** (dégradation).
+
 ### v17 — carte compresseur in-Newton
 
 | Mode | Résidu |
@@ -138,7 +150,8 @@ Cap r²≤9 stabilise Newton (5 vs 8,2) mais empêche ratio nominal `.net`. Oute
 2. **Option 1 ratio** : `compressor_ratio_max` ← `.cs` (~1,08), `compressor_pressure_cap_ratio` ← `.net` (4,09). Le 4,09 n'est pas un DOF d'exploitation.
 3. **Ancrages pression (v13–v16)** : corrigent les junctions sous-déterminées Q≈0 ; gain 5 → 2 m³/s ; sur-ancrage dégrade.
 4. **Couplage Q–ratio (outer + in-Newton)** : ratios carte cohérents (~1,46 transport) ; plancher 2 m³/s persiste car partial accept + boundaries Q imposées.
-5. **Prochain levier (v18+)** : assouplissement P/Q contractuel GasLib ou modèle compresseur au-delà du MVP P².
+5. **Assouplissement contractuel (v18)** : retrait Q itératif sur 4 boundaries ; gain marginal (2,045 → 2,000) ; partial accept ~2 m³/s persiste.
+6. **Prochain levier (v19+)** : modèle compresseur enthalpique in-Newton ou convergence stricte (partial accept).
 
 ## Test intégration
 

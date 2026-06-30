@@ -83,6 +83,10 @@ pub struct ScenarioDemands {
     pub mass_balance_anchors: Vec<PressureSlackHint>,
     /// Boundaries nominalement à Q=0 (entries/exits).
     pub zero_flow_boundary_anchors: Vec<ZeroFlowBoundaryAnchor>,
+    /// Entries/exits dont le débit nominatif est retiré avant solve (assouplissement P/Q contractuel).
+    pub contract_flow_relaxed: Vec<String>,
+    /// Pression fixée lors de l'assouplissement contractuel (typ. pression résolue partielle).
+    pub contract_pressure_anchors: Vec<PressureSlackHint>,
 }
 
 /// Applique les conditions aux limites du scénario au réseau (slack pression + hub balance).
@@ -122,22 +126,46 @@ pub fn apply_scenario_boundaries(network: &mut GasNetwork, scenario: &ScenarioDe
             }
         }
     }
+    for anchor in &scenario.contract_pressure_anchors {
+        if let Some(node) = network.node_mut(&anchor.node_id) {
+            if node.pressure_fixed_bar.is_none() {
+                node.pressure_fixed_bar = Some(anchor.pressure_bar);
+            }
+        }
+    }
 }
 
-/// Retire la demande imposée sur le nœud slack pression.
+fn contract_boundary_refinement_enabled() -> bool {
+    std::env::var("GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT")
+        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(true)
+}
+
+/// Retire la demande imposée sur le nœud slack pression et les boundaries contractuels assouplis.
 ///
 /// Sur un réseau transport GasLib, le débit au point de référence pression est
 /// une inconnue du solveur : imposer P et Q simultanément sur-contrainte le système.
+/// Idem pour les entries/exits avec enveloppe pression scénario + Q nominatif (v18).
+pub fn effective_solver_demands(
+    demands: &HashMap<String, f64>,
+    scenario: &ScenarioDemands,
+) -> HashMap<String, f64> {
+    let mut adjusted = demands.clone();
+    if let Some(slack) = scenario.pressure_slack.as_ref() {
+        adjusted.remove(&slack.node_id);
+    }
+    for node_id in &scenario.contract_flow_relaxed {
+        adjusted.remove(node_id);
+    }
+    adjusted
+}
+
+/// Alias historique — préférer [`effective_solver_demands`].
 pub fn demands_without_pressure_slack(
     demands: &HashMap<String, f64>,
     scenario: &ScenarioDemands,
 ) -> HashMap<String, f64> {
-    let Some(slack) = scenario.pressure_slack.as_ref() else {
-        return demands.clone();
-    };
-    let mut adjusted = demands.clone();
-    adjusted.remove(&slack.node_id);
-    adjusted
+    effective_solver_demands(demands, scenario)
 }
 
 /// Charge un fichier GasLib `.scn` et retourne les demandes nodales.
@@ -178,7 +206,64 @@ fn parse_scenario_demands_from_str(xml: &str) -> Result<ScenarioDemands> {
         boundary_spine_anchors: Vec::new(),
         mass_balance_anchors: Vec::new(),
         zero_flow_boundary_anchors: collect_zero_flow_boundary_anchors(nodes),
+        contract_flow_relaxed: initial_contract_flow_relaxed(nodes),
+        contract_pressure_anchors: Vec::new(),
     })
+}
+
+fn dual_pressure_contract_relaxation_enabled() -> bool {
+    std::env::var("GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Entries/exits avec débit nominatif et enveloppe pression scénario (lower+upper).
+fn detect_dual_pressure_contract_flow_nodes(
+    nodes: &[XmlScenarioNode],
+    slack_id: Option<&str>,
+) -> Vec<String> {
+    nodes
+        .iter()
+        .filter_map(|node| {
+            let node_type = node.node_type.as_deref();
+            if node_type != Some("entry") && node_type != Some("exit") {
+                return None;
+            }
+            let flow_mag = extract_flow_value(&node.flows).unwrap_or(0.0).abs();
+            if flow_mag < 1e-6 {
+                return None;
+            }
+            if slack_id == Some(node.id.as_str()) {
+                return None;
+            }
+            let mut has_lower = false;
+            let mut has_upper = false;
+            for p in &node.pressures {
+                match p.bound.as_deref() {
+                    Some("lower") => has_lower = true,
+                    Some("upper") => has_upper = true,
+                    Some("both") => {
+                        has_lower = true;
+                        has_upper = true;
+                    }
+                    _ => {}
+                }
+            }
+            if has_lower && has_upper {
+                Some(node.id.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn initial_contract_flow_relaxed(nodes: &[XmlScenarioNode]) -> Vec<String> {
+    if !dual_pressure_contract_relaxation_enabled() {
+        return Vec::new();
+    }
+    let slack_id = detect_pressure_slack(nodes).map(|s| s.node_id);
+    detect_dual_pressure_contract_flow_nodes(nodes, slack_id.as_deref())
 }
 
 fn collect_zero_flow_boundary_anchors(nodes: &[XmlScenarioNode]) -> Vec<ZeroFlowBoundaryAnchor> {
@@ -294,7 +379,69 @@ fn all_applied_anchor_ids(scenario: &ScenarioDemands) -> std::collections::HashS
         .chain(scenario.boundary_spine_anchors.iter().map(|h| h.node_id.clone()))
         .chain(scenario.junction_anchors.iter().map(|h| h.node_id.clone()))
         .chain(scenario.mass_balance_anchors.iter().map(|h| h.node_id.clone()))
+        .chain(scenario.contract_pressure_anchors.iter().map(|h| h.node_id.clone()))
         .collect()
+}
+
+const MIN_CONTRACT_RELAX_IMBALANCE_M3S: f64 = 1.5;
+const MAX_CONTRACT_RELAX_PER_PASS: usize = 3;
+
+fn contract_fix_pressure_on_relax() -> bool {
+    std::env::var("GAZFLOW_CONTRACT_FIX_PRESSURE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Assouplit une ou plusieurs boundaries contractuelles : retire Q (P fixe optionnel).
+pub fn try_relax_contract_boundary(
+    scenario: &mut ScenarioDemands,
+    top_imbalances: &[(String, f64)],
+    solved_pressures: &HashMap<String, f64>,
+) -> bool {
+    if !contract_boundary_refinement_enabled() {
+        return false;
+    }
+    let slack_id = scenario
+        .pressure_slack
+        .as_ref()
+        .map(|s| s.node_id.as_str());
+    let relaxed_at_start = scenario.contract_flow_relaxed.len();
+    let mut relaxed = false;
+    for (node_id, imbalance) in top_imbalances {
+        if scenario.contract_flow_relaxed.len() >= relaxed_at_start + MAX_CONTRACT_RELAX_PER_PASS {
+            break;
+        }
+        if imbalance.abs() < MIN_CONTRACT_RELAX_IMBALANCE_M3S {
+            continue;
+        }
+        if !node_id.starts_with("source_") && !node_id.starts_with("sink_") {
+            continue;
+        }
+        if Some(node_id.as_str()) == slack_id {
+            continue;
+        }
+        if scenario.contract_flow_relaxed.iter().any(|id| id == node_id) {
+            continue;
+        }
+        scenario.contract_flow_relaxed.push(node_id.clone());
+        if contract_fix_pressure_on_relax() {
+            if let Some(pressure_bar) = solved_pressures
+                .get(node_id)
+                .copied()
+                .filter(|p| p.is_finite() && *p > 0.0)
+            {
+                scenario.contract_pressure_anchors.push(PressureSlackHint {
+                    node_id: node_id.clone(),
+                    pressure_bar,
+                });
+            }
+        }
+        relaxed = true;
+        if scenario.contract_flow_relaxed.len() >= relaxed_at_start + MAX_CONTRACT_RELAX_PER_PASS {
+            break;
+        }
+    }
+    relaxed
 }
 
 /// Clone réseau baseline avec toutes les conditions aux limites scénario appliquées.
@@ -775,6 +922,8 @@ mod tests {
             boundary_spine_anchors: Vec::new(),
             mass_balance_anchors: Vec::new(),
             zero_flow_boundary_anchors: Vec::new(),
+            contract_flow_relaxed: Vec::new(),
+            contract_pressure_anchors: Vec::new(),
         };
 
         apply_scenario_boundaries(&mut net, &scenario);
@@ -858,9 +1007,60 @@ mod tests {
             boundary_spine_anchors: Vec::new(),
             mass_balance_anchors: Vec::new(),
             zero_flow_boundary_anchors: Vec::new(),
+            contract_flow_relaxed: Vec::new(),
+            contract_pressure_anchors: Vec::new(),
         };
-        let adjusted = demands_without_pressure_slack(&demands, &scenario);
+        let adjusted = effective_solver_demands(&demands, &scenario);
         assert!(!adjusted.contains_key("sink_109"));
+    }
+
+    #[test]
+    fn test_effective_solver_demands_contract_relaxed() {
+        let mut demands = HashMap::new();
+        demands.insert("sink_24".into(), -5.0);
+        let scenario = ScenarioDemands {
+            scenario_id: None,
+            demands: demands.clone(),
+            pressure_slack: None,
+            balance_hubs: Vec::new(),
+            junction_anchors: Vec::new(),
+            boundary_spine_anchors: Vec::new(),
+            mass_balance_anchors: Vec::new(),
+            zero_flow_boundary_anchors: Vec::new(),
+            contract_flow_relaxed: vec!["sink_24".into()],
+            contract_pressure_anchors: Vec::new(),
+        };
+        let adjusted = effective_solver_demands(&demands, &scenario);
+        assert!(!adjusted.contains_key("sink_24"));
+    }
+
+    #[test]
+    fn test_try_relax_contract_boundary() {
+        let mut scenario = ScenarioDemands {
+            scenario_id: None,
+            demands: HashMap::new(),
+            pressure_slack: Some(PressureSlackHint {
+                node_id: "sink_109".into(),
+                pressure_bar: 51.0,
+            }),
+            balance_hubs: Vec::new(),
+            junction_anchors: Vec::new(),
+            boundary_spine_anchors: Vec::new(),
+            mass_balance_anchors: Vec::new(),
+            zero_flow_boundary_anchors: Vec::new(),
+            contract_flow_relaxed: Vec::new(),
+            contract_pressure_anchors: Vec::new(),
+        };
+        let mut pressures = HashMap::new();
+        pressures.insert("sink_24".into(), 45.0);
+        let imbalances = vec![("sink_24".into(), -2.0)];
+        assert!(try_relax_contract_boundary(
+            &mut scenario,
+            &imbalances,
+            &pressures
+        ));
+        assert_eq!(scenario.contract_flow_relaxed, vec!["sink_24"]);
+        assert!(scenario.contract_pressure_anchors.is_empty());
     }
 
     #[test]

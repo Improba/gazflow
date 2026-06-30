@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use gazflow_back::compressor::{CompressorOperatingContext, effective_ratio_with_nominal};
 use gazflow_back::gaslib::{
-    apply_scenario_boundaries, demands_without_pressure_slack, enrich_scenario_with_balance_hub,
+    apply_scenario_boundaries, effective_solver_demands, enrich_scenario_with_balance_hub,
     load_network, load_scenario_demands,
 };
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
@@ -85,6 +85,8 @@ struct DiagOutput {
     mass_balance_refinement_passes: Option<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     mass_balance_anchors: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    contract_flow_relaxed: Vec<String>,
 }
 
 fn parse_residual_from_error(err: &str) -> Option<f64> {
@@ -351,6 +353,7 @@ fn skipped_output(
         mass_balance: None,
         mass_balance_refinement_passes: None,
         mass_balance_anchors: Vec::new(),
+        contract_flow_relaxed: Vec::new(),
     }
 }
 
@@ -442,18 +445,17 @@ fn main() -> Result<()> {
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;
     enrich_scenario_with_balance_hub(&base_network, &mut scenario);
-    let demands = demands_without_pressure_slack(&scenario.demands, &scenario);
 
     let preset = preset_robust(base_network.node_count());
     let mut continuation_scales = Vec::new();
     let refinement_outcome = solve_with_mass_balance_refinement(
         &base_network,
         &mut scenario,
-        &demands,
         &preset,
         GasComposition::pure_ch4(),
         Some(|ev: ContinuationStepEvent| continuation_scales.push(ev.scale)),
     );
+    let demands = effective_solver_demands(&scenario.demands, &scenario);
     let (network, solve_result, refinement_passes) = match refinement_outcome {
         Ok(outcome) => (
             outcome.network,
@@ -471,6 +473,7 @@ fn main() -> Result<()> {
         .iter()
         .map(|a| a.node_id.clone())
         .collect();
+    let contract_flow_relaxed: Vec<String> = scenario.contract_flow_relaxed.clone();
 
     let stations = match &solve_result {
         Ok(result) => {
@@ -534,6 +537,7 @@ fn main() -> Result<()> {
                 mass_balance,
                 mass_balance_refinement_passes: Some(refinement_passes),
                 mass_balance_anchors: mass_balance_anchor_ids.clone(),
+                contract_flow_relaxed: contract_flow_relaxed.clone(),
             }
         }
         Err(err) => {
@@ -555,6 +559,7 @@ fn main() -> Result<()> {
                 mass_balance: None,
                 mass_balance_refinement_passes: Some(refinement_passes),
                 mass_balance_anchors: mass_balance_anchor_ids,
+                contract_flow_relaxed,
             }
         }
     };

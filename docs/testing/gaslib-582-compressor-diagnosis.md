@@ -2,13 +2,14 @@
 
 Document de référence architecture et décisions. Bench chiffré : [gaslib-582-compressor-bench.md](./gaslib-582-compressor-bench.md).
 
-## État actuel (v17)
+## État actuel (v18)
 
 | | |
 |--|--|
-| Résidu measurement | **~2,0 m³/s** |
+| Résidu measurement | **~2,0 m³/s** (2,000 vs 2,045 v17) |
 | Tolérance cible | 3×10⁻³ m³/s |
-| Pire nœud | `sink_24` (exit, Q=17,9 m³/s imposé) |
+| Pire nœud | `innode_402` (extrémité compresseur) |
+| Boundaries assouplies | `sink_24`, `source_20`, `sink_114`, `sink_120` |
 | Statut solve | partial accept (`accept_partial_solution` en outer loop) |
 
 ## Décision structurante : Option 1
@@ -107,12 +108,25 @@ Résultat mild_618 : **identique** à outer loop seul (2,0 m³/s) — les ratios
 | v4 | 5,0 | garde outer loop |
 | v13 | 3,0 | hub `sink_2` |
 | v14 | 2,0 | junction `innode_381` |
-| v15–v17 | 2,0 | spine, mass refine, in-Newton map |
+| v15–v17 | 2,045 | spine, mass refine, in-Newton map |
+| v18 | **~2,000** | assouplissement Q contractuel (4 boundaries) |
 
-## Prochaines étapes (v18+)
+## Assouplissement contractuel (v18)
 
-1. **Assouplissement P/Q contractuel** : entries/exits GasLib avec P_min + Q (ex. `source_20`, `sink_24`) — retirer Q ou fixer P depuis scénario, pas les deux.
-2. **Modèle compresseur complet** : tête adiabatique + rendement in-Newton avec Jacobian couplé (au-delà MVP ratio P²).
-3. **Convergence stricte** : investiguer partial accept à 2 m³/s (2400 iter preset robust) vs relâcher tolérance smoke pour bench.
+`effective_solver_demands` retire le Q imposé pour :
+
+- slack pression (`sink_109`, déjà v13+)
+- boundaries listées dans `contract_flow_relaxed` (ajoutées itérativement par `try_relax_contract_boundary`)
+
+Heuristique : pires `source_*`/`sink_*` avec |imbalance| ≥ 1,5 m³/s, max 3/passe, jusqu'à `GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES` (défaut 4). Les assouplissements contractuels sont conservés même si le résidu ne baisse pas immédiatement ; les ancrages `innode_*` sont revertés si pas d'amélioration.
+
+Option expérimentale : `GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS=1` retire le Q de toutes les entries/exits à enveloppe pression lower+upper (29 nœuds mild_618) — **dégrade** le résidu (~2,11 m³/s).
+
+Env : `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=0` désactive v18 ; `GAZFLOW_CONTRACT_FIX_PRESSURE=1` fixe P à la pression résolue lors de l'assouplissement (défaut : Q seul).
+
+## Prochaines étapes (v19+)
+
+1. **Modèle compresseur complet** : tête adiabatique + rendement in-Newton avec Jacobian couplé (au-delà MVP ratio P²).
+2. **Convergence stricte** : investiguer partial accept à ~2 m³/s (2400 iter preset robust) vs relâcher tolérance smoke pour bench.
 
 Objectif Phase I : **2 → 3×10⁻³ m³/s** sur mild_618.
