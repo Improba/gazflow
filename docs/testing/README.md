@@ -193,21 +193,24 @@ cargo run --bin compressor_diag -- GasLib-582 --json /tmp/582-diag.json --csv /t
 
 If `dat/GasLib-582.net` or a scenario file is missing, the binary exits gracefully with `status: "skipped"` JSON (no solve).
 
-Output JSON fields: `residual`, `demand_scale`, `compressor_stations` (per-station `flow_m3s`, `ratio_max`, `effective_r2`), and `flags` used.
+Output JSON fields: `residual`, `demand_scale`, `continuation_scales`, `mass_balance` (with `worst_free_node`, `top_free_imbalances`), `mass_balance_refinement_passes`, `mass_balance_anchors`, `compressor_stations` (per-station `flow_m3s`, `ratio_max`, `effective_r2`, `map_target_ratio`, `map_eval_q_m3s`), and `flags` used.
 
-Bench results (I-A0, juin 2026) : [gaslib-582-compressor-bench.md](./gaslib-582-compressor-bench.md).
+Current bench (mild_618, measurement, v17): residual **~2.0 m³/s** (partial accept; target 3×10⁻³). See [gaslib-582-compressor-bench.md](./gaslib-582-compressor-bench.md) for full progression v1–v17.
+
+Bench results (I-A0, juin 2026) : [gaslib-582-compressor-bench.md](./gaslib-582-compressor-bench.md). Architecture : [gaslib-582-compressor-diagnosis.md](./gaslib-582-compressor-diagnosis.md).
 
 ### GAZFLOW_* flags (compressor / large transport)
 
 | Variable | Role | Default |
 |----------|------|---------|
-| `GAZFLOW_DISABLE_R2_CAP` | Disable MVP $r^2 \leq 9$ attenuation for `ratio > 3` (H2 diagnostic; `--no-r2-cap` on `compressor_diag`) | off |
+| `GAZFLOW_DISABLE_R2_CAP` | Disable MVP $r^2 \leq 9$ attenuation for `ratio > 3` (H2 ; `--no-r2-cap`) ; aussi off en mode `measurement` | off |
 | `GAZFLOW_SKIP_COMPRESSOR_OUTER` / `GAZFLOW_COMPRESSOR_OUTER` | Post-continuation compressor blend fallback | outer on for networks $\geq$ 200 nodes |
 | `GAZFLOW_COMPRESSOR_MAP_MODE` | `legacy` (blend) \| `measurement` (carte `.cs` + outer loop) \| `biquadratic` (coeffs `n_isoline` GasLib) | `legacy` |
 | `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED` | Garde r²≤9 jusqu'à residual ≤ 10× tol (measurement/biquadratic) | `1` en mode carte |
 | `GAZFLOW_COMPRESSOR_OUTER_MAX_ITERS` | Plafond boucle externe ratio | 12 |
 | `GAZFLOW_COMPRESSOR_RELAX` | Relaxation $\omega$ pour mises à jour ratio | 0.5 |
-| `GAZFLOW_DISABLE_R2_CAP` | Désactive le plafond MVP $r^2 \leq 9$ ; aussi désactivé automatiquement en mode `measurement` | off |
+| `GAZFLOW_NEWTON_COMPRESSOR_MAP` | Recouplage carte tête/vitesse à chaque itération Newton (measurement/biquadratic) | `1` en mode carte |
+| `GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES` | Passes post-solve d'ancrage pression guidé par bilan massique (582 transport) | 4 |
 | `GAZFLOW_SKIP_CDF_ROUTING` / `GAZFLOW_SKIP_CDF` | Disable automatic `.cdf` routing | off (forced on by `compressor_diag`) |
 | `GAZFLOW_FORCE_CDF_ROUTING` | Run CDF screening on large connected baselines | off when baseline connected and N > 500 |
 | `GAZFLOW_ENABLE_LARGE_DATASET_TESTS` | Enable `test_solve_gaslib_582` / 4197 in `cargo test` | off in CI |

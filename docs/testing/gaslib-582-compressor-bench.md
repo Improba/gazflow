@@ -1,231 +1,145 @@
-# GasLib-582 — bench compresseur (I-A0, juin 2026)
+# GasLib-582 — bench compresseur (Phase I, juin 2026)
 
-Protocole : `compressor_diag`, réseau baseline, CDF off, `nomination_mild_618.scn`, slack retiré, `preset_robust` (release).
+Protocole figé : `compressor_diag`, réseau baseline connecté, CDF off, scénario `nomination_mild_618.scn`, slack pression retiré des demandes, preset `robust` (release).
 
-Commandes :
+## Synthèse (état au commit `3e05662`, v17)
+
+| Indicateur | Valeur |
+|------------|--------|
+| Résidu measurement (mild_618) | **~2,0 m³/s** |
+| Tolérance preset robust | **3×10⁻³ m³/s** |
+| Convergence stricte | Non (partial accept) |
+| Pire nœud libre | `sink_24` (−2 m³/s, Q imposé) |
+| Objectif Phase I | 3×10⁻³ m³/s |
+
+Progression du plancher :
+
+```
+8,2 → 5,0 (v4) → 3,0 (v13) → 2,0 (v14–v17)
+```
+
+Leviers épuisés pour le plancher 2 m³/s : ancrages pression (v13–v16), couplage carte in-Newton (v17). Goulot restant : boundaries avec **Q imposé** (`sink_24`, `source_20`, …) et modèle MVP P² compresseur.
+
+Référence architecture : [gaslib-582-compressor-diagnosis.md](./gaslib-582-compressor-diagnosis.md).
+
+## Commandes
 
 ```bash
 cd back && cargo build --release --bin compressor_diag
-./target/release/compressor_diag GasLib-582 --json /tmp/baseline.json
-./target/release/compressor_diag GasLib-582 --no-r2-cap --json /tmp/no-r2-cap.json
-./target/release/compressor_diag GasLib-582 --map-mode measurement --json /tmp/measurement.json
+
+# Baseline legacy (cap r² actif)
+GAZFLOW_COMPRESSOR_MAP_MODE=legacy ./target/release/compressor_diag GasLib-582 --json /tmp/582-legacy.json
+
+# Mode measurement (défaut Phase I)
+GAZFLOW_COMPRESSOR_MAP_MODE=measurement ./target/release/compressor_diag GasLib-582 --json /tmp/582-measurement.json
+
+# Diagnostic H2 (sans cap r²)
+./target/release/compressor_diag GasLib-582 --no-r2-cap --json /tmp/582-no-r2-cap.json
+
+# Biquadratique GasLib (coeffs n_isoline)
+GAZFLOW_COMPRESSOR_MAP_MODE=biquadratic ./target/release/compressor_diag GasLib-582 --json /tmp/582-biquad.json
 ```
 
-## Résultats v1 (build release, ~48 s par run)
+Durée typique : ~60–90 s/run (582, release).
 
-| Variante | Résidu (dernier Newton) | Tolérance preset | Convergence | effective r² (st. 1–3) | Verdict H2 |
-|----------|-------------------------|------------------|-------------|-------------------------|------------|
-| **Baseline** (cap r²≤9 actif) | **5,0 m³/s** | 3×10⁻³ | Non | 9,0 (~ratio eff. 3) | — |
-| **`--no-r2-cap`** | **8,22 m³/s** | 3×10⁻³ | Non | 16,75 (~ratio eff. 4,09) | Cap **aide** la stabilité numérique |
-| **`measurement`** (env v1) | **8,22 m³/s** | 3×10⁻³ | Non | 16,75 | Identique no-cap (diag sans boucle carte) |
+## Variables d'environnement (Phase I)
 
-## Résultats v2 (continuation + outer loop sur échec, diag enrichi, ~42–64 s/run)
+| Variable | Rôle | Défaut measurement |
+|----------|------|---------------------|
+| `GAZFLOW_COMPRESSOR_MAP_MODE` | `legacy` \| `measurement` \| `biquadratic` | — |
+| `GAZFLOW_NEWTON_COMPRESSOR_MAP` | Carte tête/vitesse recouplée à chaque itération Newton | `1` |
+| `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED` | Plafond r²≤9 jusqu'à convergence | `1` |
+| `GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES` | Passes post-solve d'ancrage massique | `4` |
+| `GAZFLOW_DISABLE_R2_CAP` | Désactive atténuation r² transport (H2) | off |
+| `GAZFLOW_COMPRESSOR_OUTER_MAX_ITERS` | Itérations boucle externe ratio | 12 |
+| `GAZFLOW_COMPRESSOR_RELAX` | Relaxation ω mise à jour ratio | 0.5 |
 
-Après intégration de `solve_with_compressor_loop` dans le chemin d’échec continuation (`continuation.rs`) et `--map-mode` sur `compressor_diag` (JSON : `continuation_scales`, `map_target_ratio`, `catalog_stations`).
+Voir aussi [README testing](./README.md#gasflow_-flags-compressor--large-transport).
 
-| Variante | Résidu (dernier Newton) | Convergence | effective r² (st. 1–3) | map_target_ratio (st. 1–3) | Notes |
-|----------|-------------------------|-------------|-------------------------|----------------------------|-------|
-| **Baseline** (`legacy`) | **5,0 m³/s** | Non | 9,0 | ~1,08 | Continuation atteint scale=1,0 puis échec Newton nominal |
-| **`--no-r2-cap`** | **8,22 m³/s** | Non | 16,75 | ~1,08 | Dégradation identique v1 |
-| **`--map-mode measurement`** | **8,22 m³/s** | Non | 16,75 | ~1,08 | Outer loop sur échec continuation ; pas d’amélioration vs no-cap |
+## Champs JSON `compressor_diag`
 
-Observations v2 :
+| Champ | Description |
+|-------|-------------|
+| `residual` | Résidu Newton final (max \|f_node\| nœuds libres) |
+| `demand_scale` | Palier continuation atteint (1,0 = nominal) |
+| `continuation_scales` | Historique des paliers continuation |
+| `mass_balance` | Bilan massique post-solve (`worst_free_node`, `top_free_imbalances`) |
+| `mass_balance_refinement_passes` | Passes d'ancrage massique (v16+) |
+| `mass_balance_anchors` | Innodes ancrés dynamiquement (v16+) |
+| `compressor_stations[]` | `flow_m3s`, `ratio_max`, `effective_r2`, `map_target_ratio`, `map_eval_q_m3s` |
+| `flags` | `map_mode`, `disable_r2_cap`, `catalog_stations`, `preset` |
 
-1. Les **18 paliers** de continuation sont identiques entre variantes (cf. `continuation_scales` dans le JSON).
-2. **`map_target_ratio`** ~1,08 sur st. 1–3 indique que la carte vise un ratio bien en dessous du plafond `.net` (~4,09) au débit nul post-échec ; la boucle externe n’a pas le temps de recoupler Q–ratio au nominal.
-3. Flux compresseurs **0 m³/s** dans le JSON car le solve échoue avant état convergé.
+Artefact de référence v17 : `/tmp/582-v17.json`.
 
-## Interprétation
+## Progression chronologique (résidu mild_618)
 
-1. **H2 (cap MVP dominant)** : **non confirmée** comme cause unique de l’échec. Retirer le cap **dégrade** le résidu (5 → 8,2 m³/s) : le plafond stabilise Newton mais empêche le ratio nominal `.net` sur les stations transport.
-2. **Boucle carte v2** : l’outer loop sur échec continuation **ne compense pas** la perte de stabilité liée au cap r² ; résidu measurement = no-cap.
-3. **Cause dominante actuelle** : modèle compresseur + couplage Q–ratio encore insuffisant ; résidu massique O(1–8 m³/s) au nominal.
-4. **Prochaine mesure (I-A)** : coeffs biquadratiques GasLib, sélection `confId`, faisabilité surgeline/chokeline, vitesse $n$ libre ; objectif convergence 582 ou blocage documenté.
+| v | Résidu | Levier principal |
+|---|--------|------------------|
+| v1 | 5,0 / 8,2 | cap r² MVP ; diag sans outer loop |
+| v2–v3 | 5,0 / 8,2 | outer loop continuation ; recherche 1D vitesse |
+| v4 | **5,0** | garde outer loop + r² hybride ; fin régression 8,22 |
+| v6 | 8,22 | Option 1 : ratio `.cs` vs cap `.net` séparés |
+| v7–v8 | 8,22 | recouplage Q estimé ; fix confId turbo |
+| v9–v10 | **5,0** | handoff carte ; split hub naïf |
+| v11 | 5,0 | débit carte topologique hub/branche (CS1=90, CS2/3=45) |
+| v12 | 5,0 | distribution sud locale ; Newton P² adaptatif |
+| **v13** | **3,0** | `mass_balance_report` + balance hubs (`sink_2`, `sink_96`) |
+| **v14** | **2,0** | boundaries Q≈0 entries+exits ; junctions mixtes |
+| v15 | 2,0 | spine `source_17` ; junctions degré 3 ; exclusion CS endpoints |
+| v16 | 2,0 | raffinement massique itératif + exit-hub (`innode_315`) |
+| **v17** | **2,0** | carte compresseur in-Newton (tête/vitesse → ratio P²) |
 
-Artefacts JSON v2 : `/tmp/gazflow-582-bench-v3/{baseline,measurement}.json` (machine locale).
+## Détail par version
 
-## Résultats v3 (recherche 1D vitesse + garde nominal transport, juin 2026)
+### v17 — carte compresseur in-Newton
 
-| Variante | Résidu | map_target_ratio (st. 1–3, Q=0 post-échec) |
-|----------|--------|-----------------------------------------------|
-| Baseline | 5,0 m³/s | **4,09** (nominal `.net`, plus 1,08) |
-| measurement | 8,22 m³/s | **4,09** |
+| Mode | Résidu |
+|------|--------|
+| measurement, `GAZFLOW_NEWTON_COMPRESSOR_MAP=1` (défaut) | 2,0 m³/s |
+| measurement, `GAZFLOW_NEWTON_COMPRESSOR_MAP=0` | 2,0 m³/s |
 
-La recherche 1D + `effective_ratio_with_nominal` aligne la cible carte sur le lift transport ; le résidu measurement reste dégradé vs baseline (outer loop sans débit convergé).
+`NewtonMapContext` dans `newton.rs` : à chaque évaluation pipe compresseur, bootstrap Q → `find_operating_point_for_mode` → `had_to_pressure_ratio` → coefficient P² semi-implicite (gelé par itération Jacobian).
 
-## Résultats v4 (turbo/biquadratique + garde outer loop + r² hybride, juin 2026)
+### v16 — raffinement massique itératif
 
-| Variante | Résidu | effective r² (st. 1–3) | Notes |
-|----------|--------|-------------------------|-------|
-| Baseline | **5,0 m³/s** | 9,0 | inchangé |
-| measurement | **5,0 m³/s** | 16,75 (post-échec diag) | **plus de régression 8,22** |
-| biquadratic | **5,0 m³/s** | 9,0 | coeffs `n_isoline` actifs |
+Boucle post-solve : `solve_with_mass_balance_refinement` ajoute au plus un ancrage `innode_*` par passe si le résidu baisse (pression résolue, gate d'amélioration). Résultat mild_618 : **1 passe**, ancrage `innode_420`, plancher inchangé.
 
-Leviers v4 : `guarded_compressor_ratio_step` (pas de baisse transport avant convergence), `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED=1` (défaut measurement/biquadratic), parsing turbo + eval biquadratique GasLib.
+### v15 — spine boundary + junctions degré 3
 
-## Résultats v13 (diagnostic massique + hub balance sink_2, juin 2026)
+Ancrages statiques : 2 balance hubs + 1 spine (`source_17`) + 2 junctions mixtes + 1 exit-hub (`innode_315`). Sur-ancrage (3+ junctions) dégrade à 3,6 m³/s.
 
-| Mode | Résidu | Pire nœud libre | Notes |
-|------|--------|-----------------|-------|
-| measurement | **3,0 m³/s** (was **5,0**) | `innode_381` (+3) | `sink_2` ancré P=2,01 bar (hub Q=0 le plus connecté) |
-| biquadratic | **3,0 m³/s** | idem | |
+### v14 — junction anchors mixtes
 
-Leviers : `mass_balance_report` dans `compressor_diag` JSON ; détection `balance_hubs` (top 2 exits Q≈0 par degré topologique) ; ancrage pression locale.
+Entries et exits Q≈0 ; junctions entry+exit (`innode_381`). Résidu 3 → 2 m³/s.
 
-Cause racine du plancher 5 m³/s : **`sink_2`** portait tout le déséquilibre (hub junction sans DOF pression).
+### v13 — diagnostic massique + balance hubs
 
-Artefacts : `/tmp/582-v13.json`, `/tmp/582-v13-mass.json`.
+Cause racine plancher 5 m³/s : `sink_2` portait −5 m³/s (hub junction sans DOF pression). Top 2 hubs par degré topologique. Résidu 5 → 3 m³/s.
 
-## Résultats v14 (entries Q=0 + junction anchors mixtes, juin 2026)
+### v12 — distribution sud + couplage pression/ratio
 
-| Mode | Résidu | Pire nœud libre | Notes |
-|------|--------|-----------------|-------|
-| measurement | **2,0 m³/s** (was **3,0**) | `innode_420` (−2) | `innode_381` ancré (junction entry+exit Q≈0) |
+eval_q CS4/CS5 corrigé (~10,4 m³/s vs 45). Résidu plancher 5 m³/s inchangé.
 
-Leviers v14 :
+### v11 — débit carte topologique
 
-1. Boundaries Q≈0 : **entries + exits** (pression depuis scénario ou `.net`).
-2. `balance_hubs` : top 2 inchangé (`sink_2`, `sink_96`).
-3. `junction_anchors` : innodes degré ≥4 avec voisins entry **et** exit Q≈0 (priorité mixte) ; top **2** (`innode_381`, …).
+BFS hub/branche dans `flow_topology.rs` : CS1 ≈ 90 m³/s, CS2/CS3 ≈ 45 m³/s. Ratios carte ~1,46–1,50.
 
-Sur-ancrage (8 hubs + 5 junctions) **dégrade** le résidu (3,6 m³/s) : trop de pressions fixées localement.
+### v4 — turbo/biquadratique + garde outer loop
 
-Artefact : `/tmp/582-v14c.json`.
+Fin de la régression measurement 8,22 → retour à 5,0 m³/s baseline.
 
-## Résultats v15 (spine boundary + junctions degré 3, juin 2026)
+### v1–v3 — fondations
 
-| Mode | Résidu | Pire nœud libre | Notes |
-|------|--------|-----------------|-------|
-| measurement | **2,0 m³/s** (= v14) | `sink_24` (−2) | `source_17` spine + `innode_381`/`innode_385` |
+Cap r²≤9 stabilise Newton (5 vs 8,2) mais empêche ratio nominal `.net`. Outer loop seul ne compense pas.
 
-Leviers v15 :
+## Interprétation globale
 
-1. **`boundary_spine_anchors`** : boundaries Q≈0 source/sink degré ≥4 (`source_17`), séparées des junctions internes.
-2. **Junctions `innode_*` degré ≥3** si mix entry+exit Q≈0, ou hub exit-only (≥2 exits Q≈0).
-3. **Exclusion des extrémités compresseur** (`innode_402` évité).
-4. Sur-ancrage confirmé : 3+ junctions → régression (3,6 m³/s).
+1. **H2 (cap MVP dominant)** : non confirmée comme cause unique ; le cap aide la stabilité (5 vs 8,2) mais limite le lift transport.
+2. **Option 1 ratio** : `compressor_ratio_max` ← `.cs` (~1,08), `compressor_pressure_cap_ratio` ← `.net` (4,09). Le 4,09 n'est pas un DOF d'exploitation.
+3. **Ancrages pression (v13–v16)** : corrigent les junctions sous-déterminées Q≈0 ; gain 5 → 2 m³/s ; sur-ancrage dégrade.
+4. **Couplage Q–ratio (outer + in-Newton)** : ratios carte cohérents (~1,46 transport) ; plancher 2 m³/s persiste car partial accept + boundaries Q imposées.
+5. **Prochain levier (v18+)** : assouplissement P/Q contractuel GasLib ou modèle compresseur au-delà du MVP P².
 
-Artefact : `/tmp/582-v15.json`.
+## Test intégration
 
-## Résultats v16 (raffinement massique itératif + exit-hub, juin 2026)
-
-| Mode | Résidu | Pire nœud | Passes refinement | Notes |
-|------|--------|-----------|-------------------|-------|
-| measurement | **2,0 m³/s** (= v15) | `sink_24` (−2) | **1** | `innode_420` ajouté ; gate arrêt si pas d'amélioration |
-
-Leviers v16 :
-
-1. **`mass_balance_anchors`** : boucle post-solve (max 4 passes, `GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES`) ; ancrage à la **pression résolue** ; revert si résidu stagne.
-2. **`detect_exit_hub_junction_anchor`** : 3ᵉ junction exit-only (`innode_315`).
-3. JSON diag : `mass_balance_refinement_passes`, `mass_balance_anchors`.
-
-Le plancher **~2 m³/s** persiste : les nœuds restants (`sink_24`, `source_20`) ont **Q imposé** — ancrage pression inadapté. Prochain levier : hydraulique compresseur in-Newton ou couplage P/Q scénario.
-
-Artefact : `/tmp/582-v16b.json`.
-
-## Résultats v17 (carte compresseur in-Newton, juin 2026)
-
-| Mode | Résidu | Notes |
-|------|--------|-------|
-| measurement + `GAZFLOW_NEWTON_COMPRESSOR_MAP=1` (défaut) | **2,0 m³/s** | tête/vitesse → ratio P² à chaque itération Newton |
-| measurement + `GAZFLOW_NEWTON_COMPRESSOR_MAP=0` | **2,0 m³/s** | idem (outer loop pré-calibre déjà les ratios) |
-
-Leviers v17 :
-
-1. **`NewtonMapContext`** dans `newton.rs` : `find_operating_point_for_mode` + `had_to_pressure_ratio` recouplés au débit local bootstrap à chaque évaluation pipe compresseur.
-2. Env **`GAZFLOW_NEWTON_COMPRESSOR_MAP`** : activé par défaut en modes `measurement` / `biquadratic`.
-3. Jacobian : coefficient carte **gelé par itération** (semi-implicite), `effective_compressor_pressure_from_coeff` conservé.
-
-Le plancher **~2 m³/s** confirme un goulot **hors couplage Q–ratio** (boundaries Q imposées, partial accept). Prochain levier : modèle hydraulique complet compresseur ou assouplissement P/Q contractuel.
-
-Artefact : `/tmp/582-v17.json`.
-
-## Résultats v12 (distribution sud + couplage pression/ratio, juin 2026)
-
-| Mode | Résidu | eval_q CS4/CS5 | `map_target` CS4/CS5 |
-|------|--------|----------------|----------------------|
-| measurement | **5,0 m³/s** | **~10,4** (was 45) | ~1,31 / ~1,46 |
-
-Leviers : zone locale distribution (hors voisinage CS transport), repli peer CS4→CS5, relaxation bidirectionnelle ratio si résidu bloqué, coefficient P² compresseur adouci vs ratio pression atteint (Newton).
-
-Résidu inchangé au plancher **5 m³/s** ; les ratios sud étaient sur-estimés (Q=45) et sont corrigés.
-
-Artefact : `/tmp/582-v12.json`.
-
-## Résultats v11 (débit carte topologique hub/branche, juin 2026)
-
-| Mode | Résidu | `map_target` CS1 | CS2–3 | eval_q CS1 / CS2 |
-|------|--------|------------------|-------|------------------|
-| measurement | **5,0 m³/s** | **~1,46** | ~1,50 | **90 / 45 m³/s** |
-
-Leviers : BFS aval sans traverser compresseurs (`flow_topology.rs`) — CS1 détecté merger hub (≥2 branches), CS2/CS3 branches parallèles → Q = total / 2.
-
-Comparaison v10 → v11 : eval_q transport **30 → 90** (CS1), ratios carte **~1,51 → ~1,46–1,50**. Résidu inchangé au plancher **5 m³/s** : la topologie corrige le débit carte mais le goulot reste hydraulique Newton, pas le split Q.
-
-Artefact : `/tmp/582-v11.json`.
-
-## Résultats v10 (débit hub transport + refine continuation, juin 2026)
-
-| Mode | Résidu | `map_target` CS1–3 | eval_q transport |
-|------|--------|--------------------|------------------|
-| measurement | **5,0 m³/s** | **~1,51** | **30 m³/s** (90/3 hub) |
-| biquadratic | **5,0 m³/s** | ~1,51 | 30 |
-
-Leviers : split transport cap≥3 vs distribution, continuation refine [0,92→1,0], clamp Q solver absurdes, diag map cohérent.
-
-**Plancher ~5 m³/s** avec ratios carte cohérents : prochain levier = débit **topologique** (CS1 ≈ flux hub ~90, pas 30) ou hydraulique MVP au-delà du ratio.
-
-## Résultats v9 (Newton partiel + handoff carte Q estimé, juin 2026)
-
-| Mode | Résidu | Statut | Notes |
-|------|--------|--------|-------|
-| measurement | **5,0 m³/s** | ok (partiel) | handoff relax=1,0, Q estimé si non convergé, r² cap off en outer |
-| biquadratic | à bench | | idem pipeline |
-
-Retour au plateau **5 m³/s** avec sémantique ratio correcte (~1,33–1,51 transport) vs faux 5 m³/s d’avant (cap r² + ratio `.net`).
-
-## Résultats v8 (confId→turbo config_2, juin 2026)
-
-Fix : `preferred_turbo` résout `config_2` → `compressor_6` (582 CS1) au lieu de `compressor_5` (min id).
-
-| Mode | Résidu | `map_target` CS1–3 | `ratio_max` post-handoff |
-|------|--------|--------------------|--------------------------|
-| measurement | **8,22 m³/s** | **~1,51** | **~1,29** (relax 0,5 depuis 1,08) |
-| biquadratic | à bench | ~1,51 | ~1,29 |
-
-Le ratio carte transport passe de 1,08 à **~1,51** à Q≈18 m³/s ; le résidu Newton reste 8,22 (prochain levier : convergence avec lift ~1,3–1,5).
-
-## Résultats v7 (recouplage Q estimé + garde carte upward, juin 2026)
-
-| Mode | Résidu | `map_eval_q` | `map_target` (st. 1–3) | Notes |
-|------|--------|--------------|------------------------|-------|
-| measurement | **8,22 m³/s** | **~18 m³/s** | **1,08** | diag : p_in fallback 40 bar si solve échoue |
-| biquadratic | **8,22 m³/s** | ~18 | 1,08 | idem |
-
-Le recouplage Q fonctionne (`map_eval_q_m3s` ≈ livraison/5). Le ratio reste au catalogue car la carte 582 à Q≈18 norm / p_in≈40 bar donne **~1,08** (pas 1,11) : `find_operating_point` trouve un point mais la tête ne dépasse pas le operating `.cs`.
-
-## Résultats v6 (Option 1 — sémantique ratio operating vs pressure cap, juin 2026)
-
-Décision documentée : `docs/testing/gaslib-582-compressor-diagnosis.md`.
-
-| Mode | Résidu | `compressor_ratio_max` (st. 1–3) | `map_target_ratio` |
-|------|--------|----------------------------------|--------------------|
-| legacy | **8,22 m³/s** | **1,08** (`.cs`) | 1,08 |
-| measurement | **8,22 m³/s** | 1,08 | 1,08 |
-| biquadratic | **8,22 m³/s** | 1,08 | 1,08 |
-
-Le plafond pression `.net` (4,09) est conservé dans `compressor_pressure_cap_ratio` mais n'est plus confondu avec le ratio d'exploitation. Le faux plateau baseline 5 m³/s disparaît.
-
-## Résultats v5 (couplage Q–ratio continuation + débit estimé, juin 2026)
-
-Leviers : `apply_map_ratios_after_continuation_step` (scale ≥ 0.5), débit nominal estimé depuis les sinks quand Q solver ≈ 0, salvage si outer loop échoue après continuation convergée.
-
-Artefacts : `/tmp/gazflow-582-bench-v5/{baseline,measurement,biquadratic}.json`.
-
-| Variante | Résidu | Notes |
-|----------|--------|-------|
-| Baseline (mild_618) | 5,0 m³/s | inchangé vs v4 |
-| measurement | **8,95 m³/s** | régression v5 (cible carte sur paliers partiels) — **corrigé** : `allow_map_target` uniquement au nominal |
-| biquadratic | **5,0 m³/s** | = baseline |
-
-Test intégration `test_solve_gaslib_582` (`.scn` défaut, tol smoke 0,3, ~14 min) : **OK** avec résidu **8,59 m³/s** au nominal (non strict).
+`test_solve_gaslib_582` (`.scn` défaut, tol smoke 0,3, ~14 min) : OK avec résidu ~8,59 m³/s au nominal (non strict). Activer via `GAZFLOW_ENABLE_LARGE_DATASET_TESTS=1`.
