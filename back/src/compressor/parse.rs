@@ -369,4 +369,28 @@ mod tests {
         assert_eq!(station.surgeline_measurements.len(), 1);
         assert!(station.characteristic_measurements.is_empty());
     }
+
+    #[test]
+    fn test_load_gaslib_582_catalog_if_present() {
+        let path = std::path::Path::new("dat/GasLib-582.cs");
+        if !path.exists() {
+            eprintln!("skip: GasLib-582.cs not found");
+            return;
+        }
+        let catalog = super::load_compressor_catalog(path).expect("582 catalog");
+        assert_eq!(catalog.stations.len(), 5);
+        for id in [
+            "compressorStation_1",
+            "compressorStation_2",
+            "compressorStation_3",
+            "compressorStation_4",
+            "compressorStation_5",
+        ] {
+            let station = catalog.station(id).expect(id);
+            assert!(
+                !station.characteristic_measurements.is_empty()
+                    || !station.surgeline_measurements.is_empty()
+            );
+        }
+    }
 }

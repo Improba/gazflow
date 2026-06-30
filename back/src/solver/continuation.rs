@@ -323,19 +323,35 @@ where
                     Ok(result)
                 }
             }
-            Err(err) => match super::steady_state::solve_compressor_outer_fallback(
-                network,
-                demands,
-                initial_pressures,
-                steady_config,
-                &mut progress,
-            ) {
-                Ok(result) => Ok(result),
-                Err(fallback_err) => {
-                    tracing::debug!(fallback_err = %fallback_err, "compressor outer fallback skipped or failed");
-                    Err(err)
+            Err(err) => {
+                let warm = initial_pressures.cloned();
+                match solve_with_compressor_loop(
+                    network,
+                    demands,
+                    warm.as_ref(),
+                    steady_config,
+                    &mut progress,
+                ) {
+                    Ok(result) => Ok(result),
+                    Err(outer_err) => match super::steady_state::solve_compressor_outer_fallback(
+                        network,
+                        demands,
+                        warm.as_ref(),
+                        steady_config,
+                        &mut progress,
+                    ) {
+                        Ok(result) => Ok(result),
+                        Err(fallback_err) => {
+                            tracing::debug!(
+                                outer_err = %outer_err,
+                                fallback_err = %fallback_err,
+                                "compressor outer loop and fallback failed after continuation error"
+                            );
+                            Err(err)
+                        }
+                    },
                 }
-            },
+            }
         }
     } else {
         solve_steady_state_with_progress(

@@ -162,8 +162,42 @@ pub fn had_to_pressure_ratio(
     base.powf(gamma / (gamma - 1.0)).max(1.0)
 }
 
-fn representative_speed_rpm(station: &StationModel) -> Option<f64> {
-    station.speed_bounds().map(|(min, max)| 0.5 * (min + max))
+fn representative_speed_rpm(station: &StationModel, q_m3_s: f64) -> Option<f64> {
+    let measurements = station.map_measurements();
+    if measurements.is_empty() {
+        return station.speed_bounds().map(|(min, max)| 0.5 * (min + max));
+    }
+
+    let mut speeds: Vec<f64> = measurements
+        .iter()
+        .map(|m| m.speed_rpm)
+        .filter(|s| s.is_finite())
+        .collect();
+    speeds.sort_by(|a, b| a.total_cmp(b));
+    speeds.dedup_by(|a, b| (*a - *b).abs() <= 1e-6);
+
+    if speeds.is_empty() {
+        return None;
+    }
+
+    let mut best: Option<(f64, f64)> = None;
+    for speed in speeds {
+        let isoline: Vec<_> = measurements
+            .iter()
+            .filter(|m| (m.speed_rpm - speed).abs() <= 1e-6)
+            .cloned()
+            .collect();
+        let Some(head) = interpolate_head_on_isoline(&isoline, q_m3_s) else {
+            continue;
+        };
+        let margin = head.max(1e-6);
+        if best.is_none_or(|(_, m)| margin > m) {
+            best = Some((speed, margin));
+        }
+    }
+
+    best.map(|(speed, _)| speed)
+        .or_else(|| station.speed_bounds().map(|(min, max)| 0.5 * (min + max)))
 }
 
 fn stage_ratio_heuristic(stages: usize) -> f64 {
@@ -186,7 +220,7 @@ pub fn effective_ratio_from_operating_point(
         return fallback;
     }
 
-    let Some(target_speed) = representative_speed_rpm(station) else {
+    let Some(target_speed) = representative_speed_rpm(station, q_m3_s) else {
         return fallback;
     };
 

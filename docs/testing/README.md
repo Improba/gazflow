@@ -187,6 +187,7 @@ Options:
 
 ```bash
 cargo run --bin compressor_diag -- GasLib-582 --no-r2-cap
+cargo run --bin compressor_diag -- GasLib-582 --map-mode measurement --json /tmp/582-map.json
 cargo run --bin compressor_diag -- GasLib-582 --json /tmp/582-diag.json --csv /tmp/582-stations.csv
 ```
 
