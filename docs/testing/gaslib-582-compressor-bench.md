@@ -72,7 +72,7 @@ Artefacts : `/tmp/gazflow-582-bench-v5/{baseline,measurement,biquadratic}.json`.
 | Variante | Résidu | Notes |
 |----------|--------|-------|
 | Baseline (mild_618) | 5,0 m³/s | inchangé vs v4 |
-| measurement | **8,95 m³/s** | régression vs v4 (5,0) — couplage continuation à investiguer |
-| biquadratic | (voir log) | — |
+| measurement | **8,95 m³/s** | régression v5 (cible carte sur paliers partiels) — **corrigé** : `allow_map_target` uniquement au nominal |
+| biquadratic | **5,0 m³/s** | = baseline |
 
 Test intégration `test_solve_gaslib_582` (`.scn` défaut, tol smoke 0,3, ~14 min) : **OK** avec résidu **8,59 m³/s** au nominal (non strict).

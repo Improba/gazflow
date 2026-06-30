@@ -6,10 +6,7 @@ use std::time::Instant;
 use anyhow::{Result, anyhow};
 
 use crate::graph::{ConnectionKind, GasNetwork};
-use crate::solver::compressor_loop::{
-    apply_map_ratios_after_continuation_step, compressor_map_mode, solve_with_compressor_loop,
-    CompressorMapMode,
-};
+use crate::solver::compressor_loop::{apply_map_ratios_after_continuation_step, solve_with_compressor_loop};
 use crate::solver::config::SteadyStateConfig;
 use crate::solver::gas_properties::GasComposition;
 use crate::solver::steady_state::{
@@ -119,8 +116,6 @@ where
     let mut last_success: Option<SolverResult> = None;
     let mut last_success_scale: Option<f64> = None;
     let mut bridges_used = 0usize;
-    let mut working_network = network.clone();
-    let map_mode = compressor_map_mode();
 
     let mut idx = 0usize;
     while idx < scales.len() {
@@ -172,7 +167,7 @@ where
             disable_compressor_r2_cap: steady_config.disable_compressor_r2_cap,
         };
 
-        let step_network = network_with_scaled_compressor_lift(&working_network, scale);
+        let step_network = network_with_scaled_compressor_lift(network, scale);
 
         match solve_steady_state_with_progress(
             &step_network,
@@ -192,20 +187,7 @@ where
             Ok(result) => {
                 warm_start_pressures = Some(result.pressures.clone());
                 last_success_scale = Some(scale);
-                last_success = Some(result.clone());
-                if matches!(
-                    map_mode,
-                    CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
-                ) {
-                    apply_map_ratios_after_continuation_step(
-                        &mut working_network,
-                        &scaled_demands,
-                        1.0,
-                        &result,
-                        map_mode,
-                        steady_config.tolerance,
-                    );
-                }
+                last_success = Some(result);
                 idx += 1;
             }
             Err(err) => {

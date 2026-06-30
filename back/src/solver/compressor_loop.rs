@@ -117,6 +117,8 @@ struct RatioUpdateContext {
     tolerance: f64,
     nominal_ratio: f64,
     relax: f64,
+    /// N'autoriser la relaxation vers la cible carte qu'au nominal (scale=1).
+    allow_map_target: bool,
 }
 
 /// Pure guard for one compressor ratio relaxation step (unit-tested).
@@ -131,6 +133,15 @@ fn guarded_compressor_ratio_step(
 
     let converged = ctx.residual <= ctx.tolerance;
     let is_transport = ctx.nominal_ratio >= TRANSPORT_NOMINAL_THRESHOLD;
+
+    if !ctx.allow_map_target {
+        if !converged && is_transport && current < ctx.nominal_ratio {
+            let next = (current + ctx.relax * (ctx.nominal_ratio - current))
+                .clamp(current, MAX_COMPRESSOR_RATIO);
+            return ratio_step_if_changed(current, next);
+        }
+        return None;
+    }
 
     if !converged {
         if !is_transport {
@@ -338,6 +349,7 @@ fn apply_compressor_map_updates(
     tolerance: f64,
     demands: &HashMap<String, f64>,
     demand_scale: f64,
+    allow_map_target: bool,
 ) -> RatioUpdateStats {
     let active_compressors = network
         .pipes()
@@ -378,6 +390,7 @@ fn apply_compressor_map_updates(
             tolerance,
             nominal_ratio: nominal,
             relax,
+            allow_map_target,
         };
         let Some(next) = guarded_compressor_ratio_step(current, map_target, update_ctx) else {
             continue;
@@ -418,6 +431,7 @@ pub(crate) fn apply_map_ratios_after_continuation_step(
         tolerance,
         demands,
         demand_scale,
+        true,
     )
 }
 
@@ -499,6 +513,7 @@ where
             config.tolerance,
             demands,
             1.0,
+            true,
         );
 
         if result.residual <= config.tolerance
@@ -616,6 +631,7 @@ mod tests {
             tolerance,
             nominal_ratio: nominal,
             relax,
+            allow_map_target: true,
         }
     }
 
@@ -659,6 +675,14 @@ mod tests {
             .expect("converged update");
         assert!(update < 3.0);
         assert!((update - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn guarded_ratio_blocks_map_target_before_nominal() {
+        let mut ctx = ctx(1.0, 1e-7, 1e-6, 4.09, 0.5);
+        ctx.allow_map_target = false;
+        let update = guarded_compressor_ratio_step(3.0, 2.0, ctx);
+        assert!(update.is_none());
     }
 
     #[test]
