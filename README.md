@@ -126,6 +126,8 @@ Current baseline (2026-06-30): `cargo test --lib` ~270 tests, `npm test` 64/64.
 
 Large transport networks (GasLib-582, GasLib-4197): optional smoke tests and env knobs are documented in [Testing](docs/testing/README.md). Model limits (compressor MVP, `.cdf` routing, convergence) are in [Limitations](docs/science/limitations.md).
 
+**GasLib-582 transport (Phase I, juin 2026)** : bench compresseur sur `nomination_mild_618.scn` via `compressor_diag` ; résidu measurement **~2 m³/s** (partial accept, cible preset 3×10⁻³). Cartes `.cs`, outer loop ratio, ancrages pression scénario et recouplage in-Newton documentés dans [bench 582](docs/testing/gaslib-582-compressor-bench.md) et [diagnosis 582](docs/testing/gaslib-582-compressor-diagnosis.md).
+
 ## Documentation
 
 - [Quickstart](docs/quickstart.md)
@@ -135,6 +137,7 @@ Large transport networks (GasLib-582, GasLib-4197): optional smoke tests and env
 - [Physical equations](docs/science/equations.md)
 - [Model limitations](docs/science/limitations.md)
 - [Testing & validation](docs/testing/README.md)
+- [GasLib-582 compressor bench (Phase I)](docs/testing/gaslib-582-compressor-bench.md)
 - [Operational roadmap P6–P13](docs/plans/operational-roadmap.md)
 - [Completion plan](docs/plans/completion-plan.md)
 - [Production sprint plan](docs/plans/production-sprint-plan.md)
