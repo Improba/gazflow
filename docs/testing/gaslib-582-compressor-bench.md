@@ -68,3 +68,11 @@ Leviers v4 : `guarded_compressor_ratio_step` (pas de baisse transport avant conv
 Leviers : `apply_map_ratios_after_continuation_step` (scale ≥ 0.5), débit nominal estimé depuis les sinks quand Q solver ≈ 0, salvage si outer loop échoue après continuation convergée.
 
 Artefacts : `/tmp/gazflow-582-bench-v5/{baseline,measurement,biquadratic}.json`.
+
+| Variante | Résidu | Notes |
+|----------|--------|-------|
+| Baseline (mild_618) | 5,0 m³/s | inchangé vs v4 |
+| measurement | **8,95 m³/s** | régression vs v4 (5,0) — couplage continuation à investiguer |
+| biquadratic | (voir log) | — |
+
+Test intégration `test_solve_gaslib_582` (`.scn` défaut, tol smoke 0,3, ~14 min) : **OK** avec résidu **8,59 m³/s** au nominal (non strict).
