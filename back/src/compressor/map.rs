@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 
-use super::station::{StationModel, TurboMeasurement};
+use super::station::{
+    BiquadraticCoeffs, QuadraticCurve, StationModel, TurboCompressorModel, TurboMeasurement,
+};
 
 /// Point de fonctionnement $(Q, H_{\mathrm{ad}}, n)$ sur la carte.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -140,6 +142,23 @@ fn linear_interp(x0: f64, y0: f64, x1: f64, y1: f64, x: f64) -> f64 {
     y0 + alpha * (y1 - y0)
 }
 
+pub fn eval_biquadratic_head(coeffs: &BiquadraticCoeffs, q: f64, n: f64) -> f64 {
+    let q_terms = [1.0, q, q * q];
+    let n_terms = [1.0, n, n * n];
+    let mut head = 0.0;
+    for (i, q_term) in q_terms.iter().enumerate() {
+        for (j, n_term) in n_terms.iter().enumerate() {
+            // GasLib order: [a00, a01, a02, a10, a11, a12, a20, a21, a22].
+            head += coeffs[i * 3 + j] * q_term * n_term;
+        }
+    }
+    head
+}
+
+pub fn eval_quadratic(curve: &QuadraticCurve, q: f64) -> f64 {
+    curve[0] + curve[1] * q + curve[2] * q * q
+}
+
 pub fn had_to_pressure_ratio(
     head_kj_per_kg: f64,
     p_in_bar: f64,
@@ -172,10 +191,67 @@ pub fn had_to_pressure_ratio(
     base.powf(gamma / (gamma - 1.0)).max(1.0)
 }
 
-fn surge_flow_at_speed(station: &StationModel, speed_rpm: f64) -> Option<f64> {
-    if !station.surgeline_measurements.is_empty() {
-        let flows: Vec<(f64, f64)> = station
-            .surgeline_measurements
+fn selected_turbo(station: &StationModel) -> Option<&TurboCompressorModel> {
+    station.preferred_turbo()
+}
+
+fn selected_map_measurements<'a>(
+    station: &'a StationModel,
+    turbo: Option<&'a TurboCompressorModel>,
+) -> &'a [TurboMeasurement] {
+    if let Some(turbo) = turbo {
+        let measurements = turbo.map_measurements();
+        if !measurements.is_empty() {
+            return measurements;
+        }
+    }
+    station.map_measurements()
+}
+
+fn selected_surgeline_measurements<'a>(
+    station: &'a StationModel,
+    turbo: Option<&'a TurboCompressorModel>,
+) -> &'a [TurboMeasurement] {
+    if let Some(turbo) = turbo
+        && !turbo.surgeline_measurements.is_empty()
+    {
+        return turbo.surgeline_measurements.as_slice();
+    }
+    station.surgeline_measurements.as_slice()
+}
+
+fn selected_speed_bounds(
+    station: &StationModel,
+    turbo: Option<&TurboCompressorModel>,
+) -> Option<(f64, f64)> {
+    turbo
+        .and_then(TurboCompressorModel::speed_bounds)
+        .or_else(|| station.speed_bounds())
+}
+
+fn eval_head_for_speed(
+    station: &StationModel,
+    turbo: Option<&TurboCompressorModel>,
+    q_m3_s: f64,
+    speed_rpm: f64,
+    prefer_biquadratic: bool,
+) -> Option<f64> {
+    if prefer_biquadratic
+        && let Some(coeffs) = turbo.and_then(|t| t.biquadratic_head_coeffs.as_ref())
+    {
+        return Some(eval_biquadratic_head(coeffs, q_m3_s, speed_rpm));
+    }
+    interpolate_head(selected_map_measurements(station, turbo), q_m3_s, speed_rpm)
+}
+
+fn surge_flow_at_speed(
+    station: &StationModel,
+    turbo: Option<&TurboCompressorModel>,
+    speed_rpm: f64,
+) -> Option<f64> {
+    let surgeline_measurements = selected_surgeline_measurements(station, turbo);
+    if !surgeline_measurements.is_empty() {
+        let flows: Vec<(f64, f64)> = surgeline_measurements
             .iter()
             .filter(|m| m.speed_rpm.is_finite() && m.flow_m3_s.is_finite())
             .map(|m| (m.speed_rpm, m.flow_m3_s))
@@ -183,7 +259,7 @@ fn surge_flow_at_speed(station: &StationModel, speed_rpm: f64) -> Option<f64> {
         return interpolate_scalar_on_speed(&flows, speed_rpm);
     }
 
-    let characteristic = station.map_measurements();
+    let characteristic = selected_map_measurements(station, turbo);
     if characteristic.is_empty() {
         return None;
     }
@@ -199,8 +275,12 @@ fn surge_flow_at_speed(station: &StationModel, speed_rpm: f64) -> Option<f64> {
     }
 }
 
-fn choke_flow_at_speed(station: &StationModel, speed_rpm: f64) -> Option<f64> {
-    let characteristic = station.map_measurements();
+fn choke_flow_at_speed(
+    station: &StationModel,
+    turbo: Option<&TurboCompressorModel>,
+    speed_rpm: f64,
+) -> Option<f64> {
+    let characteristic = selected_map_measurements(station, turbo);
     if characteristic.is_empty() {
         return None;
     }
@@ -238,32 +318,68 @@ fn interpolate_scalar_on_speed(samples: &[(f64, f64)], speed_rpm: f64) -> Option
     None
 }
 
-fn is_flow_feasible(station: &StationModel, speed_rpm: f64, q_m3_s: f64) -> bool {
-    let Some(q_surge) = surge_flow_at_speed(station, speed_rpm) else {
+fn is_flow_feasible(
+    station: &StationModel,
+    turbo: Option<&TurboCompressorModel>,
+    speed_rpm: f64,
+    q_m3_s: f64,
+) -> bool {
+    let Some(q_surge) = surge_flow_at_speed(station, turbo, speed_rpm) else {
         return true;
     };
-    let q_choke = choke_flow_at_speed(station, speed_rpm).unwrap_or(f64::INFINITY);
+    let q_choke = choke_flow_at_speed(station, turbo, speed_rpm).unwrap_or(f64::INFINITY);
     q_m3_s + 1e-9 >= q_surge && q_m3_s <= q_choke + 1e-9
 }
 
+fn is_head_within_bounds(
+    turbo: Option<&TurboCompressorModel>,
+    q_m3_s: f64,
+    head_kj_per_kg: f64,
+) -> bool {
+    let Some(turbo) = turbo else {
+        return true;
+    };
+
+    if let Some(surge) = turbo.surgeline_curve.as_ref()
+        && head_kj_per_kg > eval_quadratic(surge, q_m3_s) + 1e-9
+    {
+        return false;
+    }
+    if let Some(choke) = turbo.chokeline_curve.as_ref()
+        && head_kj_per_kg + 1e-9 < eval_quadratic(choke, q_m3_s)
+    {
+        return false;
+    }
+    true
+}
+
 /// Recherche 1D de la vitesse $n$ pour un débit d'aspiration donné, dans l'enveloppe surge/choke.
-pub fn find_operating_point(
+pub fn find_operating_point_for_mode(
     station: &StationModel,
     ctx: &CompressorOperatingContext,
+    prefer_biquadratic: bool,
 ) -> Option<OperatingPoint> {
     let q_m3_s = ctx.suction_volumetric_flow_m3s();
     if q_m3_s <= 0.0 || !q_m3_s.is_finite() {
         return None;
     }
 
-    let characteristic = station.map_measurements();
-    if characteristic.is_empty() {
+    let turbo = selected_turbo(station);
+    let characteristic = selected_map_measurements(station, turbo);
+    let has_biquadratic = prefer_biquadratic
+        && turbo
+            .and_then(|t| t.biquadratic_head_coeffs.as_ref())
+            .is_some();
+    if characteristic.is_empty() && !has_biquadratic {
         return None;
     }
 
-    let (n_min, n_max) = station.speed_bounds()?;
+    let (n_min, n_max) = selected_speed_bounds(station, turbo)?;
     if (n_max - n_min).abs() <= f64::EPSILON {
-        let head = interpolate_head(characteristic, q_m3_s, n_min)?;
+        let head = eval_head_for_speed(station, turbo, q_m3_s, n_min, prefer_biquadratic)?;
+        if !is_head_within_bounds(turbo, q_m3_s, head) {
+            return None;
+        }
         return Some(OperatingPoint {
             speed_rpm: n_min,
             head_kj_per_kg: head,
@@ -275,12 +391,16 @@ pub fn find_operating_point(
     for i in 0..SPEED_SEARCH_STEPS {
         let alpha = i as f64 / (SPEED_SEARCH_STEPS.saturating_sub(1).max(1) as f64);
         let speed = n_min + alpha * (n_max - n_min);
-        if !is_flow_feasible(station, speed, q_m3_s) {
+        if !is_flow_feasible(station, turbo, speed, q_m3_s) {
             continue;
         }
-        let Some(head) = interpolate_head(characteristic, q_m3_s, speed) else {
+        let Some(head) = eval_head_for_speed(station, turbo, q_m3_s, speed, prefer_biquadratic)
+        else {
             continue;
         };
+        if !is_head_within_bounds(turbo, q_m3_s, head) {
+            continue;
+        }
         let candidate = OperatingPoint {
             speed_rpm: speed,
             head_kj_per_kg: head,
@@ -295,13 +415,27 @@ pub fn find_operating_point(
         return best;
     }
 
-    let target_speed = representative_speed_rpm(station, q_m3_s)?;
-    let head = interpolate_head(characteristic, q_m3_s, target_speed)?;
+    let target_speed = representative_speed_rpm(
+        characteristic,
+        selected_speed_bounds(station, turbo),
+        q_m3_s,
+    )?;
+    let head = eval_head_for_speed(station, turbo, q_m3_s, target_speed, prefer_biquadratic)?;
+    if !is_head_within_bounds(turbo, q_m3_s, head) {
+        return None;
+    }
     Some(OperatingPoint {
         speed_rpm: target_speed,
         head_kj_per_kg: head,
         flow_m3_s: q_m3_s,
     })
+}
+
+pub fn find_operating_point(
+    station: &StationModel,
+    ctx: &CompressorOperatingContext,
+) -> Option<OperatingPoint> {
+    find_operating_point_for_mode(station, ctx, false)
 }
 
 fn ratio_from_head(head_kj_per_kg: f64, ctx: &CompressorOperatingContext, stages: usize) -> f64 {
@@ -314,14 +448,17 @@ fn ratio_from_head(head_kj_per_kg: f64, ctx: &CompressorOperatingContext, stages
         DEFAULT_EFFICIENCY,
     )
     .clamp(1.0, 5.0);
-    single_stage_ratio.powi(stages.max(1) as i32).clamp(1.0, 5.0)
+    single_stage_ratio
+        .powi(stages.max(1) as i32)
+        .clamp(1.0, 5.0)
 }
 
 /// Ratio effectif avec garde sur le nominal `.net` pour les stations transport.
-pub fn effective_ratio_with_nominal(
+pub fn effective_ratio_with_nominal_for_mode(
     station: &StationModel,
     ctx: &CompressorOperatingContext,
     nominal_ratio: Option<f64>,
+    prefer_biquadratic: bool,
 ) -> f64 {
     let stages = station
         .serial_stages_for_conf(station.default_conf_id())
@@ -335,7 +472,7 @@ pub fn effective_ratio_with_nominal(
         return fallback;
     }
 
-    let Some(point) = find_operating_point(station, ctx) else {
+    let Some(point) = find_operating_point_for_mode(station, ctx, prefer_biquadratic) else {
         return fallback;
     };
 
@@ -351,10 +488,21 @@ pub fn effective_ratio_with_nominal(
     }
 }
 
-fn representative_speed_rpm(station: &StationModel, q_m3_s: f64) -> Option<f64> {
-    let measurements = station.map_measurements();
+pub fn effective_ratio_with_nominal(
+    station: &StationModel,
+    ctx: &CompressorOperatingContext,
+    nominal_ratio: Option<f64>,
+) -> f64 {
+    effective_ratio_with_nominal_for_mode(station, ctx, nominal_ratio, false)
+}
+
+fn representative_speed_rpm(
+    measurements: &[TurboMeasurement],
+    speed_bounds: Option<(f64, f64)>,
+    q_m3_s: f64,
+) -> Option<f64> {
     if measurements.is_empty() {
-        return station.speed_bounds().map(|(min, max)| 0.5 * (min + max));
+        return speed_bounds.map(|(min, max)| 0.5 * (min + max));
     }
 
     let mut speeds: Vec<f64> = measurements
@@ -386,7 +534,7 @@ fn representative_speed_rpm(station: &StationModel, q_m3_s: f64) -> Option<f64> 
     }
 
     best.map(|(speed, _)| speed)
-        .or_else(|| station.speed_bounds().map(|(min, max)| 0.5 * (min + max)))
+        .or_else(|| speed_bounds.map(|(min, max)| 0.5 * (min + max)))
 }
 
 fn stage_ratio_heuristic(stages: usize) -> f64 {
@@ -397,7 +545,7 @@ pub fn effective_ratio_from_operating_point(
     station: &StationModel,
     ctx: &CompressorOperatingContext,
 ) -> f64 {
-    effective_ratio_with_nominal(station, ctx, None)
+    effective_ratio_with_nominal_for_mode(station, ctx, None, false)
 }
 
 /// Compatibilité tests / appels legacy (pression et température par défaut).
@@ -417,9 +565,11 @@ mod tests {
     use approx::assert_abs_diff_eq;
 
     use super::{
-        CompressorOperatingContext, OperatingPoint, effective_ratio_from_flow,
-        effective_ratio_from_operating_point, effective_ratio_with_nominal, find_operating_point,
-        had_to_pressure_ratio, interpolate_head,
+        CompressorOperatingContext, effective_ratio_from_flow,
+        effective_ratio_from_operating_point, effective_ratio_with_nominal,
+        effective_ratio_with_nominal_for_mode, eval_biquadratic_head, eval_quadratic,
+        find_operating_point, find_operating_point_for_mode, had_to_pressure_ratio,
+        interpolate_head,
     };
     use crate::compressor::station::{StationModel, TurboMeasurement};
 
@@ -450,6 +600,20 @@ mod tests {
 
         let head = interpolate_head(&measurements, 0.30, 5_600.0).expect("interpolated head");
         assert_abs_diff_eq!(head, 85.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn test_eval_biquadratic_head_uses_gaslib_matrix_order() {
+        let coeffs = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let head = eval_biquadratic_head(&coeffs, 2.0, 3.0);
+        assert_abs_diff_eq!(head, 628.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn test_eval_quadratic_curve() {
+        let curve = [1.0, 2.0, 3.0];
+        let value = eval_quadratic(&curve, 4.0);
+        assert_abs_diff_eq!(value, 57.0, epsilon = 1e-9);
     }
 
     #[test]
@@ -500,10 +664,7 @@ mod tests {
         let mut station = StationModel::default();
         station.update_speed_min(4_700.0);
         station.update_speed_max(6_500.0);
-        for (speed, flow, head) in [
-            (4_700.0, 0.20, 60.0),
-            (6_500.0, 0.40, 90.0),
-        ] {
+        for (speed, flow, head) in [(4_700.0, 0.20, 60.0), (6_500.0, 0.40, 90.0)] {
             station.push_surgeline_measurement(TurboMeasurement {
                 speed_rpm: speed,
                 flow_m3_s: flow,
@@ -549,7 +710,10 @@ mod tests {
             t_in_k: 288.15,
         };
         let ratio = effective_ratio_with_nominal(&station, &ctx, Some(4.09));
-        assert!(ratio > 2.0, "transport nominal should dominate low map ratio");
+        assert!(
+            ratio > 2.0,
+            "transport nominal should dominate low map ratio"
+        );
     }
 
     #[test]
@@ -572,5 +736,65 @@ mod tests {
         let ratio = effective_ratio_from_flow(&station, 0.5);
         assert!(ratio > 1.0);
         assert!(ratio <= 5.0);
+    }
+
+    #[test]
+    fn test_biquadratic_mode_prefers_default_conf_turbo() {
+        let mut station = StationModel::default();
+        station.push_configuration(Some("config_1".into()), 1);
+        station.push_configuration(Some("config_2".into()), 1);
+
+        {
+            let turbo = station.turbo_mut("config_1");
+            turbo.update_speed_min(5_600.0);
+            turbo.update_speed_max(5_600.0);
+            turbo.set_biquadratic_coeff(0, 10.0);
+        }
+        {
+            let turbo = station.turbo_mut("config_2");
+            turbo.update_speed_min(5_600.0);
+            turbo.update_speed_max(5_600.0);
+            turbo.set_biquadratic_coeff(0, 90.0);
+        }
+
+        let ctx = CompressorOperatingContext {
+            q_m3s_norm: 1.0,
+            p_in_bar: 1.01325,
+            t_in_k: 288.15,
+        };
+        let point = find_operating_point_for_mode(&station, &ctx, true).expect("biquadratic point");
+        assert_abs_diff_eq!(point.head_kj_per_kg, 90.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn test_biquadratic_mode_falls_back_to_measurements_without_coeffs() {
+        let mut station = StationModel::default();
+        station.push_configuration(Some("config_2".into()), 1);
+        {
+            let turbo = station.turbo_mut("config_2");
+            turbo.update_speed_min(5_600.0);
+            turbo.update_speed_max(5_600.0);
+            turbo.push_characteristic_measurement(TurboMeasurement {
+                speed_rpm: 5_600.0,
+                flow_m3_s: 0.20,
+                head_kj_per_kg: 70.0,
+            });
+            turbo.push_characteristic_measurement(TurboMeasurement {
+                speed_rpm: 5_600.0,
+                flow_m3_s: 0.40,
+                head_kj_per_kg: 90.0,
+            });
+        }
+
+        let ctx = CompressorOperatingContext {
+            q_m3s_norm: 0.30,
+            p_in_bar: 1.01325,
+            t_in_k: 288.15,
+        };
+        let point = find_operating_point_for_mode(&station, &ctx, true).expect("fallback point");
+        assert_abs_diff_eq!(point.head_kj_per_kg, 80.0, epsilon = 1e-9);
+
+        let ratio = effective_ratio_with_nominal_for_mode(&station, &ctx, Some(1.2), true);
+        assert!(ratio >= 1.0);
     }
 }

@@ -307,8 +307,25 @@ fn compressor_r2_cap_disabled_from_env() -> bool {
     )
 }
 
+fn compressor_r2_cap_hybrid_until_converged() -> bool {
+    let default = matches!(
+        std::env::var("GAZFLOW_COMPRESSOR_MAP_MODE")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("measurement") | Some("biquadratic")
+    );
+    env_bool("GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED", default)
+}
+
 fn compressor_r2_cap_disabled(config: &SteadyStateConfig) -> bool {
-    config.disable_compressor_r2_cap || compressor_r2_cap_disabled_from_env()
+    if config.disable_compressor_r2_cap {
+        return true;
+    }
+    if compressor_r2_cap_hybrid_until_converged() {
+        return false;
+    }
+    compressor_r2_cap_disabled_from_env()
 }
 
 pub(crate) fn compressor_pressure_from_coeff_with_options(

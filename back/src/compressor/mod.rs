@@ -11,11 +11,15 @@ mod station;
 pub use catalog::CompressorCatalog;
 pub use map::{
     CompressorOperatingContext, OperatingPoint, effective_ratio_from_flow,
-    effective_ratio_from_operating_point, effective_ratio_with_nominal, find_operating_point,
-    had_to_pressure_ratio, interpolate_head,
+    effective_ratio_from_operating_point, effective_ratio_with_nominal,
+    effective_ratio_with_nominal_for_mode, eval_biquadratic_head, eval_quadratic,
+    find_operating_point, find_operating_point_for_mode, had_to_pressure_ratio, interpolate_head,
 };
 pub use parse::load_compressor_catalog;
-pub use station::{CompressorConfiguration, StationModel, TurboMeasurement};
+pub use station::{
+    BiquadraticCoeffs, CompressorConfiguration, QuadraticCurve, StationModel, TurboCompressorModel,
+    TurboMeasurement,
+};
 
 pub fn load_compressor_ratios<P: AsRef<Path>>(path: P) -> Result<HashMap<String, f64>> {
     let catalog = load_compressor_catalog(path)?;

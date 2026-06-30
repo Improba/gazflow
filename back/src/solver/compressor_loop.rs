@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::compressor::{CompressorCatalog, CompressorOperatingContext, effective_ratio_with_nominal};
+use crate::compressor::{
+    CompressorCatalog, CompressorOperatingContext, effective_ratio_with_nominal_for_mode,
+};
 use crate::graph::{ConnectionKind, GasNetwork, Pipe};
 use crate::solver::gas_properties::DEFAULT_GAS_TEMPERATURE_K;
 
@@ -17,6 +19,9 @@ const DEFAULT_RELAX: f64 = 0.5;
 const MIN_COMPRESSOR_RATIO: f64 = 1.0;
 const MAX_COMPRESSOR_RATIO: f64 = 5.0;
 const RATIO_SETTLE_EPS: f64 = 1e-4;
+const FLOW_UPDATE_THRESHOLD_M3S: f64 = 0.01;
+const TRANSPORT_NOMINAL_THRESHOLD: f64 = 2.0;
+const R2_CAP_RESIDUAL_FACTOR: f64 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompressorMapMode {
@@ -76,15 +81,79 @@ fn compressor_relax() -> f64 {
     env_f64("GAZFLOW_COMPRESSOR_RELAX", DEFAULT_RELAX).clamp(0.0, 1.0)
 }
 
-fn map_steady_config(base: SteadyStateConfig, mode: CompressorMapMode) -> SteadyStateConfig {
+fn compressor_r2_cap_until_converged_enabled(mode: CompressorMapMode) -> bool {
+    let default = matches!(
+        mode,
+        CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
+    );
+    env_bool("GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED", default)
+}
+
+fn steady_config_for_outer_iter(
+    base: SteadyStateConfig,
+    mode: CompressorMapMode,
+    residual: f64,
+) -> SteadyStateConfig {
     let mut config = base;
-    if matches!(
+    if !matches!(
         mode,
         CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
     ) {
+        return config;
+    }
+    if compressor_r2_cap_until_converged_enabled(mode) {
+        config.disable_compressor_r2_cap = residual <= config.tolerance * R2_CAP_RESIDUAL_FACTOR;
+    } else {
         config.disable_compressor_r2_cap = true;
     }
     config
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RatioUpdateContext {
+    q_m3s_norm: f64,
+    residual: f64,
+    tolerance: f64,
+    nominal_ratio: f64,
+    relax: f64,
+}
+
+/// Pure guard for one compressor ratio relaxation step (unit-tested).
+fn guarded_compressor_ratio_step(
+    current: f64,
+    map_target: f64,
+    ctx: RatioUpdateContext,
+) -> Option<f64> {
+    if ctx.q_m3s_norm < FLOW_UPDATE_THRESHOLD_M3S {
+        return None;
+    }
+
+    let converged = ctx.residual <= ctx.tolerance;
+    let is_transport = ctx.nominal_ratio >= TRANSPORT_NOMINAL_THRESHOLD;
+
+    if !converged {
+        if !is_transport {
+            return None;
+        }
+        if current >= ctx.nominal_ratio {
+            return None;
+        }
+        let next = (current + ctx.relax * (ctx.nominal_ratio - current))
+            .clamp(current, MAX_COMPRESSOR_RATIO);
+        return ratio_step_if_changed(current, next);
+    }
+
+    let next = (current + ctx.relax * (map_target - current))
+        .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
+    ratio_step_if_changed(current, next)
+}
+
+fn ratio_step_if_changed(current: f64, next: f64) -> Option<f64> {
+    if (next - current).abs() > 1e-6 {
+        Some(next)
+    } else {
+        None
+    }
 }
 
 fn network_has_transport_compressors(network: &GasNetwork) -> bool {
@@ -211,18 +280,17 @@ fn target_ratio_from_catalog(
     ctx: &CompressorOperatingContext,
     mode: CompressorMapMode,
 ) -> Option<f64> {
-    if mode == CompressorMapMode::Biquadratic {
-        tracing::warn!(
-            pipe_id = %pipe.id,
-            "GAZFLOW_COMPRESSOR_MAP_MODE=biquadratic not implemented yet, using measurement map"
-        );
-    }
     let station = catalog.station(&pipe.id)?;
     let nominal = pipe
         .equipment
         .compressor_nominal_ratio
         .or(pipe.compressor_ratio_max);
-    let ratio = effective_ratio_with_nominal(station, ctx, nominal);
+    let ratio = effective_ratio_with_nominal_for_mode(
+        station,
+        ctx,
+        nominal,
+        mode == CompressorMapMode::Biquadratic,
+    );
     Some(ratio.clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO))
 }
 
@@ -239,29 +307,40 @@ fn apply_compressor_map_updates(
     mode: CompressorMapMode,
     relax: f64,
     t_in_k: f64,
+    tolerance: f64,
 ) -> RatioUpdateStats {
     let mut stats = RatioUpdateStats::default();
     for pipe in network.pipes_mut() {
         if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
             continue;
         }
-        let ctx = operating_context(result, pipe, t_in_k);
-        let Some(target) = target_ratio_from_catalog(catalog, pipe, &ctx, mode) else {
-            continue;
-        };
+        let ctx_op = operating_context(result, pipe, t_in_k);
+        let nominal = pipe
+            .equipment
+            .compressor_nominal_ratio
+            .or(pipe.compressor_ratio_max)
+            .unwrap_or(1.08)
+            .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
         let current = pipe
             .compressor_ratio_max
             .or(pipe.equipment.compressor_nominal_ratio)
             .unwrap_or(1.08)
             .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
-        let next = (current + relax * (target - current))
-            .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
+        let map_target = target_ratio_from_catalog(catalog, pipe, &ctx_op, mode).unwrap_or(current);
+        let update_ctx = RatioUpdateContext {
+            q_m3s_norm: ctx_op.q_m3s_norm,
+            residual: result.residual,
+            tolerance,
+            nominal_ratio: nominal,
+            relax,
+        };
+        let Some(next) = guarded_compressor_ratio_step(current, map_target, update_ctx) else {
+            continue;
+        };
         let delta = (next - current).abs();
-        if delta > 1e-6 {
-            pipe.compressor_ratio_max = Some(next);
-            stats.updated += 1;
-            stats.max_delta = stats.max_delta.max(delta);
-        }
+        pipe.compressor_ratio_max = Some(next);
+        stats.updated += 1;
+        stats.max_delta = stats.max_delta.max(delta);
     }
     stats
 }
@@ -301,7 +380,6 @@ where
         );
     }
 
-    let steady_config = map_steady_config(config, mode);
     let relax = compressor_relax();
     let max_iters = compressor_outer_max_iters();
     let t_in_k = DEFAULT_GAS_TEMPERATURE_K;
@@ -311,6 +389,18 @@ where
     let mut last_result: Option<SolverResult> = None;
 
     for outer in 0..max_iters {
+        let steady_config = if outer == 0 {
+            steady_config_for_outer_iter(config, mode, f64::INFINITY)
+        } else {
+            steady_config_for_outer_iter(
+                config,
+                mode,
+                last_result
+                    .as_ref()
+                    .map(|r| r.residual)
+                    .unwrap_or(f64::INFINITY),
+            )
+        };
         let mut result = solve_steady_state_with_progress(
             &adjusted_network,
             demands,
@@ -330,6 +420,7 @@ where
             mode,
             relax,
             t_in_k,
+            config.tolerance,
         );
 
         if result.residual <= config.tolerance
@@ -432,11 +523,57 @@ where
 #[cfg(test)]
 mod tests {
     use super::CompressorMapMode;
+    use super::{FLOW_UPDATE_THRESHOLD_M3S, RatioUpdateContext, guarded_compressor_ratio_step};
+
+    fn ctx(q: f64, residual: f64, tolerance: f64, nominal: f64, relax: f64) -> RatioUpdateContext {
+        RatioUpdateContext {
+            q_m3s_norm: q,
+            residual,
+            tolerance,
+            nominal_ratio: nominal,
+            relax,
+        }
+    }
 
     #[test]
     fn compressor_map_mode_parses_measurement() {
         unsafe { std::env::set_var("GAZFLOW_COMPRESSOR_MAP_MODE", "measurement") };
         assert_eq!(super::compressor_map_mode(), CompressorMapMode::Measurement);
         unsafe { std::env::remove_var("GAZFLOW_COMPRESSOR_MAP_MODE") };
+    }
+
+    #[test]
+    fn guarded_ratio_skips_low_flow() {
+        let update = guarded_compressor_ratio_step(2.0, 1.5, ctx(0.005, 1e-7, 1e-6, 4.0, 0.5));
+        assert!(update.is_none());
+        assert!(0.005 < FLOW_UPDATE_THRESHOLD_M3S);
+    }
+
+    #[test]
+    fn guarded_ratio_skips_non_transport_before_convergence() {
+        let update = guarded_compressor_ratio_step(1.2, 1.5, ctx(1.0, 0.1, 1e-6, 1.08, 0.5));
+        assert!(update.is_none());
+    }
+
+    #[test]
+    fn guarded_ratio_transport_moves_upward_toward_nominal_before_convergence() {
+        let update = guarded_compressor_ratio_step(2.5, 1.5, ctx(1.0, 0.1, 1e-6, 4.09, 0.5))
+            .expect("transport should update upward");
+        assert!(update > 2.5);
+        assert!(update <= 4.09);
+    }
+
+    #[test]
+    fn guarded_ratio_transport_blocks_downward_before_convergence() {
+        let update = guarded_compressor_ratio_step(4.2, 1.5, ctx(1.0, 0.1, 1e-6, 4.09, 0.5));
+        assert!(update.is_none());
+    }
+
+    #[test]
+    fn guarded_ratio_uses_map_target_when_converged() {
+        let update = guarded_compressor_ratio_step(3.0, 2.0, ctx(1.0, 1e-7, 1e-6, 4.09, 0.5))
+            .expect("converged update");
+        assert!(update < 3.0);
+        assert!((update - 2.5).abs() < 1e-9);
     }
 }

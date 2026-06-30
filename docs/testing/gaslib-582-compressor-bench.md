@@ -52,3 +52,15 @@ Artefacts JSON v2 : `/tmp/gazflow-582-bench-v3/{baseline,measurement}.json` (mac
 | measurement | 8,22 m³/s | **4,09** |
 
 La recherche 1D + `effective_ratio_with_nominal` aligne la cible carte sur le lift transport ; le résidu measurement reste dégradé vs baseline (outer loop sans débit convergé).
+
+## Résultats v4 (turbo/biquadratique + garde outer loop + r² hybride, juin 2026)
+
+| Variante | Résidu | effective r² (st. 1–3) | Notes |
+|----------|--------|-------------------------|-------|
+| Baseline | **5,0 m³/s** | 9,0 | inchangé |
+| measurement | **5,0 m³/s** | 16,75 (post-échec diag) | **plus de régression 8,22** |
+| biquadratic | **5,0 m³/s** | 9,0 | coeffs `n_isoline` actifs |
+
+Leviers v4 : `guarded_compressor_ratio_step` (pas de baisse transport avant convergence), `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED=1` (défaut measurement/biquadratic), parsing turbo + eval biquadratique GasLib.
+
+Artefacts : `/tmp/gazflow-582-bench-v4/{baseline,measurement,biquadratic}.json`.

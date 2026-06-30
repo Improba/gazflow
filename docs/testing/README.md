@@ -203,7 +203,8 @@ Bench results (I-A0, juin 2026) : [gaslib-582-compressor-bench.md](./gaslib-582-
 |----------|------|---------|
 | `GAZFLOW_DISABLE_R2_CAP` | Disable MVP $r^2 \leq 9$ attenuation for `ratio > 3` (H2 diagnostic; `--no-r2-cap` on `compressor_diag`) | off |
 | `GAZFLOW_SKIP_COMPRESSOR_OUTER` / `GAZFLOW_COMPRESSOR_OUTER` | Post-continuation compressor blend fallback | outer on for networks $\geq$ 200 nodes |
-| `GAZFLOW_COMPRESSOR_MAP_MODE` | `legacy` (blend) \| `measurement` (carte `.cs` + outer loop) \| `biquadratic` (alias measurement, coeffs GasLib à venir) | `legacy` |
+| `GAZFLOW_COMPRESSOR_MAP_MODE` | `legacy` (blend) \| `measurement` (carte `.cs` + outer loop) \| `biquadratic` (coeffs `n_isoline` GasLib) | `legacy` |
+| `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED` | Garde r²≤9 jusqu'à residual ≤ 10× tol (measurement/biquadratic) | `1` en mode carte |
 | `GAZFLOW_COMPRESSOR_OUTER_MAX_ITERS` | Plafond boucle externe ratio | 12 |
 | `GAZFLOW_COMPRESSOR_RELAX` | Relaxation $\omega$ pour mises à jour ratio | 0.5 |
 | `GAZFLOW_DISABLE_R2_CAP` | Désactive le plafond MVP $r^2 \leq 9$ ; aussi désactivé automatiquement en mode `measurement` | off |
