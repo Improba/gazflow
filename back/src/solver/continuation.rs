@@ -6,7 +6,10 @@ use std::time::Instant;
 use anyhow::{Result, anyhow};
 
 use crate::graph::{ConnectionKind, GasNetwork};
-use crate::solver::compressor_loop::solve_with_compressor_loop;
+use crate::solver::compressor_loop::{
+    apply_map_ratios_after_continuation_step, compressor_map_mode, solve_with_compressor_loop,
+    CompressorMapMode,
+};
 use crate::solver::config::SteadyStateConfig;
 use crate::solver::gas_properties::GasComposition;
 use crate::solver::steady_state::{
@@ -116,6 +119,8 @@ where
     let mut last_success: Option<SolverResult> = None;
     let mut last_success_scale: Option<f64> = None;
     let mut bridges_used = 0usize;
+    let mut working_network = network.clone();
+    let map_mode = compressor_map_mode();
 
     let mut idx = 0usize;
     while idx < scales.len() {
@@ -167,7 +172,7 @@ where
             disable_compressor_r2_cap: steady_config.disable_compressor_r2_cap,
         };
 
-        let step_network = network_with_scaled_compressor_lift(network, scale);
+        let step_network = network_with_scaled_compressor_lift(&working_network, scale);
 
         match solve_steady_state_with_progress(
             &step_network,
@@ -187,7 +192,20 @@ where
             Ok(result) => {
                 warm_start_pressures = Some(result.pressures.clone());
                 last_success_scale = Some(scale);
-                last_success = Some(result);
+                last_success = Some(result.clone());
+                if matches!(
+                    map_mode,
+                    CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
+                ) {
+                    apply_map_ratios_after_continuation_step(
+                        &mut working_network,
+                        &scaled_demands,
+                        1.0,
+                        &result,
+                        map_mode,
+                        steady_config.tolerance,
+                    );
+                }
                 idx += 1;
             }
             Err(err) => {
@@ -285,8 +303,25 @@ where
                     let continuation_iterations = result.iterations;
                     let continuation_warnings = result.warnings.clone();
                     let continuation_warm_start = result.pressures.clone();
+                    let continuation_converged = result.residual <= steady_config.tolerance;
+                    let map_mode = super::compressor_loop::compressor_map_mode();
+                    let mut solve_network = network.clone();
+                    if matches!(
+                        map_mode,
+                        super::compressor_loop::CompressorMapMode::Measurement
+                            | super::compressor_loop::CompressorMapMode::Biquadratic
+                    ) {
+                        super::compressor_loop::apply_map_ratios_after_continuation_step(
+                            &mut solve_network,
+                            demands,
+                            1.0,
+                            &result,
+                            map_mode,
+                            steady_config.tolerance,
+                        );
+                    }
                     match solve_with_compressor_loop(
-                        network,
+                        &solve_network,
                         demands,
                         Some(&continuation_warm_start),
                         steady_config,
@@ -300,7 +335,7 @@ where
                         }
                         Err(outer_err) => {
                             match super::steady_state::solve_compressor_outer_fallback(
-                                network,
+                                &solve_network,
                                 demands,
                                 Some(&continuation_warm_start),
                                 steady_config,
@@ -314,7 +349,14 @@ where
                                 }
                                 Err(fallback_err) => {
                                     tracing::debug!(fallback_err = %fallback_err, "compressor fallback after continuation+outer loop failed");
-                                    Err(outer_err)
+                                    if continuation_converged {
+                                        tracing::info!(
+                                            "map outer loop failed after converged continuation; keeping continuation result"
+                                        );
+                                        Ok(result)
+                                    } else {
+                                        Err(outer_err)
+                                    }
                                 }
                             }
                         }

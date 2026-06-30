@@ -22,6 +22,7 @@ const RATIO_SETTLE_EPS: f64 = 1e-4;
 const FLOW_UPDATE_THRESHOLD_M3S: f64 = 0.01;
 const TRANSPORT_NOMINAL_THRESHOLD: f64 = 2.0;
 const R2_CAP_RESIDUAL_FACTOR: f64 = 10.0;
+const MAP_CONTINUATION_COUPLING_MIN_SCALE: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompressorMapMode {
@@ -156,6 +157,50 @@ fn ratio_step_if_changed(current: f64, next: f64) -> Option<f64> {
     }
 }
 
+/// Débit normal total livré (somme des sinks) au palier de continuation courant.
+pub(crate) fn estimate_total_delivery_flow_m3s(
+    demands: &HashMap<String, f64>,
+    demand_scale: f64,
+) -> f64 {
+    demands
+        .values()
+        .filter(|d| **d < 0.0)
+        .map(|d| d.abs())
+        .sum::<f64>()
+        * demand_scale.max(0.0)
+}
+
+/// Estimation de débit normal par station quand le Newton n'a pas encore convergé (Q≈0).
+pub(crate) fn estimate_station_norm_flow(
+    active_compressors: usize,
+    demands: &HashMap<String, f64>,
+    demand_scale: f64,
+) -> f64 {
+    if active_compressors == 0 {
+        return 0.0;
+    }
+    estimate_total_delivery_flow_m3s(demands, demand_scale) / active_compressors as f64
+}
+
+fn effective_flow_for_map_update(
+    result: &SolverResult,
+    active_compressors: usize,
+    demands: &HashMap<String, f64>,
+    pipe: &Pipe,
+    demand_scale: f64,
+) -> f64 {
+    let solver_q = result.flows.get(&pipe.id).copied().unwrap_or(0.0).abs();
+    if solver_q >= FLOW_UPDATE_THRESHOLD_M3S {
+        return solver_q;
+    }
+    let estimated = estimate_station_norm_flow(active_compressors, demands, demand_scale);
+    if estimated >= FLOW_UPDATE_THRESHOLD_M3S {
+        estimated
+    } else {
+        solver_q
+    }
+}
+
 fn network_has_transport_compressors(network: &GasNetwork) -> bool {
     network.pipes().any(|pipe| {
         if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
@@ -257,23 +302,6 @@ where
     Err(last_error.unwrap_or_else(|| anyhow!("compressor outer loop exhausted all blends")))
 }
 
-fn operating_context(
-    result: &SolverResult,
-    pipe: &Pipe,
-    t_in_k: f64,
-) -> CompressorOperatingContext {
-    CompressorOperatingContext {
-        q_m3s_norm: result.flows.get(&pipe.id).copied().unwrap_or(0.0).abs(),
-        p_in_bar: result
-            .pressures
-            .get(&pipe.from)
-            .copied()
-            .unwrap_or(1.01325)
-            .max(1e-3),
-        t_in_k: t_in_k.max(1.0),
-    }
-}
-
 fn target_ratio_from_catalog(
     catalog: &CompressorCatalog,
     pipe: &Pipe,
@@ -295,7 +323,7 @@ fn target_ratio_from_catalog(
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct RatioUpdateStats {
+pub(crate) struct RatioUpdateStats {
     updated: usize,
     max_delta: f64,
 }
@@ -308,13 +336,30 @@ fn apply_compressor_map_updates(
     relax: f64,
     t_in_k: f64,
     tolerance: f64,
+    demands: &HashMap<String, f64>,
+    demand_scale: f64,
 ) -> RatioUpdateStats {
+    let active_compressors = network
+        .pipes()
+        .filter(|p| p.kind == ConnectionKind::CompressorStation && p.hydraulically_active())
+        .count();
     let mut stats = RatioUpdateStats::default();
     for pipe in network.pipes_mut() {
         if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
             continue;
         }
-        let ctx_op = operating_context(result, pipe, t_in_k);
+        let q_m3s_norm =
+            effective_flow_for_map_update(result, active_compressors, demands, pipe, demand_scale);
+        let ctx_op = CompressorOperatingContext {
+            q_m3s_norm,
+            p_in_bar: result
+                .pressures
+                .get(&pipe.from)
+                .copied()
+                .unwrap_or(1.01325)
+                .max(1e-3),
+            t_in_k: t_in_k.max(1.0),
+        };
         let nominal = pipe
             .equipment
             .compressor_nominal_ratio
@@ -328,7 +373,7 @@ fn apply_compressor_map_updates(
             .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
         let map_target = target_ratio_from_catalog(catalog, pipe, &ctx_op, mode).unwrap_or(current);
         let update_ctx = RatioUpdateContext {
-            q_m3s_norm: ctx_op.q_m3s_norm,
+            q_m3s_norm,
             residual: result.residual,
             tolerance,
             nominal_ratio: nominal,
@@ -343,6 +388,37 @@ fn apply_compressor_map_updates(
         stats.max_delta = stats.max_delta.max(delta);
     }
     stats
+}
+
+/// Couplage Q–ratio après un palier de continuation réussi (scale ≥ 0.5).
+pub(crate) fn apply_map_ratios_after_continuation_step(
+    network: &mut GasNetwork,
+    demands: &HashMap<String, f64>,
+    demand_scale: f64,
+    result: &SolverResult,
+    mode: CompressorMapMode,
+    tolerance: f64,
+) -> RatioUpdateStats {
+    if demand_scale < MAP_CONTINUATION_COUPLING_MIN_SCALE {
+        return RatioUpdateStats::default();
+    }
+    let Some(catalog) = network.compressor_catalog.clone() else {
+        return RatioUpdateStats::default();
+    };
+    if catalog.stations.is_empty() {
+        return RatioUpdateStats::default();
+    }
+    apply_compressor_map_updates(
+        network,
+        result,
+        &catalog,
+        mode,
+        compressor_relax(),
+        DEFAULT_GAS_TEMPERATURE_K,
+        tolerance,
+        demands,
+        demand_scale,
+    )
 }
 
 fn solve_with_compressor_map<F>(
@@ -421,6 +497,8 @@ where
             relax,
             t_in_k,
             config.tolerance,
+            demands,
+            1.0,
         );
 
         if result.residual <= config.tolerance
@@ -432,6 +510,10 @@ where
         if updates.updated == 0 {
             if result.residual <= config.tolerance {
                 return Ok(result);
+            }
+            if outer == 0 && result.residual > config.tolerance {
+                // Warm-start convergé depuis continuation : ne pas casser avec des ratios figés.
+                break;
             }
             break;
         }
@@ -522,6 +604,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::CompressorMapMode;
     use super::{FLOW_UPDATE_THRESHOLD_M3S, RatioUpdateContext, guarded_compressor_ratio_step};
 
@@ -575,5 +659,14 @@ mod tests {
             .expect("converged update");
         assert!(update < 3.0);
         assert!((update - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn estimated_flow_splits_total_delivery_across_compressors() {
+        let active = 2usize;
+        let mut demands = HashMap::new();
+        demands.insert("sink".into(), -120.0);
+        let per_station = super::estimate_station_norm_flow(active, &demands, 1.0);
+        assert!((per_station - 60.0).abs() < 1e-9);
     }
 }

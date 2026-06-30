@@ -63,4 +63,8 @@ La recherche 1D + `effective_ratio_with_nominal` aligne la cible carte sur le li
 
 Leviers v4 : `guarded_compressor_ratio_step` (pas de baisse transport avant convergence), `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED=1` (défaut measurement/biquadratic), parsing turbo + eval biquadratique GasLib.
 
-Artefacts : `/tmp/gazflow-582-bench-v4/{baseline,measurement,biquadratic}.json`.
+## Résultats v5 (couplage Q–ratio continuation + débit estimé, juin 2026)
+
+Leviers : `apply_map_ratios_after_continuation_step` (scale ≥ 0.5), débit nominal estimé depuis les sinks quand Q solver ≈ 0, salvage si outer loop échoue après continuation convergée.
+
+Artefacts : `/tmp/gazflow-582-bench-v5/{baseline,measurement,biquadratic}.json`.
