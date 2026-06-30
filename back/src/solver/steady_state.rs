@@ -1181,6 +1181,87 @@ pub fn mass_balance_report(
     }
 }
 
+/// Résultat d'un solve avec raffinement itératif des ancrages pression.
+#[derive(Debug, Clone)]
+pub struct MassBalanceRefinementOutcome {
+    pub network: GasNetwork,
+    pub result: SolverResult,
+    pub refinement_passes: usize,
+}
+
+/// Solve régime permanent avec ancrages pression supplémentaires guidés par le bilan massique.
+pub fn solve_with_mass_balance_refinement<G>(
+    base_network: &GasNetwork,
+    scenario: &mut crate::gaslib::ScenarioDemands,
+    demands: &HashMap<String, f64>,
+    preset: &crate::solver::presets::SolverPreset,
+    gas_composition: GasComposition,
+    mut on_first_continuation_step: Option<G>,
+) -> Result<MassBalanceRefinementOutcome>
+where
+    G: FnMut(crate::solver::continuation::ContinuationStepEvent),
+{
+    use crate::gaslib::{network_with_scenario_boundaries, try_add_mass_balance_anchor};
+    use crate::solver::continuation::solve_steady_state_with_preset;
+
+    let max_passes = std::env::var("GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4);
+
+    let mut network = network_with_scenario_boundaries(base_network, scenario);
+    let mut result = solve_steady_state_with_preset(
+        &network,
+        demands,
+        None,
+        preset,
+        gas_composition,
+        |_| SolverControl::Continue,
+        on_first_continuation_step.as_mut(),
+    )?;
+
+    let mut refinement_passes = 0usize;
+    while refinement_passes < max_passes && result.residual >= preset.tolerance {
+        let prev_residual = result.residual;
+        let report = mass_balance_report(&network, demands, &result);
+        let imbalances: Vec<_> = report
+            .top_free_imbalances
+            .iter()
+            .map(|n| (n.node_id.clone(), n.imbalance_m3s))
+            .collect();
+        let anchors_before = scenario.mass_balance_anchors.len();
+        if !try_add_mass_balance_anchor(
+            base_network,
+            scenario,
+            &imbalances,
+            Some(&result.pressures),
+        ) {
+            break;
+        }
+        network = network_with_scenario_boundaries(base_network, scenario);
+        result = solve_steady_state_with_preset(
+            &network,
+            demands,
+            None,
+            preset,
+            gas_composition,
+            |_| SolverControl::Continue,
+            None::<fn(crate::solver::continuation::ContinuationStepEvent)>,
+        )?;
+        if result.residual + 1e-6 >= prev_residual {
+            scenario.mass_balance_anchors.truncate(anchors_before);
+            break;
+        }
+        refinement_passes += 1;
+    }
+
+    Ok(MassBalanceRefinementOutcome {
+        network,
+        result,
+        refinement_passes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

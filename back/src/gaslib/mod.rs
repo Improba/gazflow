@@ -22,5 +22,6 @@ pub use routing::{
 pub use scenario::{
     PressureSlackHint, ScenarioDemands, ZeroFlowBoundaryAnchor, apply_scenario_boundaries,
     demands_without_pressure_slack, enrich_scenario_with_balance_hub, load_scenario_demands,
+    network_with_scenario_boundaries, try_add_mass_balance_anchor,
 };
 pub use solution::{ReferenceSolution, load_reference_solution};

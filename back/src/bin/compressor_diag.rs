@@ -14,10 +14,10 @@ use gazflow_back::gaslib::{
 };
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
 use gazflow_back::solver::{
-    ContinuationStepEvent, GasComposition, MassBalanceReport, SolverControl, SolverResult,
+    ContinuationStepEvent, GasComposition, MassBalanceReport, SolverResult,
     apply_map_ratios_after_continuation_step, compressor_map_mode, compressor_pressure_from_coeff,
     estimated_compressor_map_flow_m3s, mass_balance_report, preset_robust,
-    solve_steady_state_with_preset, CompressorMapMode,
+    solve_with_mass_balance_refinement, CompressorMapMode,
 };
 use serde::Serialize;
 
@@ -81,6 +81,10 @@ struct DiagOutput {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mass_balance: Option<MassBalanceReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mass_balance_refinement_passes: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    mass_balance_anchors: Vec<String>,
 }
 
 fn parse_residual_from_error(err: &str) -> Option<f64> {
@@ -345,6 +349,8 @@ fn skipped_output(
         reason: Some(reason),
         error: None,
         mass_balance: None,
+        mass_balance_refinement_passes: None,
+        mass_balance_anchors: Vec::new(),
     }
 }
 
@@ -420,8 +426,8 @@ fn main() -> Result<()> {
         scenario_path.display()
     );
 
-    let mut network = load_network(&network_path).context("load network")?;
-    let catalog_stations = network
+    let base_network = load_network(&network_path).context("load network")?;
+    let catalog_stations = base_network
         .compressor_catalog
         .as_ref()
         .map(|c| c.stations.len())
@@ -435,21 +441,36 @@ fn main() -> Result<()> {
     };
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;
-    enrich_scenario_with_balance_hub(&network, &mut scenario);
-    apply_scenario_boundaries(&mut network, &scenario);
+    enrich_scenario_with_balance_hub(&base_network, &mut scenario);
     let demands = demands_without_pressure_slack(&scenario.demands, &scenario);
 
-    let preset = preset_robust(network.node_count());
+    let preset = preset_robust(base_network.node_count());
     let mut continuation_scales = Vec::new();
-    let solve_result = solve_steady_state_with_preset(
-        &network,
+    let refinement_outcome = solve_with_mass_balance_refinement(
+        &base_network,
+        &mut scenario,
         &demands,
-        None,
         &preset,
         GasComposition::pure_ch4(),
-        |_| SolverControl::Continue,
         Some(|ev: ContinuationStepEvent| continuation_scales.push(ev.scale)),
     );
+    let (network, solve_result, refinement_passes) = match refinement_outcome {
+        Ok(outcome) => (
+            outcome.network,
+            Ok(outcome.result),
+            outcome.refinement_passes,
+        ),
+        Err(err) => {
+            let mut net = base_network.clone();
+            apply_scenario_boundaries(&mut net, &scenario);
+            (net, Err(err), 0)
+        }
+    };
+    let mass_balance_anchor_ids: Vec<String> = scenario
+        .mass_balance_anchors
+        .iter()
+        .map(|a| a.node_id.clone())
+        .collect();
 
     let stations = match &solve_result {
         Ok(result) => {
@@ -511,6 +532,8 @@ fn main() -> Result<()> {
                 reason: None,
                 error: None,
                 mass_balance,
+                mass_balance_refinement_passes: Some(refinement_passes),
+                mass_balance_anchors: mass_balance_anchor_ids.clone(),
             }
         }
         Err(err) => {
@@ -530,6 +553,8 @@ fn main() -> Result<()> {
                 reason: None,
                 error: Some(err_text),
                 mass_balance: None,
+                mass_balance_refinement_passes: Some(refinement_passes),
+                mass_balance_anchors: mass_balance_anchor_ids,
             }
         }
     };

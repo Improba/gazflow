@@ -107,6 +107,22 @@ Leviers v15 :
 
 Artefact : `/tmp/582-v15.json`.
 
+## Résultats v16 (raffinement massique itératif + exit-hub, juin 2026)
+
+| Mode | Résidu | Pire nœud | Passes refinement | Notes |
+|------|--------|-----------|-------------------|-------|
+| measurement | **2,0 m³/s** (= v15) | `sink_24` (−2) | **1** | `innode_420` ajouté ; gate arrêt si pas d'amélioration |
+
+Leviers v16 :
+
+1. **`mass_balance_anchors`** : boucle post-solve (max 4 passes, `GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES`) ; ancrage à la **pression résolue** ; revert si résidu stagne.
+2. **`detect_exit_hub_junction_anchor`** : 3ᵉ junction exit-only (`innode_315`).
+3. JSON diag : `mass_balance_refinement_passes`, `mass_balance_anchors`.
+
+Le plancher **~2 m³/s** persiste : les nœuds restants (`sink_24`, `source_20`) ont **Q imposé** — ancrage pression inadapté. Prochain levier : hydraulique compresseur in-Newton ou couplage P/Q scénario.
+
+Artefact : `/tmp/582-v16b.json`.
+
 ## Résultats v12 (distribution sud + couplage pression/ratio, juin 2026)
 
 | Mode | Résidu | eval_q CS4/CS5 | `map_target` CS4/CS5 |
