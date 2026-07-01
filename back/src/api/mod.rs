@@ -1393,9 +1393,8 @@ fn load_dataset_from_disk(
     let default_demands = if scenario_path.exists() {
         match gaslib::load_scenario_demands(&scenario_path) {
             Ok(mut scenario) => {
-                gaslib::enrich_scenario_with_balance_hub(&network, &mut scenario);
-                gaslib::apply_scenario_boundaries(&mut network, &scenario);
-                gaslib::demands_without_pressure_slack(&scenario.demands, &scenario)
+                network = gaslib::prepare_transport_scenario(&network, &mut scenario);
+                gaslib::effective_solver_demands(&scenario.demands, &scenario)
             }
             Err(err) => {
                 tracing::warn!("Impossible de charger {:?}: {err:#}", scenario_path);

@@ -8,7 +8,7 @@ Protocole figé : `compressor_diag`, réseau baseline connecté, CDF off, scéna
 |-------|------------|
 | **`residual`** | Max \|f_node\| sur nœuds libres Newton = **déséquilibre massique nodal** au state retourné (m³/s). |
 | **`mass_balance`** (JSON) | Même quantité par nœud, avec demandes **effectives** (slack + boundaries assouplies retirées). |
-| **`nomination_mass_balance`** (JSON, v19+) | Bilan avec demandes **nominales** du `.scn` — fidélité nomination GasLib. |
+| **`nomination_mass_balance`** (JSON) | Bilan avec demandes **nominales** du `.scn` — fidélité nomination GasLib. |
 | **Partial accept** | Newton outer loop retourne le dernier état si `residual > tolerance` au lieu d'échouer. |
 | **Référence nomination intacte** | Sans `contract_flow_relaxed` : le solveur impose encore les Q du mild_618. |
 
@@ -44,15 +44,21 @@ Référence architecture : [gaslib-582-compressor-diagnosis.md](./gaslib-582-com
 ## Commandes
 
 ```bash
+# Bench reproductible (nomination intacte par défaut)
+./scripts/bench-gaslib-582.sh nominal
+
+# Expérience v18 (assouplissement Q contractuel)
+GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1 ./scripts/bench-gaslib-582.sh contract-relax
+
 cd back && cargo build --release --bin compressor_diag
 
 GAZFLOW_COMPRESSOR_MAP_MODE=measurement ./target/release/compressor_diag GasLib-582 --json /tmp/582-measurement.json
 
-# Référence nomination intacte (v17 équivalent)
-GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=0 ./target/release/compressor_diag GasLib-582 --json /tmp/582-nominal.json
+# Référence nomination intacte (défaut bench script)
+./scripts/bench-gaslib-582.sh nominal
 
-# Jacobian carte opt-in (expérimental)
-GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC=1 ./target/release/compressor_diag GasLib-582 --json /tmp/582-head-jac.json
+# Expérience assouplissement Q (hors nomination)
+GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1 ./scripts/bench-gaslib-582.sh contract-relax
 ```
 
 ## Variables d'environnement (Phase I)
@@ -63,7 +69,7 @@ GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC=1 ./target/release/compressor_diag GasLib-582
 | `GAZFLOW_NEWTON_COMPRESSOR_MAP` | Carte → coeff P² recouplé in-Newton (v17) | `1` en measurement |
 | `GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC` | ∂(coeff carte)/∂Q, ∂/∂P_in implicite (v19) | `0` |
 | `GAZFLOW_COMPRESSOR_STRICT_NEWTON` | Désactive partial accept outer loop | `0` |
-| `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT` | Retrait Q itératif boundaries (v18) | `1` |
+| `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT` | Retrait Q itératif boundaries (v18, **opt-in**) | `0` |
 | `GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS` | Retrait Q upfront (29 nœuds mild_618) | `0` |
 | `GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES` | Passes post-solve ancrages / contract | `4` |
 | `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED` | Plafond r²≤9 jusqu'à convergence | `1` |

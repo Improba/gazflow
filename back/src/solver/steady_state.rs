@@ -1190,6 +1190,9 @@ pub struct MassBalanceRefinementOutcome {
 }
 
 /// Solve régime permanent avec ancrages pression supplémentaires guidés par le bilan massique.
+///
+/// Utilisé par `compressor_diag` (bench). La prod (`main`, API) appelle
+/// `prepare_transport_scenario` + solve standard sans cette boucle.
 pub fn solve_with_mass_balance_refinement<G>(
     base_network: &GasNetwork,
     scenario: &mut crate::gaslib::ScenarioDemands,

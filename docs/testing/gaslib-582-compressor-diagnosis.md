@@ -69,7 +69,7 @@ Sur-ancrage (>2–3 junctions) dégrade le résidu (~3,6 m³/s observé).
 
 ## Assouplissement contractuel (v18) — limites scientifiques
 
-`try_relax_contract_boundary` retire le Q nominatif sur les pires `source_*`/`sink_*` (seuil 1,5 m³/s, max 3/passe).
+`try_relax_contract_boundary` retire le Q nominatif sur les pires `source_*`/`sink_*` (seuil 1,5 m³/s, max 3/passe). **Désactivé par défaut** (`GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=0`) ; activer uniquement pour expériences bench.
 
 **Limites** :
 
@@ -89,6 +89,6 @@ Sur-ancrage (>2–3 junctions) dégrade le résidu (~3,6 m³/s observé).
 
 1. **Modèle compresseur avec bilan énergétique** (hors MVP P²) ou défaut enthalpique explicite in-Newton.
 2. **Convergence stricte** (`GAZFLOW_COMPRESSOR_STRICT_NEWTON=1`) + budget iter : qualifier si ~2 m³/s est attracteur physique ou purement numérique.
-3. **Bench reproductible** : script figé, 3 runs, reporter médiane + écart.
+3. **Bench reproductible** : `./scripts/bench-gaslib-582.sh` (3 runs manuels recommandés, médiane).
 
 Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (non atteint).

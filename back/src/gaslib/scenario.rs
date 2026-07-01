@@ -135,10 +135,23 @@ pub fn apply_scenario_boundaries(network: &mut GasNetwork, scenario: &ScenarioDe
     }
 }
 
-fn contract_boundary_refinement_enabled() -> bool {
+/// Active l'assouplissement itératif Q sur boundaries contractuelles (v18, **opt-in**).
+pub fn contract_boundary_refinement_enabled() -> bool {
     std::env::var("GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT")
-        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-        .unwrap_or(true)
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Enrichit le scénario transport et applique les ancrages pression statiques au réseau.
+///
+/// N'inclut pas le refinement itératif (`solve_with_mass_balance_refinement`) : réservé à
+/// `compressor_diag` et aux benches explicites.
+pub fn prepare_transport_scenario(
+    base: &GasNetwork,
+    scenario: &mut ScenarioDemands,
+) -> GasNetwork {
+    enrich_scenario_with_balance_hub(base, scenario);
+    network_with_scenario_boundaries(base, scenario)
 }
 
 /// Retire la demande imposée sur le nœud slack pression et les boundaries contractuels assouplis.
@@ -846,6 +859,7 @@ fn convert_flow_to_m3_per_s(value: f64, unit: Option<&str>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::path::Path;
 
     #[test]
@@ -1038,7 +1052,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_try_relax_contract_boundary() {
+        unsafe { std::env::set_var("GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT", "1") };
         let mut scenario = ScenarioDemands {
             scenario_id: None,
             demands: HashMap::new(),
@@ -1064,6 +1080,44 @@ mod tests {
         ));
         assert_eq!(scenario.contract_flow_relaxed, vec!["sink_24"]);
         assert!(scenario.contract_pressure_anchors.is_empty());
+        unsafe { std::env::remove_var("GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_contract_boundary_refinement_defaults_off() {
+        unsafe { std::env::remove_var("GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT") };
+        assert!(!contract_boundary_refinement_enabled());
+        unsafe { std::env::set_var("GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT", "1") };
+        assert!(contract_boundary_refinement_enabled());
+        unsafe { std::env::remove_var("GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_try_relax_contract_boundary_respects_enable_flag() {
+        unsafe { std::env::set_var("GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT", "0") };
+        let mut scenario = ScenarioDemands {
+            scenario_id: None,
+            demands: HashMap::new(),
+            pressure_slack: None,
+            balance_hubs: Vec::new(),
+            junction_anchors: Vec::new(),
+            boundary_spine_anchors: Vec::new(),
+            mass_balance_anchors: Vec::new(),
+            zero_flow_boundary_anchors: Vec::new(),
+            contract_flow_relaxed: Vec::new(),
+            contract_pressure_anchors: Vec::new(),
+        };
+        let mut pressures = HashMap::new();
+        pressures.insert("sink_24".into(), 45.0);
+        let imbalances = vec![("sink_24".into(), -2.0)];
+        assert!(!try_relax_contract_boundary(
+            &mut scenario,
+            &imbalances,
+            &pressures
+        ));
+        unsafe { std::env::remove_var("GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT") };
     }
 
     #[test]

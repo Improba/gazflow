@@ -21,8 +21,8 @@ pub use routing::{
 };
 pub use scenario::{
     PressureSlackHint, ScenarioDemands, ZeroFlowBoundaryAnchor, apply_scenario_boundaries,
-    demands_without_pressure_slack, effective_solver_demands, enrich_scenario_with_balance_hub,
-    load_scenario_demands, network_with_scenario_boundaries, try_add_mass_balance_anchor,
-    try_relax_contract_boundary,
+    contract_boundary_refinement_enabled, demands_without_pressure_slack, effective_solver_demands,
+    enrich_scenario_with_balance_hub, load_scenario_demands, network_with_scenario_boundaries,
+    prepare_transport_scenario, try_add_mass_balance_anchor, try_relax_contract_boundary,
 };
 pub use solution::{ReferenceSolution, load_reference_solution};

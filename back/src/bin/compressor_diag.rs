@@ -1,7 +1,14 @@
 //! Diagnostic compresseurs transport (palier I-A0 / I-A, GasLib-582).
 //!
-//! Protocole figé : réseau baseline connecté, CDF désactivé, slack pression retiré.
-//! Hors CI ; utiliser localement après `./scripts/fetch_gaslib.sh GasLib-582`.
+//! **Chemin bench** (hors prod API) : `solve_with_mass_balance_refinement` + refinement
+//! itératif (ancrages `innode_*`, assouplissement Q opt-in via
+//! `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1`).
+//!
+//! **Prod** (`main`, API REST) : `prepare_transport_scenario` + `effective_solver_demands`
+//! sans refinement itératif — nomination GasLib préservée (sauf slack pression).
+//!
+//! Protocole figé : réseau baseline connecté, CDF désactivé. Hors CI.
+//! Prérequis : `./scripts/fetch_gaslib.sh GasLib-582`
 
 use std::fs;
 use std::path::{Path, PathBuf};
