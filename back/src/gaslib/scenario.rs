@@ -157,7 +157,7 @@ pub fn scenario_pressure_penalty_weight() -> f64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|w: &f64| w.is_finite() && *w > 0.0)
-        .unwrap_or(1.0)
+        .unwrap_or(0.01)
 }
 
 fn merge_pressure_bound(

@@ -76,7 +76,7 @@ GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1 ./scripts/bench-gaslib-582.sh contract-re
 | `GAZFLOW_SCENARIO_PRESSURE_ENVELOPES` | Enveloppes P `.scn` sur boundaries Q≠0 (Phase I-bis, **opt-in**) | `0` |
 | `GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON` | Pénalité soft pression dans le Newton (avec enveloppes) | `0` |
 | `GAZFLOW_SCENARIO_PRESSURE_CLAMP` | Clamp line-search Newton (avec in_newton) | `0` |
-| `GAZFLOW_SCENARIO_PRESSURE_PENALTY_WEIGHT` | Poids pénalité soft in-Newton (m³/s par bar) | `1` |
+| `GAZFLOW_SCENARIO_PRESSURE_PENALTY_WEIGHT` | Poids pénalité soft in-Newton (m³/s par bar) | `0.01` |
 | `GAZFLOW_TRANSPORT_MINIMAL_ANCHORS` | Slack seul, sans hubs/junction/spine (Phase I-bis, **opt-in**) | `0` |
 | `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED` | Plafond r²≤9 jusqu'à convergence | `1` |
 | `GAZFLOW_COMPRESSOR_OUTER_MAX_ITERS` | Itérations outer loop ratio | 12 |
@@ -109,6 +109,8 @@ Artefact référence nomination intacte : `/tmp/582-v17.json` (résidu 2,045 m³
 | v20 | 2,159 | cap in-Newton assoupli (opt-in, pas de gain) |
 | v21 | **2,045** | fermeture H_map ↔ H_req (opt-in, = baseline) |
 | v22 | **2,045** | équation H explicite + T_out aval (opt-in, = baseline) |
+| I-bis | **2,159** / **2,045** | enveloppes post-check ; in-Newton soft (w=0,01) = baseline + 11 viol. P |
+| strict | **échec @ 3,0** | partial accept off ; plancher 2,045 = artefact numérique |
 
 ## Interprétation globale
 
