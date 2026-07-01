@@ -13,6 +13,10 @@ use crate::compressor::{
     effective_ratio_energy_closure_for_mode, effective_ratio_with_nominal_for_mode,
     head_mismatch_penalty_psq, isentropic_outlet_temperature_k,
 };
+use crate::gaslib::{
+    scenario_pressure_envelopes_enabled, scenario_pressure_in_newton_enabled,
+    scenario_pressure_penalty_weight,
+};
 use crate::graph::{ConnectionKind, GasNetwork};
 
 use super::config::SteadyStateConfig;
@@ -33,6 +37,71 @@ use super::steady_state::{
 
 const MIN_PRESSURE_SQ: f64 = 1.0;
 const MIN_ABS_DP: f64 = 1e-10;
+
+#[derive(Debug, Clone)]
+struct PressureBoundContext {
+    lower_bar: Vec<Option<f64>>,
+    upper_bar: Vec<Option<f64>>,
+    penalty_weight: f64,
+}
+
+impl PressureBoundContext {
+    fn from_network(network: &GasNetwork, node_ids: &[String]) -> Self {
+        let mut lower_bar = Vec::with_capacity(node_ids.len());
+        let mut upper_bar = Vec::with_capacity(node_ids.len());
+        for id in node_ids {
+            if let Some(n) = network.nodes().find(|node| node.id == *id) {
+                lower_bar.push(n.pressure_lower_bar);
+                upper_bar.push(n.pressure_upper_bar);
+            } else {
+                lower_bar.push(None);
+                upper_bar.push(None);
+            }
+        }
+        Self {
+            lower_bar,
+            upper_bar,
+            penalty_weight: scenario_pressure_penalty_weight(),
+        }
+    }
+
+    fn clamp_idx(&self, idx: usize, pressure_sq: f64) -> f64 {
+        let mut v = pressure_sq.max(MIN_PRESSURE_SQ);
+        if let Some(lo) = self.lower_bar.get(idx).and_then(|o| *o) {
+            v = v.max(lo * lo);
+        }
+        if let Some(hi) = self.upper_bar.get(idx).and_then(|o| *o) {
+            v = v.min(hi * hi);
+        }
+        v
+    }
+
+    fn violation_m3s(&self, idx: usize, pressure_bar: f64) -> f64 {
+        let mut viol = 0.0_f64;
+        if let Some(lo) = self.lower_bar.get(idx).and_then(|o| *o) {
+            viol = viol.max((lo - pressure_bar).max(0.0) * self.penalty_weight);
+        }
+        if let Some(hi) = self.upper_bar.get(idx).and_then(|o| *o) {
+            viol = viol.max((pressure_bar - hi).max(0.0) * self.penalty_weight);
+        }
+        viol
+    }
+}
+
+fn step_free_pressure_sq(
+    current: f64,
+    delta: f64,
+    idx: usize,
+    pressure_bounds: Option<&PressureBoundContext>,
+) -> f64 {
+    let raw = current + delta;
+    if let Some(bounds) = pressure_bounds {
+        bounds.clamp_idx(idx, raw)
+    } else {
+        raw.max(MIN_PRESSURE_SQ)
+    }
+}
+
 const JACOBI_RELAX: f64 = 0.8;
 const MAX_BACKTRACK_STEPS: usize = 5;
 const PIVOT_EPS: f64 = 1e-14;
@@ -391,6 +460,15 @@ where
         .map(|(i, id)| (id.clone(), i))
         .collect();
 
+    let pressure_bounds = if scenario_pressure_envelopes_enabled()
+        && scenario_pressure_in_newton_enabled()
+    {
+        Some(PressureBoundContext::from_network(network, &node_ids))
+    } else {
+        None
+    };
+    let pressure_bounds_ref = pressure_bounds.as_ref();
+
     let mut fixed: HashMap<usize, f64> = network
         .nodes()
         .filter_map(|n| {
@@ -576,6 +654,7 @@ where
             scaling,
             gas_composition,
             map_ctx: newton_map_ctx.as_ref(),
+            pressure_bounds: pressure_bounds_ref,
         };
         let baseline_residual = eval.evaluate(&pressures_sq).residual;
         let candidate_residual = eval.evaluate(&candidate).residual;
@@ -595,6 +674,7 @@ where
             scaling,
             gas_composition,
             newton_map_ctx.as_ref(),
+            pressure_bounds_ref,
         );
         let residual = state.residual;
         iterations += 1;
@@ -731,6 +811,7 @@ where
                             scaling,
                             gas_composition,
                             map_ctx: newton_map_ctx.as_ref(),
+                            pressure_bounds: pressure_bounds_ref,
                         },
                     );
                 } else {
@@ -739,6 +820,7 @@ where
                         &free_indices,
                         &state.f_node,
                         &state.j_diag,
+                        pressure_bounds_ref,
                     );
                 }
             }
@@ -750,8 +832,12 @@ where
         for _ in 0..=MAX_BACKTRACK_STEPS {
             let mut trial_pressures = pressures_sq.clone();
             for (pos, &idx) in free_indices.iter().enumerate() {
-                trial_pressures[idx] =
-                    (trial_pressures[idx] + alpha * delta_free[pos]).max(MIN_PRESSURE_SQ);
+                trial_pressures[idx] = step_free_pressure_sq(
+                    trial_pressures[idx],
+                    alpha * delta_free[pos],
+                    idx,
+                    pressure_bounds_ref,
+                );
             }
 
             let trial_state = evaluate_state(
@@ -762,6 +848,7 @@ where
                 scaling,
                 gas_composition,
                 newton_map_ctx.as_ref(),
+                pressure_bounds_ref,
             );
             if trial_state.residual < residual {
                 pressures_sq = trial_pressures;
@@ -786,6 +873,7 @@ where
                         scaling,
                         gas_composition,
                         map_ctx: newton_map_ctx.as_ref(),
+                        pressure_bounds: pressure_bounds_ref,
                     },
                 );
             } else {
@@ -794,6 +882,7 @@ where
                     &free_indices,
                     &state.f_node,
                     &state.j_diag,
+                    pressure_bounds_ref,
                 );
             }
         }
@@ -807,6 +896,7 @@ where
         scaling,
         gas_composition,
         newton_map_ctx.as_ref(),
+        pressure_bounds_ref,
     );
 
     if final_state.residual >= tolerance && !free_indices.is_empty() {
@@ -1027,6 +1117,7 @@ fn finite_difference_node_row_derivatives(
             scaling,
             gas_composition,
             map_ctx,
+            None,
         );
         let d = (perturbed_state.f_node[row_node_idx] - base_row_residual) / h;
         if d.is_finite() {
@@ -1262,6 +1353,7 @@ fn evaluate_state(
     scaling: NondimScaling,
     gas_composition: GasComposition,
     map_ctx: Option<&NewtonMapContext<'_>>,
+    pressure_bounds: Option<&PressureBoundContext>,
 ) -> IterationState {
     let n = pressures_sq.len();
     let mut f_node = demands_vec.to_vec();
@@ -1342,10 +1434,37 @@ fn evaluate_state(
         }
     }
 
-    let residual = free_indices
+    if let Some(bounds) = pressure_bounds {
+        for &idx in free_indices {
+            let p = pressures_sq[idx].sqrt();
+            if let Some(lo) = bounds.lower_bar.get(idx).and_then(|o| *o) {
+                let shortfall = (lo - p).max(0.0);
+                if shortfall > 0.0 {
+                    f_node[idx] += bounds.penalty_weight * shortfall;
+                    j_diag[idx] += bounds.penalty_weight;
+                }
+            }
+            if let Some(hi) = bounds.upper_bar.get(idx).and_then(|o| *o) {
+                let excess = (p - hi).max(0.0);
+                if excess > 0.0 {
+                    f_node[idx] -= bounds.penalty_weight * excess;
+                    j_diag[idx] += bounds.penalty_weight;
+                }
+            }
+        }
+    }
+
+    let mut residual = free_indices
         .iter()
         .map(|&idx| f_node[idx].abs())
         .fold(0.0, f64::max);
+
+    if let Some(bounds) = pressure_bounds {
+        for &idx in free_indices {
+            let viol = bounds.violation_m3s(idx, pressures_sq[idx].sqrt());
+            residual = residual.max(viol);
+        }
+    }
 
     IterationState {
         f_node,
@@ -1684,6 +1803,7 @@ mod tests {
             scaling,
             GasComposition::pure_ch4(),
             None,
+            None,
         );
         let mp_idx = *id_pos.get("MP").expect("MP index");
         let fd = super::finite_difference_node_row_derivatives(
@@ -1726,6 +1846,7 @@ struct NewtonEvalContext<'a> {
     scaling: NondimScaling,
     gas_composition: GasComposition,
     map_ctx: Option<&'a NewtonMapContext<'a>>,
+    pressure_bounds: Option<&'a PressureBoundContext>,
 }
 
 impl NewtonEvalContext<'_> {
@@ -1738,6 +1859,7 @@ impl NewtonEvalContext<'_> {
             self.scaling,
             self.gas_composition,
             self.map_ctx,
+            self.pressure_bounds,
         )
     }
 }
@@ -1754,7 +1876,12 @@ fn try_apply_jacobi_fallback_if_improves(
     for &idx in free_indices {
         if j_diag[idx] > 1e-20 {
             let delta = JACOBI_RELAX * f_node[idx] / j_diag[idx];
-            candidate[idx] = (candidate[idx] + delta).max(MIN_PRESSURE_SQ);
+            candidate[idx] = step_free_pressure_sq(
+                candidate[idx],
+                delta,
+                idx,
+                eval.pressure_bounds,
+            );
         }
     }
     let candidate_state = eval.evaluate(&candidate);
@@ -1768,11 +1895,13 @@ fn apply_jacobi_fallback(
     free_indices: &[usize],
     f_node: &[f64],
     j_diag: &[f64],
+    pressure_bounds: Option<&PressureBoundContext>,
 ) {
     for &idx in free_indices {
         if j_diag[idx] > 1e-20 {
             let delta = JACOBI_RELAX * f_node[idx] / j_diag[idx];
-            pressures_sq[idx] = (pressures_sq[idx] + delta).max(MIN_PRESSURE_SQ);
+            pressures_sq[idx] =
+                step_free_pressure_sq(pressures_sq[idx], delta, idx, pressure_bounds);
         }
     }
 }

@@ -67,6 +67,14 @@ pub struct ZeroFlowBoundaryAnchor {
     pub scenario_pressure_bar: Option<f64>,
 }
 
+/// Enveloppe pression scénario (entry/exit à Q nominé) — inégalités GasLib, pas égalités Newton.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenarioPressureEnvelope {
+    pub node_id: String,
+    pub lower_bar: Option<f64>,
+    pub upper_bar: Option<f64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScenarioDemands {
     pub scenario_id: Option<String>,
@@ -87,6 +95,71 @@ pub struct ScenarioDemands {
     pub contract_flow_relaxed: Vec<String>,
     /// Pression fixée lors de l'abandon Q v18 (typ. pression résolue partielle).
     pub contract_pressure_anchors: Vec<PressureSlackHint>,
+    /// Enveloppes pression `.scn` sur boundaries à Q nominé (hors slack).
+    pub pressure_envelopes: Vec<ScenarioPressureEnvelope>,
+}
+
+/// Applique les enveloppes pression scénario au réseau (intersection avec bornes `.net`).
+pub fn apply_scenario_pressure_envelopes(
+    network: &mut GasNetwork,
+    scenario: &ScenarioDemands,
+) {
+    let reserved = all_applied_anchor_ids(scenario);
+    for envelope in &scenario.pressure_envelopes {
+        if reserved.contains(&envelope.node_id) {
+            continue;
+        }
+        let Some(node) = network.node_mut(&envelope.node_id) else {
+            continue;
+        };
+        if node.pressure_fixed_bar.is_some() {
+            continue;
+        }
+        node.pressure_lower_bar =
+            merge_pressure_bound(node.pressure_lower_bar, envelope.lower_bar, true);
+        node.pressure_upper_bar =
+            merge_pressure_bound(node.pressure_upper_bar, envelope.upper_bar, false);
+    }
+}
+
+pub fn scenario_pressure_envelopes_enabled() -> bool {
+    std::env::var("GAZFLOW_SCENARIO_PRESSURE_ENVELOPES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Clamp / pénalité pression dans le Newton (nécessite [`scenario_pressure_envelopes_enabled`]).
+pub fn scenario_pressure_in_newton_enabled() -> bool {
+    std::env::var("GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+pub fn transport_minimal_anchors_enabled() -> bool {
+    std::env::var("GAZFLOW_TRANSPORT_MINIMAL_ANCHORS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Poids pénalité enveloppe pression dans le résidu Newton (m³/s par bar).
+pub fn scenario_pressure_penalty_weight() -> f64 {
+    std::env::var("GAZFLOW_SCENARIO_PRESSURE_PENALTY_WEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|w: &f64| w.is_finite() && *w > 0.0)
+        .unwrap_or(1.0)
+}
+
+fn merge_pressure_bound(
+    existing: Option<f64>,
+    incoming: Option<f64>,
+    take_max: bool,
+) -> Option<f64> {
+    match (existing, incoming) {
+        (None, inc) => inc,
+        (Some(ex), None) => Some(ex),
+        (Some(ex), Some(inc)) => Some(if take_max { ex.max(inc) } else { ex.min(inc) }),
+    }
 }
 
 /// Applique les conditions aux limites du scénario au réseau (slack pression + hub balance).
@@ -214,10 +287,15 @@ fn parse_scenario_demands_from_str(xml: &str) -> Result<ScenarioDemands> {
         })
         .collect();
 
+    let pressure_slack = detect_pressure_slack(nodes);
+    let slack_id_owned = pressure_slack.as_ref().map(|s| s.node_id.clone());
+    let pressure_envelopes =
+        collect_scenario_pressure_envelopes(nodes, slack_id_owned.as_deref());
+
     Ok(ScenarioDemands {
         scenario_id: raw.scenario.id,
         demands,
-        pressure_slack: detect_pressure_slack(nodes),
+        pressure_slack,
         balance_hubs: Vec::new(),
         junction_anchors: Vec::new(),
         boundary_spine_anchors: Vec::new(),
@@ -225,7 +303,57 @@ fn parse_scenario_demands_from_str(xml: &str) -> Result<ScenarioDemands> {
         zero_flow_boundary_anchors: collect_zero_flow_boundary_anchors(nodes),
         contract_flow_relaxed: initial_contract_flow_relaxed(nodes),
         contract_pressure_anchors: Vec::new(),
+        pressure_envelopes,
     })
+}
+
+fn extract_scenario_pressure_bounds(node: &XmlScenarioNode) -> (Option<f64>, Option<f64>) {
+    let mut lower = None;
+    let mut upper = None;
+    for p in &node.pressures {
+        let abs = pressure_to_bar_absolute(p.value, p.unit.as_deref());
+        match p.bound.as_deref() {
+            Some("lower") => lower = Some(abs),
+            Some("upper") => upper = Some(abs),
+            Some("both") => {
+                lower = Some(abs);
+                upper = Some(abs);
+            }
+            _ => {}
+        }
+    }
+    (lower, upper)
+}
+
+fn collect_scenario_pressure_envelopes(
+    nodes: &[XmlScenarioNode],
+    slack_id: Option<&str>,
+) -> Vec<ScenarioPressureEnvelope> {
+    nodes
+        .iter()
+        .filter_map(|node| {
+            let node_type = node.node_type.as_deref();
+            if node_type != Some("entry") && node_type != Some("exit") {
+                return None;
+            }
+            if slack_id == Some(node.id.as_str()) {
+                return None;
+            }
+            let flow_mag = extract_flow_value(&node.flows).unwrap_or(0.0).abs();
+            if flow_mag < 1e-6 {
+                return None;
+            }
+            let (lower_bar, upper_bar) = extract_scenario_pressure_bounds(node);
+            if lower_bar.is_none() && upper_bar.is_none() {
+                return None;
+            }
+            Some(ScenarioPressureEnvelope {
+                node_id: node.id.clone(),
+                lower_bar,
+                upper_bar,
+            })
+        })
+        .collect()
 }
 
 fn dual_pressure_contract_relaxation_enabled() -> bool {
@@ -470,6 +598,9 @@ pub fn network_with_scenario_boundaries(
 ) -> GasNetwork {
     let mut network = base.clone();
     apply_scenario_boundaries(&mut network, scenario);
+    if scenario_pressure_envelopes_enabled() {
+        apply_scenario_pressure_envelopes(&mut network, scenario);
+    }
     network
 }
 
@@ -749,6 +880,9 @@ pub fn enrich_scenario_with_balance_hub(
     network: &GasNetwork,
     scenario: &mut ScenarioDemands,
 ) {
+    if transport_minimal_anchors_enabled() {
+        return;
+    }
     scenario.balance_hubs = detect_balance_hubs_for_network(network, scenario, 2);
     scenario.boundary_spine_anchors = detect_boundary_spine_anchors(network, scenario, 1);
     scenario.junction_anchors = detect_junction_balance_anchors(network, scenario, 2);
@@ -944,6 +1078,7 @@ mod tests {
             zero_flow_boundary_anchors: Vec::new(),
             contract_flow_relaxed: Vec::new(),
             contract_pressure_anchors: Vec::new(),
+            pressure_envelopes: Vec::new(),
         };
 
         apply_scenario_boundaries(&mut net, &scenario);
@@ -1029,6 +1164,7 @@ mod tests {
             zero_flow_boundary_anchors: Vec::new(),
             contract_flow_relaxed: Vec::new(),
             contract_pressure_anchors: Vec::new(),
+            pressure_envelopes: Vec::new(),
         };
         let adjusted = effective_solver_demands(&demands, &scenario);
         assert!(!adjusted.contains_key("sink_109"));
@@ -1049,6 +1185,7 @@ mod tests {
             zero_flow_boundary_anchors: Vec::new(),
             contract_flow_relaxed: vec!["sink_24".into()],
             contract_pressure_anchors: Vec::new(),
+            pressure_envelopes: Vec::new(),
         };
         let adjusted = effective_solver_demands(&demands, &scenario);
         assert!(!adjusted.contains_key("sink_24"));
@@ -1072,6 +1209,7 @@ mod tests {
             zero_flow_boundary_anchors: Vec::new(),
             contract_flow_relaxed: Vec::new(),
             contract_pressure_anchors: Vec::new(),
+            pressure_envelopes: Vec::new(),
         };
         let mut pressures = HashMap::new();
         pressures.insert("sink_24".into(), 45.0);
@@ -1111,6 +1249,7 @@ mod tests {
             zero_flow_boundary_anchors: Vec::new(),
             contract_flow_relaxed: Vec::new(),
             contract_pressure_anchors: Vec::new(),
+            pressure_envelopes: Vec::new(),
         };
         let mut pressures = HashMap::new();
         pressures.insert("sink_24".into(), 45.0);
@@ -1124,7 +1263,106 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_scenario_pressure_envelopes() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<boundaryValue>
+  <scenario id="transport">
+    <node type="exit" id="sink_109">
+      <pressure unit="barg" bound="lower" value="50.0"/>
+      <flow unit="1000m_cube_per_hour" bound="both" value="920.1659"/>
+    </node>
+    <node type="exit" id="sink_24">
+      <pressure unit="barg" bound="lower" value="40.0"/>
+      <pressure unit="barg" bound="upper" value="55.0"/>
+      <flow unit="1000m_cube_per_hour" bound="both" value="100.0"/>
+    </node>
+    <node type="exit" id="sink_0">
+      <flow unit="1000m_cube_per_hour" bound="both" value="0.0"/>
+      <pressure unit="barg" bound="lower" value="30.0"/>
+    </node>
+  </scenario>
+</boundaryValue>"#;
+
+        let parsed = parse_scenario_demands_from_str(xml).expect("parse");
+        assert_eq!(parsed.pressure_envelopes.len(), 1);
+        let env = &parsed.pressure_envelopes[0];
+        assert_eq!(env.node_id, "sink_24");
+        assert!(env.lower_bar.is_some());
+        assert!(env.upper_bar.is_some());
+        assert!(
+            !parsed
+                .pressure_envelopes
+                .iter()
+                .any(|e| e.node_id == "sink_109"),
+            "slack excluded from envelopes"
+        );
+    }
+
+    #[test]
+    fn test_apply_scenario_pressure_envelopes_merges_net_bounds() {
+        use crate::graph::Node;
+
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "sink_24".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: None,
+            lat: None,
+            height_m: 0.0,
+            pressure_lower_bar: Some(35.0),
+            pressure_upper_bar: Some(60.0),
+            pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+
+        let scenario = ScenarioDemands {
+            scenario_id: None,
+            demands: HashMap::new(),
+            pressure_slack: None,
+            balance_hubs: Vec::new(),
+            junction_anchors: Vec::new(),
+            boundary_spine_anchors: Vec::new(),
+            mass_balance_anchors: Vec::new(),
+            zero_flow_boundary_anchors: Vec::new(),
+            contract_flow_relaxed: Vec::new(),
+            contract_pressure_anchors: Vec::new(),
+            pressure_envelopes: vec![ScenarioPressureEnvelope {
+                node_id: "sink_24".into(),
+                lower_bar: Some(40.0),
+                upper_bar: Some(55.0),
+            }],
+        };
+
+        apply_scenario_pressure_envelopes(&mut net, &scenario);
+        let node = net.nodes().find(|n| n.id == "sink_24").expect("node");
+        assert_eq!(node.pressure_lower_bar, Some(40.0));
+        assert_eq!(node.pressure_upper_bar, Some(55.0));
+    }
+
+    #[test]
+    #[serial]
+    fn test_transport_minimal_anchors_skips_enrich() {
+        let net_path = Path::new("dat/GasLib-582.net");
+        let scn_path = Path::new("dat/Nominations-582-v2-20211129/nomination_mild_618.scn");
+        if !net_path.exists() || !scn_path.exists() {
+            eprintln!("skip: 582 mild_618 data missing");
+            return;
+        }
+        unsafe { std::env::set_var("GAZFLOW_TRANSPORT_MINIMAL_ANCHORS", "1") };
+        let network = crate::gaslib::load_network(net_path).expect("net");
+        let mut scenario = load_scenario_demands(scn_path).expect("scn");
+        enrich_scenario_with_balance_hub(&network, &mut scenario);
+        assert!(scenario.balance_hubs.is_empty());
+        assert!(scenario.junction_anchors.is_empty());
+        assert!(scenario.boundary_spine_anchors.is_empty());
+        unsafe { std::env::remove_var("GAZFLOW_TRANSPORT_MINIMAL_ANCHORS") };
+    }
+
+    #[test]
     fn test_mild_618_balance_hub_is_sink_2() {
+        unsafe { std::env::remove_var("GAZFLOW_TRANSPORT_MINIMAL_ANCHORS") };
         let net_path = Path::new("dat/GasLib-582.net");
         let scn_path = Path::new("dat/Nominations-582-v2-20211129/nomination_mild_618.scn");
         if !net_path.exists() || !scn_path.exists() {

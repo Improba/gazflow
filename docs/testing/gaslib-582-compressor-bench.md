@@ -73,6 +73,10 @@ GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1 ./scripts/bench-gaslib-582.sh contract-re
 | `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT` | Retrait Q itératif boundaries (v18, **opt-in**) | `0` |
 | `GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS` | Retrait Q upfront (29 nœuds mild_618) | `0` |
 | `GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES` | Passes post-solve ancrages / contract | `4` |
+| `GAZFLOW_SCENARIO_PRESSURE_ENVELOPES` | Enveloppes P `.scn` sur boundaries Q≠0 (Phase I-bis, **opt-in**) | `0` |
+| `GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON` | Clamp + pénalité soft dans le Newton (avec enveloppes) | `0` |
+| `GAZFLOW_SCENARIO_PRESSURE_PENALTY_WEIGHT` | Poids violation P dans résidu Newton (m³/s par bar) | `1` |
+| `GAZFLOW_TRANSPORT_MINIMAL_ANCHORS` | Slack seul, sans hubs/junction/spine (Phase I-bis, **opt-in**) | `0` |
 | `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED` | Plafond r²≤9 jusqu'à convergence | `1` |
 | `GAZFLOW_COMPRESSOR_OUTER_MAX_ITERS` | Itérations outer loop ratio | 12 |
 | `GAZFLOW_COMPRESSOR_RELAX` | Relaxation ω mise à jour ratio | 0.5 |
@@ -112,7 +116,8 @@ Artefact référence nomination intacte : `/tmp/582-v17.json` (résidu 2,045 m³
 3. **Partial accept** : masque l'échec convergence ; cluster ±2 m³/s sur ~14 nœuds = état global non convergé.
 4. **v18** : heuristique numérique (abandon Q), pas solution GasLib ; reporter `nomination_mass_balance` et `boundary_nomination_slips`.
 5. **v19–v22** : Jacobian / cap / fermeture H / équation explicite — plancher **2,045** inchangé ; v23 = résidu compresseur dédié ou modèle hors MVP P².
-6. **Prochain levier** : bilan énergétique compresseur ou convergence stricte pour qualifier le plancher.
+6. **Phase I-bis** : enveloppes P `.scn` in-Newton + ancrages minimaux ; bench `./scripts/bench-gaslib-582.sh phase-ibis`.
+7. **Prochain levier** : bilan énergétique compresseur ou convergence stricte pour qualifier le plancher.
 
 ## Test intégration
 

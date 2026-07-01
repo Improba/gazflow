@@ -16,8 +16,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use gazflow_back::compressor::{CompressorOperatingContext, effective_ratio_with_nominal};
 use gazflow_back::gaslib::{
-    apply_scenario_boundaries, effective_solver_demands, enrich_scenario_with_balance_hub,
-    load_network, load_scenario_demands,
+    effective_solver_demands, enrich_scenario_with_balance_hub, load_network,
+    load_scenario_demands, network_with_scenario_boundaries, scenario_pressure_envelopes_enabled,
+    transport_minimal_anchors_enabled,
 };
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
 use gazflow_back::solver::{
@@ -69,6 +70,10 @@ struct DiagFlags {
     compressor_energy_closure: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     compressor_energy_equation: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    scenario_pressure_envelopes: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    transport_minimal_anchors: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -424,6 +429,8 @@ fn main() -> Result<()> {
             compressor_enthalpic: diag_env_enthalpic(),
             compressor_energy_closure: env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE"),
             compressor_energy_equation: env_flag("GAZFLOW_COMPRESSOR_ENERGY_EQUATION"),
+            scenario_pressure_envelopes: scenario_pressure_envelopes_enabled(),
+            transport_minimal_anchors: transport_minimal_anchors_enabled(),
         };
         emit_json(
             &skipped_output(
@@ -453,6 +460,8 @@ fn main() -> Result<()> {
             compressor_enthalpic: diag_env_enthalpic(),
             compressor_energy_closure: env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE"),
             compressor_energy_equation: env_flag("GAZFLOW_COMPRESSOR_ENERGY_EQUATION"),
+            scenario_pressure_envelopes: scenario_pressure_envelopes_enabled(),
+            transport_minimal_anchors: transport_minimal_anchors_enabled(),
         };
         emit_json(
             &skipped_output(cli.dataset.clone(), network_display, None, flags, reason),
@@ -483,6 +492,8 @@ fn main() -> Result<()> {
         compressor_enthalpic: diag_env_enthalpic(),
         compressor_energy_closure: env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE"),
         compressor_energy_equation: env_flag("GAZFLOW_COMPRESSOR_ENERGY_EQUATION"),
+        scenario_pressure_envelopes: scenario_pressure_envelopes_enabled(),
+        transport_minimal_anchors: transport_minimal_anchors_enabled(),
     };
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;
@@ -505,8 +516,7 @@ fn main() -> Result<()> {
             outcome.refinement_passes,
         ),
         Err(err) => {
-            let mut net = base_network.clone();
-            apply_scenario_boundaries(&mut net, &scenario);
+            let net = network_with_scenario_boundaries(&base_network, &scenario);
             (net, Err(err), 0)
         }
     };

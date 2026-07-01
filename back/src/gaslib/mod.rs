@@ -20,9 +20,13 @@ pub use routing::{
     resolve_and_apply_cdf_routing,
 };
 pub use scenario::{
-    PressureSlackHint, ScenarioDemands, ZeroFlowBoundaryAnchor, apply_scenario_boundaries,
+    PressureSlackHint, ScenarioDemands, ScenarioPressureEnvelope, ZeroFlowBoundaryAnchor,
+    apply_scenario_boundaries, apply_scenario_pressure_envelopes,
     contract_boundary_refinement_enabled, demands_without_pressure_slack, effective_solver_demands,
     enrich_scenario_with_balance_hub, load_scenario_demands, network_with_scenario_boundaries,
-    prepare_transport_scenario, try_add_mass_balance_anchor, try_relax_contract_boundary,
+    prepare_transport_scenario, scenario_pressure_envelopes_enabled,
+    scenario_pressure_in_newton_enabled, scenario_pressure_penalty_weight,
+    transport_minimal_anchors_enabled,
+    try_add_mass_balance_anchor, try_relax_contract_boundary,
 };
 pub use solution::{ReferenceSolution, load_reference_solution};
