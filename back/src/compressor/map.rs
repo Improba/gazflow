@@ -478,6 +478,48 @@ pub fn find_operating_point(
     find_operating_point_for_mode(station, ctx, false)
 }
 
+/// Tête effective pour fermeture énergétique v21 : moyenne H_map et H_req(P_in,P_out).
+pub fn coupled_compressor_head_kj_per_kg(h_map: f64, h_req: f64) -> f64 {
+    if h_map.is_finite() && h_req.is_finite() && h_map > 0.0 && h_req > 0.0 {
+        0.5 * (h_map + h_req)
+    } else {
+        h_map.max(h_req).max(0.0)
+    }
+}
+
+/// Ratio P_out/P_in avec fermeture H_map(Q) ↔ H_req(P_in,P_out) (v21).
+pub fn effective_ratio_energy_closure_for_mode(
+    station: &StationModel,
+    ctx: &CompressorOperatingContext,
+    p_out_bar: f64,
+    operating_ratio: Option<f64>,
+    pressure_cap_ratio: Option<f64>,
+    prefer_biquadratic: bool,
+) -> f64 {
+    let stages = station
+        .serial_stages_for_conf(station.default_conf_id())
+        .max(1);
+    let operating = operating_ratio
+        .unwrap_or_else(|| stage_ratio_heuristic(stages))
+        .clamp(1.0, 5.0);
+    let cap = pressure_cap_ratio.unwrap_or(5.0).clamp(operating, 5.0);
+
+    let h_map = map_head_kj_per_kg_for_mode(station, ctx, prefer_biquadratic).unwrap_or(0.0);
+    let h_req = head_required_from_pressures(
+        p_out_bar,
+        ctx.p_in_bar,
+        ctx.t_in_k,
+        DEFAULT_GAMMA,
+        DEFAULT_CP_J_PER_KG_K,
+        DEFAULT_EFFICIENCY,
+    );
+    let h_eff = coupled_compressor_head_kj_per_kg(h_map, h_req);
+    if h_eff <= 0.0 {
+        return operating;
+    }
+    ratio_from_head(h_eff, ctx, stages).clamp(operating, cap)
+}
+
 fn ratio_from_head(head_kj_per_kg: f64, ctx: &CompressorOperatingContext, stages: usize) -> f64 {
     let single_stage_ratio = had_to_pressure_ratio(
         head_kj_per_kg,
@@ -610,7 +652,7 @@ mod tests {
         effective_ratio_from_operating_point, effective_ratio_with_nominal,
         effective_ratio_with_nominal_for_mode, eval_biquadratic_head, eval_quadratic,
         find_operating_point, find_operating_point_for_mode, had_to_pressure_ratio,
-        head_required_from_pressures, interpolate_head,
+        head_required_from_pressures, interpolate_head, coupled_compressor_head_kj_per_kg,
     };
     use crate::compressor::station::{StationModel, TurboMeasurement};
 
@@ -927,5 +969,12 @@ mod tests {
             super::DEFAULT_EFFICIENCY,
         );
         assert_abs_diff_eq!(h_back, h_nom, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_coupled_compressor_head_at_balance() {
+        let h = 80.0;
+        assert_abs_diff_eq!(coupled_compressor_head_kj_per_kg(h, h), h, epsilon = 1e-12);
+        assert_abs_diff_eq!(coupled_compressor_head_kj_per_kg(60.0, 100.0), 80.0, epsilon = 1e-12);
     }
 }

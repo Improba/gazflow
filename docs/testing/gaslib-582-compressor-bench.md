@@ -65,6 +65,7 @@ GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1 ./scripts/bench-gaslib-582.sh contract-re
 | `GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC` | ∂(coeff carte)/∂Q, ∂/∂P_in implicite (v19) | `0` |
 | `GAZFLOW_COMPRESSOR_ENTHALPIC` | Carte in-Newton, cap achieved-ratio assoupli (v20, **opt-in**) | `0` |
 | `GAZFLOW_COMPRESSOR_ENTHALPIC_OVERSHOOT` | Facteur cap P_out/P_in max vs pression atteinte (v20) | `1.08` |
+| `GAZFLOW_COMPRESSOR_ENERGY_CLOSURE` | Fermeture H_map ↔ H_req in-Newton (v21, **opt-in**) | `0` |
 | `GAZFLOW_COMPRESSOR_STRICT_NEWTON` | Désactive partial accept outer loop | `0` |
 | `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT` | Retrait Q itératif boundaries (v18, **opt-in**) | `0` |
 | `GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS` | Retrait Q upfront (29 nœuds mild_618) | `0` |
@@ -98,6 +99,7 @@ Artefact référence nomination intacte : `/tmp/582-v17.json` (résidu 2,045 m³
 | v18 | 2,045 → ~2,000* | abandon Q boundaries (*hors nomination) |
 | v19 | 2,045 | head-Jacobian opt-in, défaut off |
 | v20 | 2,159 | cap in-Newton assoupli (opt-in, pas de gain) |
+| v21 | **2,045** | fermeture H_map ↔ H_req (opt-in, = baseline) |
 
 ## Interprétation globale
 
@@ -105,7 +107,7 @@ Artefact référence nomination intacte : `/tmp/582-v17.json` (résidu 2,045 m³
 2. **Ancrages pression (v13–v16)** : gain réel 5 → 2,045 m³/s sur nomination intacte.
 3. **Partial accept** : masque l'échec convergence ; cluster ±2 m³/s sur ~14 nœuds = état global non convergé.
 4. **v18** : heuristique numérique (abandon Q), pas solution GasLib ; reporter `nomination_mass_balance` et `boundary_nomination_slips`.
-5. **v19/v20** : sensibilité Jacobian / cap in-Newton — pas de gain mesuré au plancher ; v21 = contrainte H explicite.
+5. **v19/v20/v21** : sensibilité Jacobian / cap / fermeture H — pas de gain sous 2,045 ; v22 = T_sortie ou équation compresseur dédiée.
 6. **Prochain levier** : bilan énergétique compresseur ou convergence stricte pour qualifier le plancher.
 
 ## Test intégration

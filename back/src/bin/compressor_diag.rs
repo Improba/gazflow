@@ -41,6 +41,10 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn diag_env_enthalpic() -> bool {
+    env_flag("GAZFLOW_COMPRESSOR_ENTHALPIC") || env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE")
+}
+
 #[derive(Debug)]
 struct CliArgs {
     dataset: String,
@@ -59,6 +63,8 @@ struct DiagFlags {
     preset: &'static str,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     compressor_enthalpic: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    compressor_energy_closure: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -411,7 +417,8 @@ fn main() -> Result<()> {
             map_mode,
             catalog_stations: 0,
             preset: "robust",
-            compressor_enthalpic: env_flag("GAZFLOW_COMPRESSOR_ENTHALPIC"),
+            compressor_enthalpic: diag_env_enthalpic(),
+            compressor_energy_closure: env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE"),
         };
         emit_json(
             &skipped_output(
@@ -438,7 +445,8 @@ fn main() -> Result<()> {
             map_mode,
             catalog_stations: 0,
             preset: "robust",
-            compressor_enthalpic: env_flag("GAZFLOW_COMPRESSOR_ENTHALPIC"),
+            compressor_enthalpic: diag_env_enthalpic(),
+            compressor_energy_closure: env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE"),
         };
         emit_json(
             &skipped_output(cli.dataset.clone(), network_display, None, flags, reason),
@@ -466,7 +474,8 @@ fn main() -> Result<()> {
         map_mode: map_mode.clone(),
         catalog_stations,
         preset: "robust",
-        compressor_enthalpic: env_flag("GAZFLOW_COMPRESSOR_ENTHALPIC"),
+        compressor_enthalpic: diag_env_enthalpic(),
+        compressor_energy_closure: env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE"),
     };
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;

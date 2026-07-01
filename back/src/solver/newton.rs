@@ -9,7 +9,8 @@ use faer::sparse::{SparseColMat, Triplet};
 use rayon::prelude::*;
 
 use crate::compressor::{
-    CompressorCatalog, CompressorOperatingContext, effective_ratio_with_nominal_for_mode,
+    CompressorCatalog, CompressorOperatingContext, effective_ratio_energy_closure_for_mode,
+    effective_ratio_with_nominal_for_mode,
 };
 use crate::graph::{ConnectionKind, GasNetwork};
 
@@ -97,12 +98,19 @@ struct NewtonMapContext<'a> {
     disable_r2_cap: bool,
     /// Dérivées implicites ∂(coeff carte)/∂Q et ∂/∂P_amont (v19 head-Jacobian).
     head_jac: bool,
-    /// Bilan enthalpique in-Newton (v20) : cap achieved-ratio assoupli (1,15×) + dérivées carte.
+    /// Bilan enthalpique in-Newton (v20) : cap achieved-ratio assoupli (1,08×) + dérivées carte.
     enthalpic: bool,
+    /// Fermeture énergétique H_map(Q) ↔ H_req(P_in,P_out) in-Newton (v21).
+    energy_closure: bool,
 }
 
-fn newton_compressor_enthalpic_enabled(_config: &SteadyStateConfig) -> bool {
-    env_bool("GAZFLOW_COMPRESSOR_ENTHALPIC", false)
+fn newton_compressor_energy_closure_enabled(_config: &SteadyStateConfig) -> bool {
+    env_bool("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE", false)
+}
+
+fn newton_compressor_enthalpic_enabled(config: &SteadyStateConfig) -> bool {
+    newton_compressor_energy_closure_enabled(config)
+        || env_bool("GAZFLOW_COMPRESSOR_ENTHALPIC", false)
 }
 
 fn newton_compressor_head_jac_enabled(_config: &SteadyStateConfig) -> bool {
@@ -125,23 +133,35 @@ fn compressor_coeff_from_map_with_p_in(
         return pipe.pressure_from_coeff;
     };
     let p_in = p_in_bar.max(1e-3);
+    let p_out = pressures_sq[pipe.to_idx].sqrt().max(1e-3);
     let ctx = CompressorOperatingContext {
         q_m3s_norm: q_m3s_norm.abs().max(1e-3),
         p_in_bar: p_in,
         t_in_k: DEFAULT_GAS_TEMPERATURE_K,
     };
-    let ratio = effective_ratio_with_nominal_for_mode(
-        station,
-        &ctx,
-        pipe.operating_ratio,
-        pipe.pressure_cap_ratio,
-        map_ctx.prefer_biquadratic,
-    );
+    let ratio = if map_ctx.energy_closure {
+        effective_ratio_energy_closure_for_mode(
+            station,
+            &ctx,
+            p_out,
+            pipe.operating_ratio,
+            pipe.pressure_cap_ratio,
+            map_ctx.prefer_biquadratic,
+        )
+    } else {
+        effective_ratio_with_nominal_for_mode(
+            station,
+            &ctx,
+            pipe.operating_ratio,
+            pipe.pressure_cap_ratio,
+            map_ctx.prefer_biquadratic,
+        )
+    };
     let mut target_coeff = ratio.powi(2);
-    if ratio > 3.0 && !map_ctx.disable_r2_cap && !map_ctx.enthalpic {
+    if ratio > 3.0 && !map_ctx.disable_r2_cap && !map_ctx.enthalpic && !map_ctx.energy_closure {
         target_coeff = target_coeff.min(9.0);
     }
-    if map_ctx.enthalpic {
+    if map_ctx.enthalpic || map_ctx.energy_closure {
         effective_compressor_pressure_from_coeff_enthalpic(
             target_coeff,
             p_in * p_in,
@@ -177,13 +197,14 @@ fn compressor_map_coeff_sensitivities(
     pressures_sq: &[f64],
     q_abs: f64,
     map_ctx: &NewtonMapContext<'_>,
-) -> (f64, f64, f64) {
+) -> (f64, f64, f64, f64) {
     let p_from = pressures_sq[pipe.from_idx].sqrt().max(1e-3);
+    let p_to = pressures_sq[pipe.to_idx].sqrt().max(1e-3);
     let c = compressor_coeff_from_map(pipe, pressures_sq, q_abs, map_ctx);
     let hq = (q_abs.abs() * 1e-4).max(1e-5);
     let dc_dq = (compressor_coeff_from_map(pipe, pressures_sq, q_abs + hq, map_ctx) - c) / hq;
     let hp = (p_from * 1e-4).max(1e-5);
-    let dc_dp = (compressor_coeff_from_map_with_p_in(
+    let dc_dp_in = (compressor_coeff_from_map_with_p_in(
         pipe,
         pressures_sq,
         q_abs,
@@ -191,11 +212,21 @@ fn compressor_map_coeff_sensitivities(
         p_from + hp,
     ) - c)
         / hp;
-    (c, dc_dq, dc_dp)
+    let mut dc_dp_out = 0.0;
+    if map_ctx.energy_closure {
+        let hp_out = (p_to * 1e-4).max(1e-5);
+        let mut perturbed = pressures_sq.to_vec();
+        perturbed[pipe.to_idx] = (p_to + hp_out).powi(2);
+        dc_dp_out =
+            (compressor_coeff_from_map(pipe, &perturbed, q_abs, map_ctx) - c) / hp_out;
+    }
+    (c, dc_dq, dc_dp_in, dc_dp_out)
 }
 
 fn newton_compressor_map_enabled(config: &SteadyStateConfig) -> bool {
-    if newton_compressor_enthalpic_enabled(config) {
+    if newton_compressor_enthalpic_enabled(config)
+        || newton_compressor_energy_closure_enabled(config)
+    {
         return true;
     }
     env_bool(
@@ -425,6 +456,7 @@ where
             disable_r2_cap: compressor_r2_cap_disabled(config),
             head_jac: newton_compressor_head_jac_enabled(config),
             enthalpic: newton_compressor_enthalpic_enabled(config),
+            energy_closure: newton_compressor_energy_closure_enabled(config),
         })
     } else {
         None
@@ -922,7 +954,7 @@ fn pipe_flow_derivatives(
     map_ctx: Option<&NewtonMapContext<'_>>,
 ) -> PipeFlowDerivatives {
     if pipe.kind == ConnectionKind::CompressorStation
-        && map_ctx.is_some_and(|ctx| ctx.enthalpic || ctx.head_jac)
+        && map_ctx.is_some_and(|ctx| ctx.enthalpic || ctx.energy_closure || ctx.head_jac)
     {
         return pipe_flow_derivatives_enthalpic(
             pipe,
@@ -989,8 +1021,7 @@ fn pipe_flow_derivatives(
     }
 }
 
-/// Jacobian compresseur avec couplage carte(Q, P_amont) sur le coefficient P² — v19/v20.
-/// v20 (`enthalpic`) : coeff = π(H_map)² **sans** adoucissement `effective_compressor_pressure_from_coeff`.
+/// Jacobian compresseur avec couplage carte(Q, P) sur le coefficient P² — v19/v20/v21.
 fn pipe_flow_derivatives_enthalpic(
     pipe: &IndexedPipe,
     pressures_sq: &[f64],
@@ -1004,7 +1035,7 @@ fn pipe_flow_derivatives_enthalpic(
     let p_to = p_to_sq.sqrt();
     let avg_p = 0.5 * (p_from + p_to);
     let mut pressure_from_coeff = if pipe.pressure_from_coeff > 1.0 + 1e-6 {
-        if map_ctx.enthalpic {
+        if map_ctx.enthalpic || map_ctx.energy_closure {
             effective_compressor_pressure_from_coeff_enthalpic(
                 pipe.pressure_from_coeff,
                 p_from_sq,
@@ -1063,14 +1094,15 @@ fn pipe_flow_derivatives_enthalpic(
         p_to,
         elev.density_kg_per_m3,
     );
-    let (_, dc_dq, dc_dp) =
+    let (_, dc_dq, dc_dp_in, dc_dp_out) =
         compressor_map_coeff_sensitivities(pipe, pressures_sq, q.abs(), map_ctx);
-    let dc_d_pi_from = dc_dp / (2.0 * p_from.max(1e-3));
+    let dc_d_pi_from = dc_dp_in / (2.0 * p_from.max(1e-3));
+    let dc_d_pi_to = dc_dp_out / (2.0 * p_to.max(1e-3));
     let a = pressure_from_coeff + p_from_sq * dc_d_pi_from - dgrav_from;
     let b = p_from_sq * dc_dq * g;
     let denom = (1.0 - b).max(0.05);
     let d_dp_d_from = if denom.is_finite() { a / denom } else { a };
-    let d_dp_d_to = -1.0 - dgrav_to;
+    let d_dp_d_to = p_from_sq * dc_d_pi_to - 1.0 - dgrav_to;
     PipeFlowDerivatives {
         q,
         conductance_from: g * d_dp_d_from,

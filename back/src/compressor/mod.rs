@@ -16,6 +16,7 @@ pub use map::{
     effective_ratio_with_nominal_for_mode, eval_biquadratic_head, eval_quadratic,
     find_operating_point, find_operating_point_for_mode, had_to_pressure_ratio,
     head_required_from_pressures, interpolate_head, map_head_kj_per_kg_for_mode,
+    coupled_compressor_head_kj_per_kg, effective_ratio_energy_closure_for_mode,
 };
 pub use flow_topology::estimated_map_flow_m3s;
 pub use parse::load_compressor_catalog;
