@@ -1181,6 +1181,70 @@ pub fn mass_balance_report(
     }
 }
 
+/// Écart à la nomination sur un point frontière (entry/exit) à débit imposé.
+#[derive(Debug, Clone, Serialize)]
+pub struct BoundaryNominationSlip {
+    pub node_id: String,
+    pub nominal_q_m3s: f64,
+    /// Déséquilibre massique au nœud : le débit nominé n'est pas satisfait (m³/s).
+    pub slip_m3s: f64,
+}
+
+/// Dérives nomination sur les `source_*` / `sink_*` à Q≠0 (hors slack et boundaries assouplies).
+pub fn boundary_nomination_slips(
+    network: &GasNetwork,
+    nomination_demands: &HashMap<String, f64>,
+    result: &SolverResult,
+    excluded_nodes: &[String],
+) -> Vec<BoundaryNominationSlip> {
+    let excluded: std::collections::HashSet<&str> =
+        excluded_nodes.iter().map(|s| s.as_str()).collect();
+    let mut node_balance: HashMap<String, f64> = network
+        .nodes()
+        .map(|n| {
+            (
+                n.id.clone(),
+                nomination_demands.get(&n.id).copied().unwrap_or(0.0),
+            )
+        })
+        .collect();
+    for pipe in network.pipes() {
+        let q = result.flows.get(&pipe.id).copied().unwrap_or(0.0);
+        if let Some(v) = node_balance.get_mut(&pipe.from) {
+            *v -= q;
+        }
+        if let Some(v) = node_balance.get_mut(&pipe.to) {
+            *v += q;
+        }
+    }
+
+    let mut slips = Vec::new();
+    for node in network.nodes() {
+        if node.pressure_fixed_bar.is_some() {
+            continue;
+        }
+        if excluded.contains(node.id.as_str()) {
+            continue;
+        }
+        if !node.id.starts_with("source_") && !node.id.starts_with("sink_") {
+            continue;
+        }
+        let nominal_q = nomination_demands.get(&node.id).copied().unwrap_or(0.0);
+        if nominal_q.abs() < 1e-6 {
+            continue;
+        }
+        let slip = node_balance.get(&node.id).copied().unwrap_or(0.0);
+        slips.push(BoundaryNominationSlip {
+            node_id: node.id.clone(),
+            nominal_q_m3s: nominal_q,
+            slip_m3s: slip,
+        });
+    }
+    slips.sort_by(|a, b| b.slip_m3s.abs().total_cmp(&a.slip_m3s.abs()));
+    slips.truncate(20);
+    slips
+}
+
 /// Résultat d'un solve avec raffinement itératif des ancrages pression.
 #[derive(Debug, Clone)]
 pub struct MassBalanceRefinementOutcome {
@@ -3257,5 +3321,46 @@ mod tests {
             "bypass amont bas → P_aval < P_min, got {:?}",
             bypass.warnings
         );
+    }
+
+    #[test]
+    fn test_boundary_nomination_slips_unmet_sink_q() {
+        let mut net = two_node_network();
+        net.node_mut("source").unwrap().id = "source_1".into();
+        net.node_mut("sink").unwrap().id = "sink_24".into();
+        net.pipe_mut("pipe1").unwrap().from = "source_1".into();
+        net.pipe_mut("pipe1").unwrap().to = "sink_24".into();
+
+        let mut demands = HashMap::new();
+        demands.insert("source_1".into(), 10.0);
+        demands.insert("sink_24".into(), -5.0);
+
+        let mut result = SolverResult::default();
+        result.flows.insert("pipe1".into(), 8.0);
+
+        let slips = boundary_nomination_slips(&net, &demands, &result, &[]);
+        assert_eq!(slips.len(), 1);
+        assert_eq!(slips[0].node_id, "sink_24");
+        assert!((slips[0].nominal_q_m3s + 5.0).abs() < 1e-9);
+        assert!((slips[0].slip_m3s - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_boundary_nomination_slips_excludes_slack_and_relaxed() {
+        let mut net = two_node_network();
+        net.node_mut("source").unwrap().id = "source_1".into();
+        net.node_mut("sink").unwrap().id = "sink_109".into();
+        net.pipe_mut("pipe1").unwrap().from = "source_1".into();
+        net.pipe_mut("pipe1").unwrap().to = "sink_109".into();
+
+        let mut demands = HashMap::new();
+        demands.insert("source_1".into(), 10.0);
+        demands.insert("sink_109".into(), -5.0);
+
+        let mut result = SolverResult::default();
+        result.flows.insert("pipe1".into(), 5.0);
+
+        let slips = boundary_nomination_slips(&net, &demands, &result, &["sink_109".into()]);
+        assert!(slips.is_empty());
     }
 }

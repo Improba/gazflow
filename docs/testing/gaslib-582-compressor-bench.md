@@ -7,8 +7,9 @@ Protocole figé : `compressor_diag`, réseau baseline connecté, CDF off, scéna
 | Terme | Définition |
 |-------|------------|
 | **`residual`** | Max \|f_node\| sur nœuds libres Newton = **déséquilibre massique nodal** au state retourné (m³/s). |
-| **`mass_balance`** (JSON) | Même quantité par nœud, avec demandes **effectives** (slack + boundaries assouplies retirées). |
+| **`mass_balance`** (JSON) | Même quantité par nœud, avec demandes **effectives** (slack + boundaries à Q abandonné retirées). |
 | **`nomination_mass_balance`** (JSON) | Bilan avec demandes **nominales** du `.scn` — fidélité nomination GasLib. |
+| **`boundary_nomination_slips`** (JSON) | Écarts Q nominé vs honoré sur `source_*`/`sink_*` (hors slack et v18). |
 | **Partial accept** | Newton outer loop retourne le dernier état si `residual > tolerance` au lieu d'échouer. |
 | **Référence nomination intacte** | Sans `contract_flow_relaxed` : le solveur impose encore les Q du mild_618. |
 
@@ -20,9 +21,9 @@ Protocole figé : `compressor_diag`, réseau baseline connecté, CDF off, scéna
 | Résidu nominal (`nomination_mass_balance`) | = effectif | **>> 2** (violation Q sur boundaries assouplies) |
 | Tolérance preset robust | 3×10⁻³ m³/s | idem |
 | Convergence stricte | Non (partial accept) | idem |
-| Pire nœud (v17) | `sink_24` (Q nominatif −4,96 m³/s imposé) | `innode_402` après assouplissement |
+| Pire nœud (v17) | `sink_24` (Q nominatif −4,96 m³/s imposé) | `innode_402` après abandon Q v18 |
 
-**Conclusion Phase I** : le plancher **~2 m³/s** n'est pas un artefact d'arrondi ; c'est l'échelle du déséquilibre massique au state partial accept. Une douzaine de nœuds libres portent simultanément \|imbalance\| ≈ résidu (signature d'un état **non convergé**, pas d'erreurs locales indépendantes). L'assouplissement v18 **change le problème** (retire des Q contractuels) : la baisse 2,045 → 2,000 n'est **pas** une convergence vers la nomination GasLib.
+**Conclusion Phase I** : le plancher **~2 m³/s** n'est pas un artefact d'arrondi ; c'est l'échelle du déséquilibre massique au state partial accept. Une douzaine de nœuds libres portent simultanément \|imbalance\| ≈ résidu (signature d'un état **non convergé**, pas d'erreurs locales indépendantes). v18 **change le problème** (abandon Q sur boundaries) : la baisse 2,045 → 2,000 n'est **pas** une convergence vers la nomination GasLib.
 
 Progression (résidu **effectif**, nomination intacte sauf mention) :
 
@@ -38,8 +39,8 @@ Référence architecture : [gaslib-582-compressor-diagnosis.md](./gaslib-582-com
 
 - **Runs manuels** hors CI ; durée ~15–25 min/run (582, release, refinement).
 - **Une répétition** par version documentée — pas d'intervalle de confiance.
-- **Non déterminisme léger** : ordre des assouplissements contractuels dépend du bilan massique post-solve.
-- **Correctif juillet 2026** : les assouplissements contractuels v18 sont **revertés** si une passe n'améliore pas le résidu (aligné sur la gate des ancrages `innode_*`). Les chiffres v18 « 2,000 » proviennent d'une version qui conservait les relaxations sans gain intermédiaire.
+- **Non déterminisme léger** : ordre des abandons Q v18 dépend du bilan massique post-solve.
+- **Correctif juillet 2026** : les abandons Q v18 sont **revertés** si une passe n'améliore pas le résidu (aligné sur la gate des ancrages `innode_*`). Les chiffres v18 « 2,000 » proviennent d'une version qui conservait les relaxations sans gain intermédiaire.
 
 ## Commandes
 
@@ -47,17 +48,11 @@ Référence architecture : [gaslib-582-compressor-diagnosis.md](./gaslib-582-com
 # Bench reproductible (nomination intacte par défaut)
 ./scripts/bench-gaslib-582.sh nominal
 
-# Expérience v18 (assouplissement Q contractuel)
-GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1 ./scripts/bench-gaslib-582.sh contract-relax
-
 cd back && cargo build --release --bin compressor_diag
 
 GAZFLOW_COMPRESSOR_MAP_MODE=measurement ./target/release/compressor_diag GasLib-582 --json /tmp/582-measurement.json
 
-# Référence nomination intacte (défaut bench script)
-./scripts/bench-gaslib-582.sh nominal
-
-# Expérience assouplissement Q (hors nomination)
+# Expérience abandon Q boundaries (hors nomination, opt-in)
 GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1 ./scripts/bench-gaslib-582.sh contract-relax
 ```
 
@@ -83,6 +78,7 @@ GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1 ./scripts/bench-gaslib-582.sh contract-re
 | `residual` | Max \|f_node\| nœuds libres (≈ pire déséquilibre massique effectif) |
 | `mass_balance` | Bilan avec demandes **effectives** (`effective_solver_demands`) |
 | `nomination_mass_balance` | Bilan avec demandes **nominales** `.scn` |
+| `boundary_nomination_slips` | Écarts Q sur boundaries nominées (`node_id`, `nominal_q_m3s`, `slip_m3s`) |
 | `contract_flow_relaxed` | Boundaries dont le Q nominatif a été retiré (v18) |
 | `mass_balance_refinement_passes` | Passes refinement post-solve |
 | `mass_balance_anchors` | Innodes ancrés dynamiquement |
@@ -97,7 +93,7 @@ Artefact référence nomination intacte : `/tmp/582-v17.json` (résidu 2,045 m³
 | v4 | 5,0 | garde outer loop + r² hybride |
 | v13 | 3,0 | balance hubs (`sink_2`, `sink_96`) |
 | v14–v17 | **2,045** | junction/spine anchors ; in-Newton map (v17 sans gain) |
-| v18 | 2,045 → ~2,000* | assouplissement Q (*hors nomination) |
+| v18 | 2,045 → ~2,000* | abandon Q boundaries (*hors nomination) |
 | v19 | 2,045 | head-Jacobian opt-in, défaut off |
 
 ## Interprétation globale
@@ -105,7 +101,7 @@ Artefact référence nomination intacte : `/tmp/582-v17.json` (résidu 2,045 m³
 1. **Option 1 ratio** : `compressor_ratio_max` ← `.cs` ; cap `.net` séparé — validé.
 2. **Ancrages pression (v13–v16)** : gain réel 5 → 2,045 m³/s sur nomination intacte.
 3. **Partial accept** : masque l'échec convergence ; cluster ±2 m³/s sur ~14 nœuds = état global non convergé.
-4. **v18** : heuristique numérique, pas solution contractuelle ; toujours reporter `nomination_mass_balance`.
+4. **v18** : heuristique numérique (abandon Q), pas solution GasLib ; reporter `nomination_mass_balance` et `boundary_nomination_slips`.
 5. **v19** : Jacobian semi-implicite sur coeff P² — pas modèle enthalpique ; pas de gain mesuré.
 6. **Prochain levier** : bilan énergétique compresseur ou convergence stricte pour qualifier le plancher.
 

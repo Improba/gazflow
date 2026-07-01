@@ -1,7 +1,7 @@
 //! Diagnostic compresseurs transport (palier I-A0 / I-A, GasLib-582).
 //!
 //! **Chemin bench** (hors prod API) : `solve_with_mass_balance_refinement` + refinement
-//! itératif (ancrages `innode_*`, assouplissement Q opt-in via
+//! itératif (ancrages `innode_*`, abandon partiel Q opt-in via
 //! `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1`).
 //!
 //! **Prod** (`main`, API REST) : `prepare_transport_scenario` + `effective_solver_demands`
@@ -22,9 +22,9 @@ use gazflow_back::gaslib::{
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
 use gazflow_back::solver::{
     ContinuationStepEvent, GasComposition, MassBalanceReport, SolverResult,
-    apply_map_ratios_after_continuation_step, compressor_map_mode, compressor_pressure_from_coeff,
-    estimated_compressor_map_flow_m3s, mass_balance_report, preset_robust,
-    solve_with_mass_balance_refinement, CompressorMapMode,
+    apply_map_ratios_after_continuation_step, boundary_nomination_slips, compressor_map_mode,
+    compressor_pressure_from_coeff, estimated_compressor_map_flow_m3s, mass_balance_report,
+    preset_robust, solve_with_mass_balance_refinement, BoundaryNominationSlip, CompressorMapMode,
 };
 use serde::Serialize;
 
@@ -94,9 +94,12 @@ struct DiagOutput {
     mass_balance_anchors: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     contract_flow_relaxed: Vec<String>,
-    /// Bilan massique avec demandes **nominales** du `.scn` (hors assouplissements v18).
+    /// Bilan massique avec demandes **nominales** du `.scn`.
     #[serde(skip_serializing_if = "Option::is_none")]
     nomination_mass_balance: Option<MassBalanceReport>,
+    /// Écarts débit aux points frontière nominés (entry/exit à Q≠0).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    boundary_nomination_slips: Vec<BoundaryNominationSlip>,
 }
 
 fn parse_residual_from_error(err: &str) -> Option<f64> {
@@ -365,6 +368,7 @@ fn skipped_output(
         mass_balance_anchors: Vec::new(),
         contract_flow_relaxed: Vec::new(),
         nomination_mass_balance: None,
+        boundary_nomination_slips: Vec::new(),
     }
 }
 
@@ -537,6 +541,16 @@ fn main() -> Result<()> {
                 &scenario.demands,
                 &result,
             ));
+            let mut excluded: Vec<String> = scenario.contract_flow_relaxed.clone();
+            if let Some(slack) = scenario.pressure_slack.as_ref() {
+                excluded.push(slack.node_id.clone());
+            }
+            let boundary_nomination_slips = boundary_nomination_slips(
+                &network,
+                &scenario.demands,
+                &result,
+                &excluded,
+            );
             DiagOutput {
                 status: "ok",
                 dataset: cli.dataset.clone(),
@@ -555,6 +569,7 @@ fn main() -> Result<()> {
                 mass_balance_anchors: mass_balance_anchor_ids.clone(),
                 contract_flow_relaxed: contract_flow_relaxed.clone(),
                 nomination_mass_balance,
+                boundary_nomination_slips,
             }
         }
         Err(err) => {
@@ -577,6 +592,8 @@ fn main() -> Result<()> {
                 mass_balance_refinement_passes: Some(refinement_passes),
                 mass_balance_anchors: mass_balance_anchor_ids,
                 contract_flow_relaxed,
+                nomination_mass_balance: None,
+                boundary_nomination_slips: Vec::new(),
             }
         }
     };

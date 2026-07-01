@@ -2,12 +2,23 @@
 
 Document de référence architecture et décisions. Bench chiffré : [gaslib-582-compressor-bench.md](./gaslib-582-compressor-bench.md).
 
+## Sémantique GasLib (mild_618)
+
+| Condition scénario | Métier GasLib | MVP GazFlow solveur |
+|--------------------|---------------|---------------------|
+| Entry/exit à Q nominé | Égalité sur Q ; enveloppe P (min/max) = **inégalité**, non imposée au Newton | Q en égalité ; P libre (bornes `.net` vérifiées a posteriori dans `pressure_violations`) |
+| Slack pression (`sink_109`) | P référence fixe ; Q **inconnue** | P fixe ; Q nominal **retiré** (`effective_solver_demands`) |
+| Ancrages `innode_*` / hubs | Pas une condition GasLib standard | Fermeture numérique DOF (refinement bench) |
+| v18 `contract_flow_relaxed` | **Violation** nomination Q | Retrait Q sur pires boundaries (opt-in bench) |
+
+Le champ JSON `boundary_nomination_slips` liste les écarts débit sur `source_*` / `sink_*` à Q≠0 (hors slack et boundaries assouplies) : utile pour quantifier la fidélité nomination au partial accept.
+
 ## État actuel (juillet 2026)
 
 | | |
 |--|--|
 | Résidu effectif (nomination intacte, v17) | **2,045 m³/s** |
-| Résidu avec assouplissement Q (v18, run historique) | ~2,000 m³/s |
+| Résidu avec abandon Q v18 (run historique) | ~2,000 m³/s |
 | Tolérance cible preset robust | 3×10⁻³ m³/s |
 | Pire nœud (nomination intacte) | `sink_24` (Q −4,96 m³/s imposé, imbalance ≈ −résidu) |
 | Statut solve | partial accept (~2 m³/s, pas convergence stricte) |
@@ -40,7 +51,7 @@ Outer loop compresseur (apply_compressor_map_updates)
     ↓
 Partial accept si residual > tol  [désactivable: GAZFLOW_COMPRESSOR_STRICT_NEWTON=1]
     ↓
-Refinement post-solve (v16–v18): ancrages innode + assouplissement Q
+Refinement post-solve (v16–v18): ancrages innode + abandon Q opt-in (bench)
 ```
 
 **Important** : v17/v19 ne couplent pas un bilan enthalpique nodal. La carte fournit une tête adiabatique convertie en ratio isentrope puis en coefficient P².
@@ -67,9 +78,9 @@ Sur-ancrage (>2–3 junctions) dégrade le résidu (~3,6 m³/s observé).
 | v18* | ~2,000 | *Q retiré sur 4 boundaries — hors nomination |
 | v19 | 2,045 | head-Jac off ; ON = 2,045 (run unique) |
 
-## Assouplissement contractuel (v18) — limites scientifiques
+## Abandon nomination Q (v18) — limites scientifiques
 
-`try_relax_contract_boundary` retire le Q nominatif sur les pires `source_*`/`sink_*` (seuil 1,5 m³/s, max 3/passe). **Désactivé par défaut** (`GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=0`) ; activer uniquement pour expériences bench.
+`try_relax_contract_boundary` retire le Q nominatif sur les pires `source_*`/`sink_*` (seuil 1,5 m³/s, max 3/passe). **Désactivé par défaut** (`GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=0`) ; activer uniquement pour expériences bench. Ce n'est **pas** un assouplissement P/Q contractuel GasLib : les enveloppes pression du `.scn` ne sont de toute façon pas imposées au solveur.
 
 **Limites** :
 

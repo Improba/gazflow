@@ -83,9 +83,9 @@ pub struct ScenarioDemands {
     pub mass_balance_anchors: Vec<PressureSlackHint>,
     /// Boundaries nominalement à Q=0 (entries/exits).
     pub zero_flow_boundary_anchors: Vec<ZeroFlowBoundaryAnchor>,
-    /// Entries/exits dont le débit nominatif est retiré avant solve (assouplissement P/Q contractuel).
+    /// Entries/exits dont le débit nominatif est retiré avant solve (abandon partiel de nomination Q, v18).
     pub contract_flow_relaxed: Vec<String>,
-    /// Pression fixée lors de l'assouplissement contractuel (typ. pression résolue partielle).
+    /// Pression fixée lors de l'abandon Q v18 (typ. pression résolue partielle).
     pub contract_pressure_anchors: Vec<PressureSlackHint>,
 }
 
@@ -135,7 +135,7 @@ pub fn apply_scenario_boundaries(network: &mut GasNetwork, scenario: &ScenarioDe
     }
 }
 
-/// Active l'assouplissement itératif Q sur boundaries contractuelles (v18, **opt-in**).
+/// Active l'abandon itératif de Q nominatif sur boundaries (v18, **opt-in** bench).
 pub fn contract_boundary_refinement_enabled() -> bool {
     std::env::var("GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -154,14 +154,15 @@ pub fn prepare_transport_scenario(
     network_with_scenario_boundaries(base, scenario)
 }
 
-/// Retire la demande imposée sur le nœud slack pression et les boundaries contractuels assouplis.
+/// Retire la demande imposée sur le nœud slack pression et les boundaries dont la nomination Q a été abandonnée (v18).
 ///
-/// Sur un réseau transport GasLib, le débit au point de référence pression est
-/// une inconnue du solveur : imposer P et Q simultanément sur-contrainte le système.
-/// Idem pour les entries/exits avec enveloppe pression scénario + Q nominatif (v18).
+/// **Slack pression** (`sink_109` mild_618) : en transport GasLib, P est fixée (référence) et Q
+/// est une inconnue du solveur — imposer les deux serait sur-contraint. Le Q nominal du `.scn`
+/// est donc retiré.
 ///
-/// **Attention scientifique** : les nœuds dans `contract_flow_relaxed` ne respectent plus
-/// la nomination GasLib ; comparer toujours `mass_balance_report` nominal vs effectif.
+/// **Entries/exits à Q nominé** : en métier, Q imposé + enveloppe pression (inégalité) est
+/// standard ; ce n'est pas sur-contraint. Le MVP GazFlow impose Q en égalité et laisse P libre
+/// (bornes `.net` vérifiées a posteriori). v18 retire optionnellement Q — cela **viole** la nomination.
 pub fn effective_solver_demands(
     demands: &HashMap<String, f64>,
     scenario: &ScenarioDemands,
@@ -233,7 +234,9 @@ fn dual_pressure_contract_relaxation_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Entries/exits avec débit nominatif et enveloppe pression scénario (lower+upper).
+/// Entries/exits avec Q nominé et enveloppe pression scénario (lower+upper).
+/// Nom historique « dual pressure » : ce n'est pas une sur-contrainte P+Q au solveur
+/// (enveloppe P = inégalité GasLib, non imposée au Newton dans le MVP).
 fn detect_dual_pressure_contract_flow_nodes(
     nodes: &[XmlScenarioNode],
     slack_id: Option<&str>,
@@ -408,7 +411,7 @@ fn contract_fix_pressure_on_relax() -> bool {
         .unwrap_or(false)
 }
 
-/// Assouplit une ou plusieurs boundaries contractuelles : retire Q (P fixe optionnel).
+/// Abandonne la contrainte de débit nominatif sur des boundaries (v18, opt-in bench).
 pub fn try_relax_contract_boundary(
     scenario: &mut ScenarioDemands,
     top_imbalances: &[(String, f64)],

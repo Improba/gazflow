@@ -166,7 +166,7 @@ Manual diagnostic for transport compressor behaviour on GasLib-582. This is **no
 |------|---------|
 | Network | `back/dat/GasLib-582.net` (symlink from `fetch_gaslib.sh`) |
 | Scenario | `nomination_mild_618.scn` if present under `back/dat/` (nominations archive), else `GasLib-582.scn` |
-| Demands | `effective_solver_demands` (slack retiré ; contract relax **off** par défaut) |
+| Demands | `effective_solver_demands` (slack retiré ; abandon Q v18 **off** par défaut) |
 | Bench script | `./scripts/bench-gaslib-582.sh [tag]` → JSON + résumé terminal |
 | CDF routing | **off** — baseline connected topology (`GAZFLOW_SKIP_CDF_ROUTING=1`, set by the binary) |
 | Solver | `solve_steady_state_with_preset` + `preset_robust` |
@@ -194,7 +194,7 @@ cargo run --bin compressor_diag -- GasLib-582 --json /tmp/582-diag.json --csv /t
 
 If `dat/GasLib-582.net` or a scenario file is missing, the binary exits gracefully with `status: "skipped"` JSON (no solve).
 
-Output JSON fields: `residual`, `demand_scale`, `continuation_scales`, `mass_balance` (demandes **effectives**), `nomination_mass_balance` (demandes **nominales** `.scn`), `contract_flow_relaxed`, `mass_balance_refinement_passes`, `mass_balance_anchors`, `compressor_stations`, `flags`.
+Output JSON fields: `residual`, `demand_scale`, `continuation_scales`, `mass_balance` (demandes **effectives**), `nomination_mass_balance` (demandes **nominales** `.scn`), `boundary_nomination_slips`, `contract_flow_relaxed`, `mass_balance_refinement_passes`, `mass_balance_anchors`, `compressor_stations`, `flags`.
 
 Référence nomination intacte (v17) : résidu **2,045 m³/s** (partial accept ; cible 3×10⁻³). Voir [gaslib-582-compressor-bench.md](./gaslib-582-compressor-bench.md).
 
@@ -212,8 +212,8 @@ Bench results (I-A0, juin 2026) : [gaslib-582-compressor-bench.md](./gaslib-582-
 | `GAZFLOW_COMPRESSOR_RELAX` | Relaxation $\omega$ pour mises à jour ratio | 0.5 |
 | `GAZFLOW_NEWTON_COMPRESSOR_MAP` | Recouplage carte tête/vitesse à chaque itération Newton (measurement/biquadratic) | `1` en mode carte |
 | `GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES` | Passes post-solve d'ancrage pression guidé par bilan massique (582 transport) | 4 |
-| `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT` | Assouplissement itératif Q sur boundaries contractuelles (v18, **opt-in**) | 0 |
-| `GAZFLOW_CONTRACT_FIX_PRESSURE` | Fixer P (pression résolue) lors de l'assouplissement contractuel | 0 |
+| `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT` | Abandon itératif Q nominatif sur boundaries (v18, **opt-in** bench) | 0 |
+| `GAZFLOW_CONTRACT_FIX_PRESSURE` | Fixer P (pression résolue) lors de l'abandon Q v18 | 0 |
 | `GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS` | Retirer Q upfront sur toutes entries/exits à enveloppe P lower+upper (expérimental) | 0 |
 | `GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC` | Jacobian in-Newton couplé carte(Q, P_amont) — v19, opt-in | 0 |
 | `GAZFLOW_COMPRESSOR_STRICT_NEWTON` | Désactive partial accept dans l'outer loop compresseur | 0 |
