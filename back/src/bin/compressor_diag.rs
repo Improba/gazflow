@@ -35,6 +35,12 @@ const HANDOFF_PREFER_ESTIMATED_RESIDUAL: f64 = 7.0;
 /// Pression amont indicative transport quand le solve échoue avant convergence (582 mild_618).
 const TRANSPORT_FALLBACK_INLET_BAR: f64 = 40.0;
 
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 #[derive(Debug)]
 struct CliArgs {
     dataset: String,
@@ -51,6 +57,8 @@ struct DiagFlags {
     map_mode: String,
     catalog_stations: usize,
     preset: &'static str,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    compressor_enthalpic: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -403,6 +411,7 @@ fn main() -> Result<()> {
             map_mode,
             catalog_stations: 0,
             preset: "robust",
+            compressor_enthalpic: env_flag("GAZFLOW_COMPRESSOR_ENTHALPIC"),
         };
         emit_json(
             &skipped_output(
@@ -429,6 +438,7 @@ fn main() -> Result<()> {
             map_mode,
             catalog_stations: 0,
             preset: "robust",
+            compressor_enthalpic: env_flag("GAZFLOW_COMPRESSOR_ENTHALPIC"),
         };
         emit_json(
             &skipped_output(cli.dataset.clone(), network_display, None, flags, reason),
@@ -456,6 +466,7 @@ fn main() -> Result<()> {
         map_mode: map_mode.clone(),
         catalog_stations,
         preset: "robust",
+        compressor_enthalpic: env_flag("GAZFLOW_COMPRESSOR_ENTHALPIC"),
     };
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;

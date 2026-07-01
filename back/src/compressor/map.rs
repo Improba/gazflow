@@ -191,6 +191,46 @@ pub fn had_to_pressure_ratio(
     base.powf(gamma / (gamma - 1.0)).max(1.0)
 }
 
+/// Tête adiabatique requise pour passer de `p_in` à `p_out` (inverse isentrope de [`had_to_pressure_ratio`]).
+pub fn head_required_from_pressures(
+    p_out_bar: f64,
+    p_in_bar: f64,
+    t_in_k: f64,
+    gamma: f64,
+    cp_j_per_kg_k: f64,
+    eta: f64,
+) -> f64 {
+    if !p_out_bar.is_finite()
+        || !p_in_bar.is_finite()
+        || !t_in_k.is_finite()
+        || !gamma.is_finite()
+        || !cp_j_per_kg_k.is_finite()
+        || !eta.is_finite()
+        || p_out_bar <= 0.0
+        || p_in_bar <= 0.0
+        || t_in_k <= 0.0
+        || cp_j_per_kg_k <= 0.0
+        || eta <= 0.0
+        || gamma <= 1.0
+        || p_out_bar <= p_in_bar + 1e-9
+    {
+        return 0.0;
+    }
+    let pi = (p_out_bar / p_in_bar).max(1.0);
+    let base = pi.powf((gamma - 1.0) / gamma);
+    let head_j = (cp_j_per_kg_k * t_in_k / eta) * (base - 1.0);
+    (head_j / 1_000.0).max(0.0)
+}
+
+/// Tête carte à Q/P_amont (kJ/kg) pour une station, si le point de fonctionnement existe.
+pub fn map_head_kj_per_kg_for_mode(
+    station: &StationModel,
+    ctx: &CompressorOperatingContext,
+    prefer_biquadratic: bool,
+) -> Option<f64> {
+    find_operating_point_for_mode(station, ctx, prefer_biquadratic).map(|p| p.head_kj_per_kg)
+}
+
 fn selected_turbo(station: &StationModel) -> Option<&TurboCompressorModel> {
     station.preferred_turbo()
 }
@@ -570,7 +610,7 @@ mod tests {
         effective_ratio_from_operating_point, effective_ratio_with_nominal,
         effective_ratio_with_nominal_for_mode, eval_biquadratic_head, eval_quadratic,
         find_operating_point, find_operating_point_for_mode, had_to_pressure_ratio,
-        interpolate_head,
+        head_required_from_pressures, interpolate_head,
     };
     use crate::compressor::station::{StationModel, TurboMeasurement};
 
@@ -862,5 +902,30 @@ mod tests {
             ratio > 1.09,
             "582 CS1 config_2 turbo should exceed catalogue 1.08 at mild_618 estimate (ratio={ratio:.4})"
         );
+    }
+
+    #[test]
+    fn test_head_required_roundtrip_with_had_to_pressure_ratio() {
+        let p_in = 40.0;
+        let t_in = 288.15;
+        let h_nom = 85.0;
+        let pi = had_to_pressure_ratio(
+            h_nom,
+            p_in,
+            t_in,
+            super::DEFAULT_GAMMA,
+            super::DEFAULT_CP_J_PER_KG_K,
+            super::DEFAULT_EFFICIENCY,
+        );
+        let p_out = p_in * pi;
+        let h_back = head_required_from_pressures(
+            p_out,
+            p_in,
+            t_in,
+            super::DEFAULT_GAMMA,
+            super::DEFAULT_CP_J_PER_KG_K,
+            super::DEFAULT_EFFICIENCY,
+        );
+        assert_abs_diff_eq!(h_back, h_nom, epsilon = 1e-6);
     }
 }

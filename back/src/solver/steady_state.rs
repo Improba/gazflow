@@ -348,18 +348,53 @@ pub(crate) fn compressor_pressure_from_coeff_with_options(
 
 const COMPRESSOR_ACHIEVED_RATIO_OVERSHOOT: f64 = 1.03;
 
+fn compressor_enthalpic_overshoot() -> f64 {
+    std::env::var("GAZFLOW_COMPRESSOR_ENTHALPIC_OVERSHOOT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|x| x.is_finite() && *x >= 1.0 && *x <= 2.0)
+        .unwrap_or(1.08)
+}
+
 /// Adoucit le coefficient P² compresseur si la cible dépasse le ratio pression atteint.
 pub(crate) fn effective_compressor_pressure_from_coeff(
     target_coeff: f64,
     pressure_from_sq: f64,
     pressure_to_sq: f64,
 ) -> f64 {
+    effective_compressor_pressure_from_coeff_with_overshoot(
+        target_coeff,
+        pressure_from_sq,
+        pressure_to_sq,
+        COMPRESSOR_ACHIEVED_RATIO_OVERSHOOT,
+    )
+}
+
+pub(crate) fn effective_compressor_pressure_from_coeff_enthalpic(
+    target_coeff: f64,
+    pressure_from_sq: f64,
+    pressure_to_sq: f64,
+) -> f64 {
+    effective_compressor_pressure_from_coeff_with_overshoot(
+        target_coeff,
+        pressure_from_sq,
+        pressure_to_sq,
+        compressor_enthalpic_overshoot(),
+    )
+}
+
+fn effective_compressor_pressure_from_coeff_with_overshoot(
+    target_coeff: f64,
+    pressure_from_sq: f64,
+    pressure_to_sq: f64,
+    overshoot: f64,
+) -> f64 {
     if target_coeff <= 1.0 + 1e-9 || pressure_from_sq <= 1.0 {
         return target_coeff;
     }
     let achieved_ratio = (pressure_to_sq / pressure_from_sq).sqrt().max(1.0);
     let target_ratio = target_coeff.sqrt();
-    let cap_ratio = achieved_ratio * COMPRESSOR_ACHIEVED_RATIO_OVERSHOOT;
+    let cap_ratio = achieved_ratio * overshoot;
     if target_ratio > cap_ratio {
         cap_ratio.powi(2).max(1.0)
     } else {
@@ -3343,6 +3378,21 @@ mod tests {
         assert_eq!(slips[0].node_id, "sink_24");
         assert!((slips[0].nominal_q_m3s + 5.0).abs() < 1e-9);
         assert!((slips[0].slip_m3s - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_enthalpic_overshoot_allows_higher_compressor_coeff() {
+        let target_coeff = 2.0_f64.powi(2);
+        let p_from_sq = 40.0_f64.powi(2);
+        let p_to_sq = 41.0_f64.powi(2);
+        let standard =
+            effective_compressor_pressure_from_coeff(target_coeff, p_from_sq, p_to_sq);
+        let enthalpic =
+            effective_compressor_pressure_from_coeff_enthalpic(target_coeff, p_from_sq, p_to_sq);
+        assert!(
+            enthalpic >= standard,
+            "enthalpic overshoot should not be tighter than default, got {enthalpic} vs {standard}"
+        );
     }
 
     #[test]

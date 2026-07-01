@@ -22,10 +22,11 @@ use super::iterative::solve_sparse_gmres_ilu0;
 use super::steady_state::{
     NondimScaling, PipeElevationContext, SolverControl, SolverProgress, SolverResult,
     compressor_pressure_from_coeff_for_config, compressor_r2_cap_disabled,
-    effective_compressor_pressure_from_coeff, effective_pipe_geometry, flow_and_conductance,
-    flow_reference_from_demands, gravity_dp_sq_bar, gravity_dp_sq_derivatives_wrt_pressure_sq,
-    pipe_flow_with_gravity, pipe_resistance_at_pressure_with_composition,
-    pressure_sq_reference_from_fixed,
+    effective_compressor_pressure_from_coeff,
+    effective_compressor_pressure_from_coeff_enthalpic, effective_pipe_geometry,
+    flow_and_conductance, flow_reference_from_demands, gravity_dp_sq_bar,
+    gravity_dp_sq_derivatives_wrt_pressure_sq, pipe_flow_with_gravity,
+    pipe_resistance_at_pressure_with_composition, pressure_sq_reference_from_fixed,
 };
 
 const MIN_PRESSURE_SQ: f64 = 1.0;
@@ -96,10 +97,20 @@ struct NewtonMapContext<'a> {
     disable_r2_cap: bool,
     /// Dérivées implicites ∂(coeff carte)/∂Q et ∂/∂P_amont (v19 head-Jacobian).
     head_jac: bool,
+    /// Bilan enthalpique in-Newton (v20) : cap achieved-ratio assoupli (1,15×) + dérivées carte.
+    enthalpic: bool,
+}
+
+fn newton_compressor_enthalpic_enabled(_config: &SteadyStateConfig) -> bool {
+    env_bool("GAZFLOW_COMPRESSOR_ENTHALPIC", false)
 }
 
 fn newton_compressor_head_jac_enabled(_config: &SteadyStateConfig) -> bool {
     // Opt-in : bench mild_618 montre une légère régression avec défaut ON (2,045 vs 2,0 m³/s).
+    // v20 enthalpique active implicitement les dérivées carte.
+    if newton_compressor_enthalpic_enabled(_config) {
+        return true;
+    }
     env_bool("GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC", false)
 }
 
@@ -127,14 +138,22 @@ fn compressor_coeff_from_map_with_p_in(
         map_ctx.prefer_biquadratic,
     );
     let mut target_coeff = ratio.powi(2);
-    if ratio > 3.0 && !map_ctx.disable_r2_cap {
+    if ratio > 3.0 && !map_ctx.disable_r2_cap && !map_ctx.enthalpic {
         target_coeff = target_coeff.min(9.0);
     }
-    effective_compressor_pressure_from_coeff(
-        target_coeff,
-        p_in * p_in,
-        pressures_sq[pipe.to_idx],
-    )
+    if map_ctx.enthalpic {
+        effective_compressor_pressure_from_coeff_enthalpic(
+            target_coeff,
+            p_in * p_in,
+            pressures_sq[pipe.to_idx],
+        )
+    } else {
+        effective_compressor_pressure_from_coeff(
+            target_coeff,
+            p_in * p_in,
+            pressures_sq[pipe.to_idx],
+        )
+    }
 }
 
 fn compressor_coeff_from_map(
@@ -175,7 +194,10 @@ fn compressor_map_coeff_sensitivities(
     (c, dc_dq, dc_dp)
 }
 
-fn newton_compressor_map_enabled(_config: &SteadyStateConfig) -> bool {
+fn newton_compressor_map_enabled(config: &SteadyStateConfig) -> bool {
+    if newton_compressor_enthalpic_enabled(config) {
+        return true;
+    }
     env_bool(
         "GAZFLOW_NEWTON_COMPRESSOR_MAP",
         matches!(
@@ -402,6 +424,7 @@ where
             prefer_biquadratic: matches!(compressor_map_mode(), CompressorMapMode::Biquadratic),
             disable_r2_cap: compressor_r2_cap_disabled(config),
             head_jac: newton_compressor_head_jac_enabled(config),
+            enthalpic: newton_compressor_enthalpic_enabled(config),
         })
     } else {
         None
@@ -899,9 +922,9 @@ fn pipe_flow_derivatives(
     map_ctx: Option<&NewtonMapContext<'_>>,
 ) -> PipeFlowDerivatives {
     if pipe.kind == ConnectionKind::CompressorStation
-        && map_ctx.is_some_and(|ctx| ctx.head_jac)
+        && map_ctx.is_some_and(|ctx| ctx.enthalpic || ctx.head_jac)
     {
-        return pipe_flow_derivatives_head_jac(
+        return pipe_flow_derivatives_enthalpic(
             pipe,
             pressures_sq,
             scaling,
@@ -966,9 +989,9 @@ fn pipe_flow_derivatives(
     }
 }
 
-/// Jacobian compresseur avec couplage implicite carte(Q, P_amont) sur le coefficient P² — v19.
-/// Ce n'est pas un bilan enthalpique : le flux reste dérivé de Δ(P²) via Darcy-Weisbach simplifié.
-fn pipe_flow_derivatives_head_jac(
+/// Jacobian compresseur avec couplage carte(Q, P_amont) sur le coefficient P² — v19/v20.
+/// v20 (`enthalpic`) : coeff = π(H_map)² **sans** adoucissement `effective_compressor_pressure_from_coeff`.
+fn pipe_flow_derivatives_enthalpic(
     pipe: &IndexedPipe,
     pressures_sq: &[f64],
     scaling: NondimScaling,
@@ -981,11 +1004,19 @@ fn pipe_flow_derivatives_head_jac(
     let p_to = p_to_sq.sqrt();
     let avg_p = 0.5 * (p_from + p_to);
     let mut pressure_from_coeff = if pipe.pressure_from_coeff > 1.0 + 1e-6 {
-        effective_compressor_pressure_from_coeff(
-            pipe.pressure_from_coeff,
-            p_from_sq,
-            p_to_sq,
-        )
+        if map_ctx.enthalpic {
+            effective_compressor_pressure_from_coeff_enthalpic(
+                pipe.pressure_from_coeff,
+                p_from_sq,
+                p_to_sq,
+            )
+        } else {
+            effective_compressor_pressure_from_coeff(
+                pipe.pressure_from_coeff,
+                p_from_sq,
+                p_to_sq,
+            )
+        }
     } else {
         pipe.pressure_from_coeff
     };
