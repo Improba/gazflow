@@ -1280,6 +1280,66 @@ pub fn boundary_nomination_slips(
     slips
 }
 
+/// Écart à l'enveloppe pression (borne basse / haute) sur un nœud libre.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScenarioPressureSlip {
+    pub node_id: String,
+    pub solved_pressure_bar: f64,
+    pub lower_bar: Option<f64>,
+    pub upper_bar: Option<f64>,
+    /// solved < lower (bar).
+    pub shortfall_bar: f64,
+    /// solved > upper (bar).
+    pub excess_bar: f64,
+    /// Borne issue du `.scn` (Phase I-bis), vs `.net` seul.
+    pub from_scenario_envelope: bool,
+}
+
+const PRESSURE_SLIP_TOL_BAR: f64 = 1e-3;
+
+/// Violations pression structurées (triées par shortfall+excess décroissant).
+pub fn scenario_pressure_slips(network: &GasNetwork, result: &SolverResult) -> Vec<ScenarioPressureSlip> {
+    let mut slips = Vec::new();
+    for node in network.nodes() {
+        if node.pressure_fixed_bar.is_some() {
+            continue;
+        }
+        let solved = result.pressures.get(&node.id).copied().unwrap_or(0.0);
+        if !solved.is_finite() || solved <= 0.0 {
+            continue;
+        }
+        let lower = node.pressure_lower_bar;
+        let upper = node.pressure_upper_bar;
+        let shortfall = lower
+            .map(|lo| (lo - solved).max(0.0))
+            .unwrap_or(0.0);
+        let excess = upper
+            .map(|hi| (solved - hi).max(0.0))
+            .unwrap_or(0.0);
+        if shortfall <= PRESSURE_SLIP_TOL_BAR && excess <= PRESSURE_SLIP_TOL_BAR {
+            continue;
+        }
+        slips.push(ScenarioPressureSlip {
+            node_id: node.id.clone(),
+            solved_pressure_bar: solved,
+            lower_bar: lower,
+            upper_bar: upper,
+            shortfall_bar: shortfall,
+            excess_bar: excess,
+            from_scenario_envelope: network
+                .scenario_pressure_envelope_nodes
+                .contains(&node.id),
+        });
+    }
+    slips.sort_by(|a, b| {
+        let sa = a.shortfall_bar + a.excess_bar;
+        let sb = b.shortfall_bar + b.excess_bar;
+        sb.total_cmp(&sa).then_with(|| a.node_id.cmp(&b.node_id))
+    });
+    slips.truncate(25);
+    slips
+}
+
 /// Résultat d'un solve avec raffinement itératif des ancrages pression.
 #[derive(Debug, Clone)]
 pub struct MassBalanceRefinementOutcome {
@@ -3412,5 +3472,25 @@ mod tests {
 
         let slips = boundary_nomination_slips(&net, &demands, &result, &["sink_109".into()]);
         assert!(slips.is_empty());
+    }
+
+    #[test]
+    fn test_scenario_pressure_slips_shortfall() {
+        let mut net = two_node_network();
+        if let Some(sink) = net.node_mut("sink") {
+            sink.pressure_lower_bar = Some(10.0);
+            sink.pressure_upper_bar = Some(50.0);
+        }
+        net.scenario_pressure_envelope_nodes.insert("sink".into());
+        let mut result = SolverResult::default();
+        result
+            .pressures
+            .insert("sink".into(), 4.0);
+
+        let slips = scenario_pressure_slips(&net, &result);
+        assert_eq!(slips.len(), 1);
+        assert_eq!(slips[0].node_id, "sink");
+        assert!((slips[0].shortfall_bar - 6.0).abs() < 1e-9);
+        assert!(slips[0].from_scenario_envelope);
     }
 }

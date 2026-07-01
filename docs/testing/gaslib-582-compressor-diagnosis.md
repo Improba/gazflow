@@ -105,15 +105,45 @@ Sur-ancrage (>2–3 junctions) dégrade le résidu (~3,6 m³/s observé).
 
 **v22** (`GAZFLOW_COMPRESSOR_ENERGY_EQUATION=1`) : pénalité explicite `H_map − H_req` dans Δ(P²) + T_sortie isentrope aval. Bench unique : **2,045 m³/s** (= baseline). Opt-in, défaut off.
 
-## Prochaines étapes (v23+)
+## Phase I-bis — enveloppes pression (juillet 2026)
 
-1. **Modèle compresseur avec bilan énergétique étendu** (T_sortie aval, hors MVP P² seul) si v20 ne suffit pas.
-2. **Convergence stricte** (`GAZFLOW_COMPRESSOR_STRICT_NEWTON=1`) + budget iter : qualifier si ~2 m³/s est attracteur physique ou purement numérique.
-3. **Bench reproductible** : `./scripts/bench-gaslib-582.sh` (3 runs manuels recommandés, médiane).
+| Bench | Résidu | Violations P | Notes |
+|-------|--------|--------------|-------|
+| partial accept + enveloppes post-check | **2,159** | **11** | hubs standard, nomination intacte |
+| in-Newton soft (w=0,01) | **2,045** | **11** | = baseline massique, enveloppes visibles |
+| strict Newton | **échec @ 3,0** | n/a | partial accept off → pas de faux « ok » à 2,045 |
+
+### Analyse des 11 violations (mild_618, in-newton w=0,01)
+
+**10/11** : `sink_*` **nommés** (Q imposé, slip \|Q\| ≪ 2 m³/s) dont la pression résolue est **sous la borne basse scénario** :
+
+| Nœud | P résolu | lower scénario | Écart | Q nominal (m³/s) |
+|------|----------|----------------|-------|------------------|
+| `sink_122` | 4,2 bar | **74,0 bar** | −69,8 bar | −10,4 |
+| `sink_125` | 10,7 bar | 41,0 bar | −30,3 bar | −8,0 |
+| `sink_88` | 2,5 bar | 26,0 bar | −23,5 bar | −7,2 |
+| `sink_83` | 2,0 bar | 21,0 bar | −19,0 bar | −4,0 |
+| `sink_42`, `47`, `55` | ~4 bar | 5,5–7 bar | ~1–3 bar | faible |
+
+**1/11** : `innode_3` (interne, borne `.net` 61,9 bar, hors enveloppe `.scn`).
+
+**Interprétation métier** : ce n'est pas un artefact « sinks Q≈0 à 51 bar ». Le solveur trouve un état **basse pression locale** (~2–11 bar) sur des sorties contractuelles qui exigent des planchers **5–74 bar**, tout en imposant Q. Cas extrême : `sink_122` (branche `innode_49` → `shortPipe` → `source_10`) à 4 bar vs contrat 74–81 bar.
+
+Le JSON diag expose désormais `scenario_pressure_slips` (tri par shortfall, flag `from_scenario_envelope`).
+
+**Conclusion Phase I-bis** : le plancher **~2 m³/s** coexiste avec **violation systématique des enveloppes P** sur les contrats dual Q+P. Ce n'est pas résolu par post-check seul ni par pénalité soft faible (w=0,01).
+
+## Prochaines étapes (Phase I-c)
+
+1. **Contrat dual Q+P** : modèle frontière (P dans enveloppe + Q imposé) vs ancrage P sur lower bound (changement de problème).
+2. **Prioriser `sink_122`** : topologie branche haute pression / shortPipe bidirectionnel.
+3. **Strict Newton + diag** : `scenario_pressure_slips` sur dernier état partiel (si solve échoue).
+4. Bench : `./scripts/bench-gaslib-582.sh phase-ibis-in-newton` (w=0,01 défaut).
 
 ```bash
-# v22 équation énergétique explicite + T_sortie (opt-in)
-GAZFLOW_COMPRESSOR_ENERGY_EQUATION=1 ./scripts/bench-gaslib-582.sh energy-equation
+# Enveloppes + critères honnêtes
+./scripts/bench-gaslib-582.sh phase-ibis-nominal-anchors
+./scripts/bench-gaslib-582.sh strict-newton-envelopes
 ```
 
 Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (non atteint).

@@ -26,7 +26,8 @@ use gazflow_back::solver::{
     apply_map_ratios_after_continuation_step, boundary_nomination_slips,
     compressor_accept_partial_enabled, compressor_map_mode,
     compressor_pressure_from_coeff, estimated_compressor_map_flow_m3s, mass_balance_report,
-    preset_robust, solve_with_mass_balance_refinement, BoundaryNominationSlip, CompressorMapMode,
+    preset_robust, scenario_pressure_slips, solve_with_mass_balance_refinement,
+    BoundaryNominationSlip, CompressorMapMode, ScenarioPressureSlip,
 };
 use serde::Serialize;
 
@@ -128,6 +129,9 @@ struct DiagOutput {
     /// Écarts débit aux points frontière nominés (entry/exit à Q≠0).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     boundary_nomination_slips: Vec<BoundaryNominationSlip>,
+    /// Violations enveloppe pression (`.scn` + `.net`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    scenario_pressure_slips: Vec<ScenarioPressureSlip>,
 }
 
 fn parse_residual_from_error(err: &str) -> Option<f64> {
@@ -397,6 +401,7 @@ fn skipped_output(
         contract_flow_relaxed: Vec::new(),
         nomination_mass_balance: None,
         boundary_nomination_slips: Vec::new(),
+        scenario_pressure_slips: Vec::new(),
     }
 }
 
@@ -599,6 +604,7 @@ fn main() -> Result<()> {
                 &result,
                 &excluded,
             );
+            let scenario_pressure_slips = scenario_pressure_slips(&network, &result);
             DiagOutput {
                 status: "ok",
                 dataset: cli.dataset.clone(),
@@ -618,6 +624,7 @@ fn main() -> Result<()> {
                 contract_flow_relaxed: contract_flow_relaxed.clone(),
                 nomination_mass_balance,
                 boundary_nomination_slips,
+                scenario_pressure_slips,
             }
         }
         Err(err) => {
@@ -642,6 +649,7 @@ fn main() -> Result<()> {
                 contract_flow_relaxed,
                 nomination_mass_balance: None,
                 boundary_nomination_slips: Vec::new(),
+                scenario_pressure_slips: Vec::new(),
             }
         }
     };

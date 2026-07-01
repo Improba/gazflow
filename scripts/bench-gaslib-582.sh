@@ -81,4 +81,9 @@ print("envelopes:", flags.get("scenario_pressure_envelopes"))
 print("in_newton:", flags.get("scenario_pressure_in_newton"))
 pv = mb.get("pressure_violations") or []
 print("pressure_violations:", len(pv), pv[:3] if pv else [])
+sps = d.get("scenario_pressure_slips") or []
+print("scenario_pressure_slips:", len(sps))
+for s in sps[:5]:
+    print(" ", s["node_id"], "P=", round(s["solved_pressure_bar"],3),
+          "shortfall=", round(s["shortfall_bar"],2), "scn=", s.get("from_scenario_envelope"))
 PY

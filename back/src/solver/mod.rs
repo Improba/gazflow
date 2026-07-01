@@ -44,8 +44,8 @@ pub use presets::{
 pub use regulator::{EquipmentState, RegulatorMode};
 pub use steady_state::{
     BoundaryNominationSlip, MassBalanceRefinementOutcome, MassBalanceReport, NodeMassImbalance,
-    SolverControl, SolverProgress, SolverResult, boundary_nomination_slips,
-    compressor_pressure_from_coeff, mass_balance_report, solve_steady_state,
+    ScenarioPressureSlip, SolverControl, SolverProgress, SolverResult, boundary_nomination_slips,
+    compressor_pressure_from_coeff, mass_balance_report, scenario_pressure_slips, solve_steady_state,
     solve_steady_state_jacobi, solve_steady_state_with_composition,
     solve_steady_state_with_initial_pressures, solve_steady_state_with_progress,
     solve_with_mass_balance_refinement,
