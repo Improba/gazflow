@@ -48,7 +48,7 @@ pub use steady_state::{
     compressor_pressure_from_coeff, mass_balance_report, scenario_pressure_slips, solve_steady_state,
     solve_steady_state_jacobi, solve_steady_state_with_composition,
     solve_steady_state_with_initial_pressures, solve_steady_state_with_progress,
-    solve_with_mass_balance_refinement,
+    solve_with_mass_balance_refinement, upstream_pressure_trace,
 };
 pub use timeseries::{
     TimeseriesConfig, TimeseriesControl, TimeseriesResult, TimeseriesStepResult, WeatherStep,

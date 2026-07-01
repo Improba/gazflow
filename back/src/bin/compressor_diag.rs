@@ -16,9 +16,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use gazflow_back::compressor::{CompressorOperatingContext, effective_ratio_with_nominal};
 use gazflow_back::gaslib::{
-    effective_solver_demands, enrich_scenario_with_balance_hub, load_network,
-    load_scenario_demands, network_with_scenario_boundaries, scenario_pressure_envelopes_enabled,
-    scenario_pressure_in_newton_enabled, transport_minimal_anchors_enabled,
+    detect_shortpipe_boundary_pairs, effective_solver_demands, enrich_scenario_with_balance_hub,
+    load_network, load_scenario_demands, network_with_scenario_boundaries,
+    scenario_pressure_envelopes_enabled, scenario_pressure_floor_anchor_enabled,
+    scenario_pressure_in_newton_enabled, shortpipe_coupled_envelopes_enabled,
+    transport_minimal_anchors_enabled, ShortPipeBoundaryPair,
 };
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
 use gazflow_back::solver::{
@@ -27,7 +29,7 @@ use gazflow_back::solver::{
     compressor_accept_partial_enabled, compressor_map_mode,
     compressor_pressure_from_coeff, estimated_compressor_map_flow_m3s, mass_balance_report,
     preset_robust, scenario_pressure_slips, solve_with_mass_balance_refinement,
-    BoundaryNominationSlip, CompressorMapMode, ScenarioPressureSlip,
+    upstream_pressure_trace, BoundaryNominationSlip, CompressorMapMode, ScenarioPressureSlip,
 };
 use serde::Serialize;
 
@@ -80,6 +82,16 @@ struct DiagFlags {
     scenario_pressure_in_newton: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     compressor_strict_newton: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    scenario_shortpipe_coupled_envelopes: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    scenario_pressure_floor_anchor: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct UpstreamPressureHop {
+    node_id: String,
+    pressure_bar: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -132,6 +144,11 @@ struct DiagOutput {
     /// Violations enveloppe pression (`.scn` + `.net`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     scenario_pressure_slips: Vec<ScenarioPressureSlip>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    shortpipe_boundary_couplings: Vec<ShortPipeBoundaryPair>,
+    /// Trace amont depuis le pire `scenario_pressure_slip` (6 sauts max).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    worst_pressure_upstream_trace: Vec<UpstreamPressureHop>,
 }
 
 fn parse_residual_from_error(err: &str) -> Option<f64> {
@@ -402,6 +419,8 @@ fn skipped_output(
         nomination_mass_balance: None,
         boundary_nomination_slips: Vec::new(),
         scenario_pressure_slips: Vec::new(),
+        shortpipe_boundary_couplings: Vec::new(),
+        worst_pressure_upstream_trace: Vec::new(),
     }
 }
 
@@ -443,6 +462,8 @@ fn main() -> Result<()> {
             transport_minimal_anchors: transport_minimal_anchors_enabled(),
             scenario_pressure_in_newton: scenario_pressure_in_newton_enabled(),
             compressor_strict_newton: !compressor_accept_partial_enabled(),
+            scenario_shortpipe_coupled_envelopes: shortpipe_coupled_envelopes_enabled(),
+            scenario_pressure_floor_anchor: scenario_pressure_floor_anchor_enabled(),
         };
         emit_json(
             &skipped_output(
@@ -476,6 +497,8 @@ fn main() -> Result<()> {
             transport_minimal_anchors: transport_minimal_anchors_enabled(),
             scenario_pressure_in_newton: scenario_pressure_in_newton_enabled(),
             compressor_strict_newton: !compressor_accept_partial_enabled(),
+            scenario_shortpipe_coupled_envelopes: shortpipe_coupled_envelopes_enabled(),
+            scenario_pressure_floor_anchor: scenario_pressure_floor_anchor_enabled(),
         };
         emit_json(
             &skipped_output(cli.dataset.clone(), network_display, None, flags, reason),
@@ -510,6 +533,8 @@ fn main() -> Result<()> {
         transport_minimal_anchors: transport_minimal_anchors_enabled(),
         scenario_pressure_in_newton: scenario_pressure_in_newton_enabled(),
         compressor_strict_newton: !compressor_accept_partial_enabled(),
+        scenario_shortpipe_coupled_envelopes: shortpipe_coupled_envelopes_enabled(),
+        scenario_pressure_floor_anchor: scenario_pressure_floor_anchor_enabled(),
     };
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;
@@ -605,6 +630,19 @@ fn main() -> Result<()> {
                 &excluded,
             );
             let scenario_pressure_slips = scenario_pressure_slips(&network, &result);
+            let shortpipe_boundary_couplings = detect_shortpipe_boundary_pairs(&network);
+            let worst_pressure_upstream_trace = scenario_pressure_slips
+                .first()
+                .map(|slip| {
+                    upstream_pressure_trace(&network, &result, &slip.node_id, 6)
+                        .into_iter()
+                        .map(|(node_id, pressure_bar)| UpstreamPressureHop {
+                            node_id,
+                            pressure_bar,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             DiagOutput {
                 status: "ok",
                 dataset: cli.dataset.clone(),
@@ -625,6 +663,8 @@ fn main() -> Result<()> {
                 nomination_mass_balance,
                 boundary_nomination_slips,
                 scenario_pressure_slips,
+                shortpipe_boundary_couplings,
+                worst_pressure_upstream_trace,
             }
         }
         Err(err) => {
@@ -650,6 +690,8 @@ fn main() -> Result<()> {
                 nomination_mass_balance: None,
                 boundary_nomination_slips: Vec::new(),
                 scenario_pressure_slips: Vec::new(),
+                shortpipe_boundary_couplings: detect_shortpipe_boundary_pairs(&network),
+                worst_pressure_upstream_trace: Vec::new(),
             }
         }
     };

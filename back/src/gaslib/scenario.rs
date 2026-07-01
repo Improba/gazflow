@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use quick_xml::de::from_str;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::graph::{ConnectionKind, GasNetwork};
 
@@ -123,6 +123,125 @@ pub fn apply_scenario_pressure_envelopes(
             .scenario_pressure_envelope_nodes
             .insert(envelope.node_id.clone());
     }
+    apply_shortpipe_coupled_envelopes(network, scenario);
+    apply_scenario_pressure_floor_anchors(network, scenario);
+}
+
+/// Paire entry/exit GasLib au même point physique (liaison `shortPipe`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ShortPipeBoundaryPair {
+    pub shortpipe_id: String,
+    pub sink_id: String,
+    pub source_id: String,
+}
+
+/// Détecte les couples `sink_*` ↔ `source_*` reliés par un `shortPipe`.
+pub fn detect_shortpipe_boundary_pairs(network: &GasNetwork) -> Vec<ShortPipeBoundaryPair> {
+    let mut pairs = Vec::new();
+    for pipe in network.pipes() {
+        if pipe.kind != ConnectionKind::ShortPipe {
+            continue;
+        }
+        let (sink_id, source_id) = match (pipe.from.as_str(), pipe.to.as_str()) {
+            (from, to) if from.starts_with("sink_") && to.starts_with("source_") => {
+                (from.to_string(), to.to_string())
+            }
+            (from, to) if from.starts_with("source_") && to.starts_with("sink_") => {
+                (to.to_string(), from.to_string())
+            }
+            _ => continue,
+        };
+        pairs.push(ShortPipeBoundaryPair {
+            shortpipe_id: pipe.id.clone(),
+            sink_id,
+            source_id,
+        });
+    }
+    pairs.sort_by(|a, b| a.sink_id.cmp(&b.sink_id).then_with(|| a.source_id.cmp(&b.source_id)));
+    pairs
+}
+
+pub fn shortpipe_coupled_envelopes_enabled() -> bool {
+    std::env::var("GAZFLOW_SCENARIO_SHORTPIPE_COUPLED_ENVELOPES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Propage l'enveloppe P du `sink_*` nominé vers le `source_*` couplé (même point physique).
+fn apply_shortpipe_coupled_envelopes(network: &mut GasNetwork, scenario: &ScenarioDemands) {
+    if !shortpipe_coupled_envelopes_enabled() || !scenario_pressure_envelopes_enabled() {
+        return;
+    }
+    let pairs = detect_shortpipe_boundary_pairs(network);
+    let env_map: HashMap<&str, &ScenarioPressureEnvelope> = scenario
+        .pressure_envelopes
+        .iter()
+        .map(|e| (e.node_id.as_str(), e))
+        .collect();
+    let reserved = all_applied_anchor_ids(scenario);
+    for pair in pairs {
+        let Some(env) = env_map.get(pair.sink_id.as_str()) else {
+            continue;
+        };
+        if reserved.contains(&pair.source_id) {
+            continue;
+        }
+        let Some(node) = network.node_mut(&pair.source_id) else {
+            continue;
+        };
+        if node.pressure_fixed_bar.is_some() {
+            continue;
+        }
+        node.pressure_lower_bar =
+            merge_pressure_bound(node.pressure_lower_bar, env.lower_bar, true);
+        node.pressure_upper_bar =
+            merge_pressure_bound(node.pressure_upper_bar, env.upper_bar, false);
+        network
+            .scenario_pressure_envelope_nodes
+            .insert(pair.source_id.clone());
+    }
+}
+
+pub fn scenario_pressure_floor_anchor_enabled() -> bool {
+    std::env::var("GAZFLOW_SCENARIO_PRESSURE_FLOOR_ANCHOR")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Ancrage P à la borne basse scénario (égalité — change le problème, bench opt-in Phase I-c).
+fn apply_scenario_pressure_floor_anchors(network: &mut GasNetwork, scenario: &ScenarioDemands) {
+    if !scenario_pressure_floor_anchor_enabled() || !scenario_pressure_envelopes_enabled() {
+        return;
+    }
+    let reserved = all_applied_anchor_ids(scenario);
+    for envelope in &scenario.pressure_envelopes {
+        if reserved.contains(&envelope.node_id) {
+            continue;
+        }
+        let Some(lower) = envelope.lower_bar else {
+            continue;
+        };
+        let Some(node) = network.node_mut(&envelope.node_id) else {
+            continue;
+        };
+        if node.pressure_fixed_bar.is_none() {
+            node.pressure_fixed_bar = Some(lower);
+        }
+    }
+}
+
+pub fn shortpipe_partner_for(network: &GasNetwork, node_id: &str) -> Option<String> {
+    detect_shortpipe_boundary_pairs(network)
+        .into_iter()
+        .find_map(|p| {
+            if p.sink_id == node_id {
+                Some(p.source_id)
+            } else if p.source_id == node_id {
+                Some(p.sink_id)
+            } else {
+                None
+            }
+        })
 }
 
 pub fn scenario_pressure_envelopes_enabled() -> bool {
@@ -1369,6 +1488,32 @@ mod tests {
         assert!(scenario.junction_anchors.is_empty());
         assert!(scenario.boundary_spine_anchors.is_empty());
         unsafe { std::env::remove_var("GAZFLOW_TRANSPORT_MINIMAL_ANCHORS") };
+    }
+
+    #[test]
+    fn test_detect_shortpipe_boundary_pairs() {
+        use crate::graph::{ConnectionKind, GasNetwork, Node, Pipe};
+
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "sink_122".into(),
+            ..Default::default()
+        });
+        net.add_node(Node {
+            id: "source_10".into(),
+            ..Default::default()
+        });
+        net.add_pipe(Pipe {
+            id: "shortPipe_55".into(),
+            from: "sink_122".into(),
+            to: "source_10".into(),
+            kind: ConnectionKind::ShortPipe,
+            ..Default::default()
+        });
+        let pairs = detect_shortpipe_boundary_pairs(&net);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].sink_id, "sink_122");
+        assert_eq!(pairs[0].source_id, "source_10");
     }
 
     #[test]

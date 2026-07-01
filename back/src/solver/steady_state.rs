@@ -1293,12 +1293,24 @@ pub struct ScenarioPressureSlip {
     pub excess_bar: f64,
     /// Borne issue du `.scn` (Phase I-bis), vs `.net` seul.
     pub from_scenario_envelope: bool,
+    /// Partenaire entry/exit au même point (`shortPipe`), si présent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shortpipe_partner_id: Option<String>,
 }
 
 const PRESSURE_SLIP_TOL_BAR: f64 = 1e-3;
 
 /// Violations pression structurées (triées par shortfall+excess décroissant).
 pub fn scenario_pressure_slips(network: &GasNetwork, result: &SolverResult) -> Vec<ScenarioPressureSlip> {
+    let partner_map = crate::gaslib::detect_shortpipe_boundary_pairs(network)
+        .iter()
+        .flat_map(|p| {
+            [
+                (p.sink_id.clone(), p.source_id.clone()),
+                (p.source_id.clone(), p.sink_id.clone()),
+            ]
+        })
+        .collect::<HashMap<_, _>>();
     let mut slips = Vec::new();
     for node in network.nodes() {
         if node.pressure_fixed_bar.is_some() {
@@ -1329,6 +1341,7 @@ pub fn scenario_pressure_slips(network: &GasNetwork, result: &SolverResult) -> V
             from_scenario_envelope: network
                 .scenario_pressure_envelope_nodes
                 .contains(&node.id),
+            shortpipe_partner_id: partner_map.get(&node.id).cloned(),
         });
     }
     slips.sort_by(|a, b| {
@@ -1338,6 +1351,48 @@ pub fn scenario_pressure_slips(network: &GasNetwork, result: &SolverResult) -> V
     });
     slips.truncate(25);
     slips
+}
+
+/// Trace amont (BFS) des pressions résolues depuis un nœud frontière.
+pub fn upstream_pressure_trace(
+    network: &GasNetwork,
+    result: &SolverResult,
+    start_node: &str,
+    max_hops: usize,
+) -> Vec<(String, f64)> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    let mut upstream: HashMap<String, Vec<String>> = HashMap::new();
+    for pipe in network.pipes() {
+        if !pipe.hydraulically_active() {
+            continue;
+        }
+        upstream
+            .entry(pipe.to.clone())
+            .or_default()
+            .push(pipe.from.clone());
+    }
+
+    let mut trace = Vec::new();
+    let mut seen = HashSet::new();
+    let mut queue = VecDeque::new();
+    queue.push_back((start_node.to_string(), 0usize));
+    while let Some((node_id, depth)) = queue.pop_front() {
+        if !seen.insert(node_id.clone()) {
+            continue;
+        }
+        let pressure_bar = result.pressures.get(&node_id).copied().unwrap_or(0.0);
+        trace.push((node_id.clone(), pressure_bar));
+        if depth >= max_hops {
+            continue;
+        }
+        if let Some(froms) = upstream.get(&node_id) {
+            for from in froms {
+                queue.push_back((from.clone(), depth + 1));
+            }
+        }
+    }
+    trace
 }
 
 /// Résultat d'un solve avec raffinement itératif des ancrages pression.
@@ -3492,5 +3547,6 @@ mod tests {
         assert_eq!(slips[0].node_id, "sink");
         assert!((slips[0].shortfall_bar - 6.0).abs() < 1e-9);
         assert!(slips[0].from_scenario_envelope);
+        assert!(slips[0].shortpipe_partner_id.is_none());
     }
 }

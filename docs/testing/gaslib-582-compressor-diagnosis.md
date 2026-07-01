@@ -135,15 +135,16 @@ Le JSON diag expose désormais `scenario_pressure_slips` (tri par shortfall, fla
 
 ## Prochaines étapes (Phase I-c)
 
-1. **Contrat dual Q+P** : modèle frontière (P dans enveloppe + Q imposé) vs ancrage P sur lower bound (changement de problème).
-2. **Prioriser `sink_122`** : topologie branche haute pression / shortPipe bidirectionnel.
-3. **Strict Newton + diag** : `scenario_pressure_slips` sur dernier état partiel (si solve échoue).
-4. Bench : `./scripts/bench-gaslib-582.sh phase-ibis-in-newton` (w=0,01 défaut).
+1. **Contrat dual Q+P** : le MVP impose Q ; P reste libre → 11 violations sur sorties nominées.
+2. **Couplage shortPipe** (`sink_122` ↔ `source_10`) : même point physique GasLib ; `source_10` Q=0, `sink_122` Q nominé + enveloppe 74–81 bar. Branche amont `innode_49` ~4 bar (`pipe_256` 2,1 km).
+3. **Modes bench opt-in** :
+   - `GAZFLOW_SCENARIO_SHORTPIPE_COUPLED_ENVELOPES=1` : propage enveloppe P vers le `source_*` couplé
+   - `GAZFLOW_SCENARIO_PRESSURE_FLOOR_ANCHOR=1` : fixe P à la borne basse (égalité — change le problème)
+4. JSON diag : `shortpipe_boundary_couplings`, `worst_pressure_upstream_trace`, `shortpipe_partner_id` dans `scenario_pressure_slips`.
 
 ```bash
-# Enveloppes + critères honnêtes
-./scripts/bench-gaslib-582.sh phase-ibis-nominal-anchors
-./scripts/bench-gaslib-582.sh strict-newton-envelopes
+./scripts/bench-gaslib-582.sh phase-ic-coupled
+./scripts/bench-gaslib-582.sh phase-ic-floor-anchor
 ```
 
 Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (non atteint).

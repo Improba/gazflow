@@ -78,6 +78,8 @@ GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1 ./scripts/bench-gaslib-582.sh contract-re
 | `GAZFLOW_SCENARIO_PRESSURE_CLAMP` | Clamp line-search Newton (avec in_newton) | `0` |
 | `GAZFLOW_SCENARIO_PRESSURE_PENALTY_WEIGHT` | Poids pénalité soft in-Newton (m³/s par bar) | `0.01` |
 | `GAZFLOW_TRANSPORT_MINIMAL_ANCHORS` | Slack seul, sans hubs/junction/spine (Phase I-bis, **opt-in**) | `0` |
+| `GAZFLOW_SCENARIO_SHORTPIPE_COUPLED_ENVELOPES` | Propage enveloppe P vers `source_*` couplé shortPipe | `0` |
+| `GAZFLOW_SCENARIO_PRESSURE_FLOOR_ANCHOR` | Fixe P à borne basse scénario (Phase I-c bench, **opt-in**) | `0` |
 | `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED` | Plafond r²≤9 jusqu'à convergence | `1` |
 | `GAZFLOW_COMPRESSOR_OUTER_MAX_ITERS` | Itérations outer loop ratio | 12 |
 | `GAZFLOW_COMPRESSOR_RELAX` | Relaxation ω mise à jour ratio | 0.5 |
