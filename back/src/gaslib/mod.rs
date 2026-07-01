@@ -25,7 +25,8 @@ pub use scenario::{
     contract_boundary_refinement_enabled, demands_without_pressure_slack, effective_solver_demands,
     enrich_scenario_with_balance_hub, load_scenario_demands, network_with_scenario_boundaries,
     prepare_transport_scenario, scenario_pressure_envelopes_enabled,
-    scenario_pressure_in_newton_enabled, scenario_pressure_penalty_weight,
+    scenario_pressure_clamp_in_newton_enabled, scenario_pressure_in_newton_enabled,
+    scenario_pressure_penalty_weight,
     transport_minimal_anchors_enabled,
     try_add_mass_balance_anchor, try_relax_contract_boundary,
 };

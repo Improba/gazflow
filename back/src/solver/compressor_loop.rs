@@ -92,8 +92,13 @@ fn compressor_strict_newton() -> bool {
     env_bool("GAZFLOW_COMPRESSOR_STRICT_NEWTON", false)
 }
 
-fn compressor_accept_partial() -> bool {
+/// Partial accept dans l'outer loop / continuation finale (désactivé si strict Newton).
+pub fn compressor_accept_partial_enabled() -> bool {
     !compressor_strict_newton()
+}
+
+fn compressor_accept_partial() -> bool {
+    compressor_accept_partial_enabled()
 }
 
 fn steady_config_for_outer_iter(

@@ -166,7 +166,11 @@ where
             enable_compressor_outer_loop: false,
             disable_compressor_r2_cap: steady_config.disable_compressor_r2_cap,
             accept_partial_solution: is_final_scale
-                && network.compressor_catalog.as_ref().is_some_and(|c| !c.stations.is_empty()),
+                && network
+                    .compressor_catalog
+                    .as_ref()
+                    .is_some_and(|c| !c.stations.is_empty())
+                && super::compressor_loop::compressor_accept_partial_enabled(),
         };
 
         let step_network = network_with_scaled_compressor_lift(network, scale);

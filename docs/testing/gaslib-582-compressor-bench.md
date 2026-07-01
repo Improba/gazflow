@@ -74,7 +74,8 @@ GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1 ./scripts/bench-gaslib-582.sh contract-re
 | `GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS` | Retrait Q upfront (29 nœuds mild_618) | `0` |
 | `GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES` | Passes post-solve ancrages / contract | `4` |
 | `GAZFLOW_SCENARIO_PRESSURE_ENVELOPES` | Enveloppes P `.scn` sur boundaries Q≠0 (Phase I-bis, **opt-in**) | `0` |
-| `GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON` | Clamp + pénalité soft dans le Newton (avec enveloppes) | `0` |
+| `GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON` | Pénalité soft pression dans le Newton (avec enveloppes) | `0` |
+| `GAZFLOW_SCENARIO_PRESSURE_CLAMP` | Clamp line-search Newton (avec in_newton) | `0` |
 | `GAZFLOW_SCENARIO_PRESSURE_PENALTY_WEIGHT` | Poids violation P dans résidu Newton (m³/s par bar) | `1` |
 | `GAZFLOW_TRANSPORT_MINIMAL_ANCHORS` | Slack seul, sans hubs/junction/spine (Phase I-bis, **opt-in**) | `0` |
 | `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED` | Plafond r²≤9 jusqu'à convergence | `1` |

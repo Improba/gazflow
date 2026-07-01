@@ -18,12 +18,13 @@ use gazflow_back::compressor::{CompressorOperatingContext, effective_ratio_with_
 use gazflow_back::gaslib::{
     effective_solver_demands, enrich_scenario_with_balance_hub, load_network,
     load_scenario_demands, network_with_scenario_boundaries, scenario_pressure_envelopes_enabled,
-    transport_minimal_anchors_enabled,
+    scenario_pressure_in_newton_enabled, transport_minimal_anchors_enabled,
 };
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
 use gazflow_back::solver::{
     ContinuationStepEvent, GasComposition, MassBalanceReport, SolverResult,
-    apply_map_ratios_after_continuation_step, boundary_nomination_slips, compressor_map_mode,
+    apply_map_ratios_after_continuation_step, boundary_nomination_slips,
+    compressor_accept_partial_enabled, compressor_map_mode,
     compressor_pressure_from_coeff, estimated_compressor_map_flow_m3s, mass_balance_report,
     preset_robust, solve_with_mass_balance_refinement, BoundaryNominationSlip, CompressorMapMode,
 };
@@ -74,6 +75,10 @@ struct DiagFlags {
     scenario_pressure_envelopes: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     transport_minimal_anchors: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    scenario_pressure_in_newton: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    compressor_strict_newton: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -431,6 +436,8 @@ fn main() -> Result<()> {
             compressor_energy_equation: env_flag("GAZFLOW_COMPRESSOR_ENERGY_EQUATION"),
             scenario_pressure_envelopes: scenario_pressure_envelopes_enabled(),
             transport_minimal_anchors: transport_minimal_anchors_enabled(),
+            scenario_pressure_in_newton: scenario_pressure_in_newton_enabled(),
+            compressor_strict_newton: !compressor_accept_partial_enabled(),
         };
         emit_json(
             &skipped_output(
@@ -462,6 +469,8 @@ fn main() -> Result<()> {
             compressor_energy_equation: env_flag("GAZFLOW_COMPRESSOR_ENERGY_EQUATION"),
             scenario_pressure_envelopes: scenario_pressure_envelopes_enabled(),
             transport_minimal_anchors: transport_minimal_anchors_enabled(),
+            scenario_pressure_in_newton: scenario_pressure_in_newton_enabled(),
+            compressor_strict_newton: !compressor_accept_partial_enabled(),
         };
         emit_json(
             &skipped_output(cli.dataset.clone(), network_display, None, flags, reason),
@@ -494,6 +503,8 @@ fn main() -> Result<()> {
         compressor_energy_equation: env_flag("GAZFLOW_COMPRESSOR_ENERGY_EQUATION"),
         scenario_pressure_envelopes: scenario_pressure_envelopes_enabled(),
         transport_minimal_anchors: transport_minimal_anchors_enabled(),
+        scenario_pressure_in_newton: scenario_pressure_in_newton_enabled(),
+        compressor_strict_newton: !compressor_accept_partial_enabled(),
     };
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;

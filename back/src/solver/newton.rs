@@ -14,8 +14,8 @@ use crate::compressor::{
     head_mismatch_penalty_psq, isentropic_outlet_temperature_k,
 };
 use crate::gaslib::{
-    scenario_pressure_envelopes_enabled, scenario_pressure_in_newton_enabled,
-    scenario_pressure_penalty_weight,
+    scenario_pressure_clamp_in_newton_enabled, scenario_pressure_envelopes_enabled,
+    scenario_pressure_in_newton_enabled, scenario_pressure_penalty_weight,
 };
 use crate::graph::{ConnectionKind, GasNetwork};
 
@@ -43,6 +43,7 @@ struct PressureBoundContext {
     lower_bar: Vec<Option<f64>>,
     upper_bar: Vec<Option<f64>>,
     penalty_weight: f64,
+    clamp_in_line_search: bool,
 }
 
 impl PressureBoundContext {
@@ -50,9 +51,14 @@ impl PressureBoundContext {
         let mut lower_bar = Vec::with_capacity(node_ids.len());
         let mut upper_bar = Vec::with_capacity(node_ids.len());
         for id in node_ids {
-            if let Some(n) = network.nodes().find(|node| node.id == *id) {
-                lower_bar.push(n.pressure_lower_bar);
-                upper_bar.push(n.pressure_upper_bar);
+            if network.scenario_pressure_envelope_nodes.contains(id) {
+                if let Some(n) = network.nodes().find(|node| node.id == *id) {
+                    lower_bar.push(n.pressure_lower_bar);
+                    upper_bar.push(n.pressure_upper_bar);
+                } else {
+                    lower_bar.push(None);
+                    upper_bar.push(None);
+                }
             } else {
                 lower_bar.push(None);
                 upper_bar.push(None);
@@ -62,10 +68,14 @@ impl PressureBoundContext {
             lower_bar,
             upper_bar,
             penalty_weight: scenario_pressure_penalty_weight(),
+            clamp_in_line_search: scenario_pressure_clamp_in_newton_enabled(),
         }
     }
 
     fn clamp_idx(&self, idx: usize, pressure_sq: f64) -> f64 {
+        if !self.clamp_in_line_search {
+            return pressure_sq.max(MIN_PRESSURE_SQ);
+        }
         let mut v = pressure_sq.max(MIN_PRESSURE_SQ);
         if let Some(lo) = self.lower_bar.get(idx).and_then(|o| *o) {
             v = v.max(lo * lo);
@@ -96,7 +106,11 @@ fn step_free_pressure_sq(
 ) -> f64 {
     let raw = current + delta;
     if let Some(bounds) = pressure_bounds {
-        bounds.clamp_idx(idx, raw)
+        if bounds.clamp_in_line_search {
+            bounds.clamp_idx(idx, raw)
+        } else {
+            raw.max(MIN_PRESSURE_SQ)
+        }
     } else {
         raw.max(MIN_PRESSURE_SQ)
     }
@@ -1436,19 +1450,19 @@ fn evaluate_state(
 
     if let Some(bounds) = pressure_bounds {
         for &idx in free_indices {
-            let p = pressures_sq[idx].sqrt();
+            let p = pressures_sq[idx].sqrt().max(1e-3);
             if let Some(lo) = bounds.lower_bar.get(idx).and_then(|o| *o) {
                 let shortfall = (lo - p).max(0.0);
                 if shortfall > 0.0 {
                     f_node[idx] += bounds.penalty_weight * shortfall;
-                    j_diag[idx] += bounds.penalty_weight;
+                    j_diag[idx] += bounds.penalty_weight / (2.0 * p);
                 }
             }
             if let Some(hi) = bounds.upper_bar.get(idx).and_then(|o| *o) {
                 let excess = (p - hi).max(0.0);
                 if excess > 0.0 {
                     f_node[idx] -= bounds.penalty_weight * excess;
-                    j_diag[idx] += bounds.penalty_weight;
+                    j_diag[idx] += bounds.penalty_weight / (2.0 * p);
                 }
             }
         }

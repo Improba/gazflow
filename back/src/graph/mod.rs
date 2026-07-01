@@ -5,6 +5,7 @@ mod raw;
 pub mod scenarios;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use anyhow::{Result, bail};
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -147,6 +148,8 @@ pub struct GasNetwork {
     pub graph: DiGraph<Node, Pipe>,
     id_to_index: HashMap<String, NodeIndex>,
     pub compressor_catalog: Option<CompressorCatalog>,
+    /// Nœuds dont les bornes P viennent du `.scn` (Phase I-bis, enforcement Newton).
+    pub scenario_pressure_envelope_nodes: HashSet<String>,
 }
 
 impl Default for GasNetwork {
@@ -161,6 +164,7 @@ impl GasNetwork {
             graph: DiGraph::new(),
             id_to_index: HashMap::new(),
             compressor_catalog: None,
+            scenario_pressure_envelope_nodes: HashSet::new(),
         }
     }
 

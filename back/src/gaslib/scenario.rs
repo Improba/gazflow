@@ -119,6 +119,9 @@ pub fn apply_scenario_pressure_envelopes(
             merge_pressure_bound(node.pressure_lower_bar, envelope.lower_bar, true);
         node.pressure_upper_bar =
             merge_pressure_bound(node.pressure_upper_bar, envelope.upper_bar, false);
+        network
+            .scenario_pressure_envelope_nodes
+            .insert(envelope.node_id.clone());
     }
 }
 
@@ -131,6 +134,13 @@ pub fn scenario_pressure_envelopes_enabled() -> bool {
 /// Clamp / pénalité pression dans le Newton (nécessite [`scenario_pressure_envelopes_enabled`]).
 pub fn scenario_pressure_in_newton_enabled() -> bool {
     std::env::var("GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Clamp pression en line-search Newton (avec [`scenario_pressure_in_newton_enabled`]).
+pub fn scenario_pressure_clamp_in_newton_enabled() -> bool {
+    std::env::var("GAZFLOW_SCENARIO_PRESSURE_CLAMP")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
@@ -1339,6 +1349,7 @@ mod tests {
         let node = net.nodes().find(|n| n.id == "sink_24").expect("node");
         assert_eq!(node.pressure_lower_bar, Some(40.0));
         assert_eq!(node.pressure_upper_bar, Some(55.0));
+        assert!(net.scenario_pressure_envelope_nodes.contains("sink_24"));
     }
 
     #[test]
