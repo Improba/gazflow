@@ -1,164 +1,108 @@
-# GasLib-582 — bench compresseur (Phase I, juin 2026)
+# GasLib-582 — bench compresseur (Phase I, juin–juillet 2026)
 
-Protocole figé : `compressor_diag`, réseau baseline connecté, CDF off, scénario `nomination_mild_618.scn`, slack pression retiré des demandes, preset `robust` (release).
+Protocole figé : `compressor_diag`, réseau baseline connecté, CDF off, scénario `nomination_mild_618.scn`, preset `robust` (release).
 
-## Synthèse (v19, juillet 2026)
+## Définitions (à ne pas confondre)
 
-| Indicateur | Valeur |
-|------------|--------|
-| Résidu measurement (mild_618) | **~2,0 m³/s** (inchangé vs v18) |
-| Tolérance preset robust | **3×10⁻³ m³/s** |
-| Convergence stricte | Non (partial accept ~2 m³/s) |
-| Pire nœud libre | `innode_402` / cluster ±2 m³/s |
-| Objectif Phase I | 3×10⁻³ m³/s |
+| Terme | Définition |
+|-------|------------|
+| **`residual`** | Max \|f_node\| sur nœuds libres Newton = **déséquilibre massique nodal** au state retourné (m³/s). |
+| **`mass_balance`** (JSON) | Même quantité par nœud, avec demandes **effectives** (slack + boundaries assouplies retirées). |
+| **`nomination_mass_balance`** (JSON, v19+) | Bilan avec demandes **nominales** du `.scn` — fidélité nomination GasLib. |
+| **Partial accept** | Newton outer loop retourne le dernier état si `residual > tolerance` au lieu d'échouer. |
+| **Référence nomination intacte** | Sans `contract_flow_relaxed` : le solveur impose encore les Q du mild_618. |
 
-Progression du plancher :
+## Synthèse scientifique (juillet 2026)
+
+| Indicateur | Nomination intacte (v17) | Avec heuristique v18 (Q retiré) |
+|------------|------------------------|----------------------------------|
+| Résidu effectif | **2,045 m³/s** | **~2,000 m³/s** (run unique, non revalidé après correctif gate) |
+| Résidu nominal (`nomination_mass_balance`) | = effectif | **>> 2** (violation Q sur boundaries assouplies) |
+| Tolérance preset robust | 3×10⁻³ m³/s | idem |
+| Convergence stricte | Non (partial accept) | idem |
+| Pire nœud (v17) | `sink_24` (Q nominatif −4,96 m³/s imposé) | `innode_402` après assouplissement |
+
+**Conclusion Phase I** : le plancher **~2 m³/s** n'est pas un artefact d'arrondi ; c'est l'échelle du déséquilibre massique au state partial accept. Une douzaine de nœuds libres portent simultanément \|imbalance\| ≈ résidu (signature d'un état **non convergé**, pas d'erreurs locales indépendantes). L'assouplissement v18 **change le problème** (retire des Q contractuels) : la baisse 2,045 → 2,000 n'est **pas** une convergence vers la nomination GasLib.
+
+Progression (résidu **effectif**, nomination intacte sauf mention) :
 
 ```
-8,2 → 5,0 (v4) → 3,0 (v13) → 2,045 (v14–v17) → ~2,000 (v18) → ~2,0 (v19)
+8,2 → 5,0 (v4) → 3,0 (v13) → 2,045 (v14–v19, HEAD_JAC off)
 ```
 
-v19 : infrastructure Jacobian tête/carte in-Newton (`GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC=1`, opt-in) et convergence stricte optionnelle (`GAZFLOW_COMPRESSOR_STRICT_NEWTON=1`). Bench mild_618 : pas de gain au plancher ; HEAD_JAC ON légèrement pire (2,045). Prochain levier : modèle enthalpique complet ou convergence sans partial accept.
+v19 (Jacobian carte→P² opt-in) : pas de gain ; ON légèrement pire (2,045, run unique). Ce n'est **pas** un modèle enthalpique : toujours MVP P² avec coefficient issu de `had_to_pressure_ratio`.
 
 Référence architecture : [gaslib-582-compressor-diagnosis.md](./gaslib-582-compressor-diagnosis.md).
+
+## Méthodologie et limites
+
+- **Runs manuels** hors CI ; durée ~15–25 min/run (582, release, refinement).
+- **Une répétition** par version documentée — pas d'intervalle de confiance.
+- **Non déterminisme léger** : ordre des assouplissements contractuels dépend du bilan massique post-solve.
+- **Correctif juillet 2026** : les assouplissements contractuels v18 sont **revertés** si une passe n'améliore pas le résidu (aligné sur la gate des ancrages `innode_*`). Les chiffres v18 « 2,000 » proviennent d'une version qui conservait les relaxations sans gain intermédiaire.
 
 ## Commandes
 
 ```bash
 cd back && cargo build --release --bin compressor_diag
 
-# Baseline legacy (cap r² actif)
-GAZFLOW_COMPRESSOR_MAP_MODE=legacy ./target/release/compressor_diag GasLib-582 --json /tmp/582-legacy.json
-
-# Mode measurement (défaut Phase I)
 GAZFLOW_COMPRESSOR_MAP_MODE=measurement ./target/release/compressor_diag GasLib-582 --json /tmp/582-measurement.json
 
-# Diagnostic H2 (sans cap r²)
-./target/release/compressor_diag GasLib-582 --no-r2-cap --json /tmp/582-no-r2-cap.json
+# Référence nomination intacte (v17 équivalent)
+GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=0 ./target/release/compressor_diag GasLib-582 --json /tmp/582-nominal.json
 
-# Biquadratique GasLib (coeffs n_isoline)
-GAZFLOW_COMPRESSOR_MAP_MODE=biquadratic ./target/release/compressor_diag GasLib-582 --json /tmp/582-biquad.json
+# Jacobian carte opt-in (expérimental)
+GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC=1 ./target/release/compressor_diag GasLib-582 --json /tmp/582-head-jac.json
 ```
-
-Durée typique : ~60–90 s/run (582, release).
 
 ## Variables d'environnement (Phase I)
 
-| Variable | Rôle | Défaut measurement |
-|----------|------|---------------------|
+| Variable | Rôle | Défaut |
+|----------|------|--------|
 | `GAZFLOW_COMPRESSOR_MAP_MODE` | `legacy` \| `measurement` \| `biquadratic` | — |
-| `GAZFLOW_NEWTON_COMPRESSOR_MAP` | Carte tête/vitesse recouplée à chaque itération Newton | `1` |
+| `GAZFLOW_NEWTON_COMPRESSOR_MAP` | Carte → coeff P² recouplé in-Newton (v17) | `1` en measurement |
+| `GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC` | ∂(coeff carte)/∂Q, ∂/∂P_in implicite (v19) | `0` |
+| `GAZFLOW_COMPRESSOR_STRICT_NEWTON` | Désactive partial accept outer loop | `0` |
+| `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT` | Retrait Q itératif boundaries (v18) | `1` |
+| `GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS` | Retrait Q upfront (29 nœuds mild_618) | `0` |
+| `GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES` | Passes post-solve ancrages / contract | `4` |
 | `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED` | Plafond r²≤9 jusqu'à convergence | `1` |
-| `GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES` | Passes post-solve d'ancrage massique | `4` |
-| `GAZFLOW_DISABLE_R2_CAP` | Désactive atténuation r² transport (H2) | off |
-| `GAZFLOW_COMPRESSOR_OUTER_MAX_ITERS` | Itérations boucle externe ratio | 12 |
+| `GAZFLOW_COMPRESSOR_OUTER_MAX_ITERS` | Itérations outer loop ratio | 12 |
 | `GAZFLOW_COMPRESSOR_RELAX` | Relaxation ω mise à jour ratio | 0.5 |
-
-Voir aussi [README testing](./README.md#gasflow_-flags-compressor--large-transport).
 
 ## Champs JSON `compressor_diag`
 
 | Champ | Description |
 |-------|-------------|
-| `residual` | Résidu Newton final (max \|f_node\| nœuds libres) |
-| `demand_scale` | Palier continuation atteint (1,0 = nominal) |
-| `continuation_scales` | Historique des paliers continuation |
-| `mass_balance` | Bilan massique post-solve (`worst_free_node`, `top_free_imbalances`) |
-| `mass_balance_refinement_passes` | Passes d'ancrage massique (v16+) |
-| `mass_balance_anchors` | Innodes ancrés dynamiquement (v16+) |
-| `compressor_stations[]` | `flow_m3s`, `ratio_max`, `effective_r2`, `map_target_ratio`, `map_eval_q_m3s` |
-| `flags` | `map_mode`, `disable_r2_cap`, `catalog_stations`, `preset` |
+| `residual` | Max \|f_node\| nœuds libres (≈ pire déséquilibre massique effectif) |
+| `mass_balance` | Bilan avec demandes **effectives** (`effective_solver_demands`) |
+| `nomination_mass_balance` | Bilan avec demandes **nominales** `.scn` |
+| `contract_flow_relaxed` | Boundaries dont le Q nominatif a été retiré (v18) |
+| `mass_balance_refinement_passes` | Passes refinement post-solve |
+| `mass_balance_anchors` | Innodes ancrés dynamiquement |
+| `compressor_stations[]` | `flow_m3s`, `ratio_max`, `map_target_ratio`, … |
 
-Artefact de référence v17 : `/tmp/582-v17.json`.
+Artefact référence nomination intacte : `/tmp/582-v17.json` (résidu 2,045 m³/s).
 
-## Progression chronologique (résidu mild_618)
+## Progression chronologique (résidu effectif mild_618)
 
 | v | Résidu | Levier principal |
 |---|--------|------------------|
-| v1 | 5,0 / 8,2 | cap r² MVP ; diag sans outer loop |
-| v2–v3 | 5,0 / 8,2 | outer loop continuation ; recherche 1D vitesse |
-| v4 | **5,0** | garde outer loop + r² hybride ; fin régression 8,22 |
-| v6 | 8,22 | Option 1 : ratio `.cs` vs cap `.net` séparés |
-| v7–v8 | 8,22 | recouplage Q estimé ; fix confId turbo |
-| v9–v10 | **5,0** | handoff carte ; split hub naïf |
-| v11 | 5,0 | débit carte topologique hub/branche (CS1=90, CS2/3=45) |
-| v12 | 5,0 | distribution sud locale ; Newton P² adaptatif |
-| **v13** | **3,0** | `mass_balance_report` + balance hubs (`sink_2`, `sink_96`) |
-| **v14** | **2,0** | boundaries Q≈0 entries+exits ; junctions mixtes |
-| v15 | 2,0 | spine `source_17` ; junctions degré 3 ; exclusion CS endpoints |
-| v16 | 2,0 | raffinement massique itératif + exit-hub (`innode_315`) |
-| **v17** | **2,0** | carte compresseur in-Newton (tête/vitesse → ratio P²) |
-
-## Détail par version
-
-### v19 — Jacobian tête/carte in-Newton (opt-in)
-
-`pipe_flow_derivatives_head_jac` : couplage implicite ∂(coeff carte)/∂Q et ∂/∂P_amont via `had_to_pressure_ratio` et sensibilités numériques. Activé par `GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC=1` (défaut **off** — régression légère observée ON : 2,045 vs 2,0 m³/s).
-
-`GAZFLOW_COMPRESSOR_STRICT_NEWTON=1` : désactive `accept_partial_solution` dans l'outer loop (diagnostic convergence stricte).
-
-### v18 — assouplissement contractuel Q (itératif)
-
-`effective_solver_demands` + `try_relax_contract_boundary` : retire le Q nominatif sur les pires boundaries (`source_*`/`sink_*`, |imbalance| ≥ 1,5 m³/s), max 3/passe, 4 passes. JSON diag : `contract_flow_relaxed`.
-
-| Indicateur | mild_618 |
-|------------|----------|
-| Résidu | **~2,000 m³/s** (vs 2,045 v17) |
-| Boundaries assouplies | `sink_24`, `source_20`, `sink_114`, `sink_120` |
-
-Assouplissement massif upfront (`GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS=1`, 29 nœuds) : résidu **~2,11 m³/s** (dégradation).
-
-### v17 — carte compresseur in-Newton
-
-| Mode | Résidu |
-|------|--------|
-| measurement, `GAZFLOW_NEWTON_COMPRESSOR_MAP=1` (défaut) | 2,0 m³/s |
-| measurement, `GAZFLOW_NEWTON_COMPRESSOR_MAP=0` | 2,0 m³/s |
-
-`NewtonMapContext` dans `newton.rs` : à chaque évaluation pipe compresseur, bootstrap Q → `find_operating_point_for_mode` → `had_to_pressure_ratio` → coefficient P² semi-implicite (gelé par itération Jacobian).
-
-### v16 — raffinement massique itératif
-
-Boucle post-solve : `solve_with_mass_balance_refinement` ajoute au plus un ancrage `innode_*` par passe si le résidu baisse (pression résolue, gate d'amélioration). Résultat mild_618 : **1 passe**, ancrage `innode_420`, plancher inchangé.
-
-### v15 — spine boundary + junctions degré 3
-
-Ancrages statiques : 2 balance hubs + 1 spine (`source_17`) + 2 junctions mixtes + 1 exit-hub (`innode_315`). Sur-ancrage (3+ junctions) dégrade à 3,6 m³/s.
-
-### v14 — junction anchors mixtes
-
-Entries et exits Q≈0 ; junctions entry+exit (`innode_381`). Résidu 3 → 2 m³/s.
-
-### v13 — diagnostic massique + balance hubs
-
-Cause racine plancher 5 m³/s : `sink_2` portait −5 m³/s (hub junction sans DOF pression). Top 2 hubs par degré topologique. Résidu 5 → 3 m³/s.
-
-### v12 — distribution sud + couplage pression/ratio
-
-eval_q CS4/CS5 corrigé (~10,4 m³/s vs 45). Résidu plancher 5 m³/s inchangé.
-
-### v11 — débit carte topologique
-
-BFS hub/branche dans `flow_topology.rs` : CS1 ≈ 90 m³/s, CS2/CS3 ≈ 45 m³/s. Ratios carte ~1,46–1,50.
-
-### v4 — turbo/biquadratique + garde outer loop
-
-Fin de la régression measurement 8,22 → retour à 5,0 m³/s baseline.
-
-### v1–v3 — fondations
-
-Cap r²≤9 stabilise Newton (5 vs 8,2) mais empêche ratio nominal `.net`. Outer loop seul ne compense pas.
+| v4 | 5,0 | garde outer loop + r² hybride |
+| v13 | 3,0 | balance hubs (`sink_2`, `sink_96`) |
+| v14–v17 | **2,045** | junction/spine anchors ; in-Newton map (v17 sans gain) |
+| v18 | 2,045 → ~2,000* | assouplissement Q (*hors nomination) |
+| v19 | 2,045 | head-Jacobian opt-in, défaut off |
 
 ## Interprétation globale
 
-1. **H2 (cap MVP dominant)** : non confirmée comme cause unique ; le cap aide la stabilité (5 vs 8,2) mais limite le lift transport.
-2. **Option 1 ratio** : `compressor_ratio_max` ← `.cs` (~1,08), `compressor_pressure_cap_ratio` ← `.net` (4,09). Le 4,09 n'est pas un DOF d'exploitation.
-3. **Ancrages pression (v13–v16)** : corrigent les junctions sous-déterminées Q≈0 ; gain 5 → 2 m³/s ; sur-ancrage dégrade.
-4. **Couplage Q–ratio (outer + in-Newton)** : ratios carte cohérents (~1,46 transport) ; plancher 2 m³/s persiste car partial accept + boundaries Q imposées.
-5. **Assouplissement contractuel (v18)** : retrait Q itératif sur 4 boundaries ; gain marginal (2,045 → 2,000) ; partial accept ~2 m³/s persiste.
-6. **Jacobian tête (v19)** : couplage carte in-Newton opt-in ; pas de gain plancher mild_618.
-7. **Prochain levier (v20+)** : modèle enthalpique complet in-Newton ou convergence sans partial accept.
+1. **Option 1 ratio** : `compressor_ratio_max` ← `.cs` ; cap `.net` séparé — validé.
+2. **Ancrages pression (v13–v16)** : gain réel 5 → 2,045 m³/s sur nomination intacte.
+3. **Partial accept** : masque l'échec convergence ; cluster ±2 m³/s sur ~14 nœuds = état global non convergé.
+4. **v18** : heuristique numérique, pas solution contractuelle ; toujours reporter `nomination_mass_balance`.
+5. **v19** : Jacobian semi-implicite sur coeff P² — pas modèle enthalpique ; pas de gain mesuré.
+6. **Prochain levier** : bilan énergétique compresseur ou convergence stricte pour qualifier le plancher.
 
 ## Test intégration
 
-`test_solve_gaslib_582` (`.scn` défaut, tol smoke 0,3, ~14 min) : OK avec résidu ~8,59 m³/s au nominal (non strict). Activer via `GAZFLOW_ENABLE_LARGE_DATASET_TESTS=1`.
+`test_solve_gaslib_582` (`.scn` défaut, tol smoke 0,3) : `GAZFLOW_ENABLE_LARGE_DATASET_TESTS=1`.

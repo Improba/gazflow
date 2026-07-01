@@ -1258,14 +1258,11 @@ where
         )?;
         if result.residual + 1e-6 >= prev_residual {
             scenario.mass_balance_anchors.truncate(anchors_before);
-            let contract_added = scenario.contract_flow_relaxed.len() > relaxed_before;
-            if !contract_added {
-                scenario.contract_flow_relaxed.truncate(relaxed_before);
-                scenario
-                    .contract_pressure_anchors
-                    .truncate(contract_anchors_before);
-                break;
-            }
+            scenario.contract_flow_relaxed.truncate(relaxed_before);
+            scenario
+                .contract_pressure_anchors
+                .truncate(contract_anchors_before);
+            break;
         }
         refinement_passes += 1;
     }

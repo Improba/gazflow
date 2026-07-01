@@ -966,7 +966,8 @@ fn pipe_flow_derivatives(
     }
 }
 
-/// Jacobian compresseur avec couplage implicite carte(Q, P_amont) — v19.
+/// Jacobian compresseur avec couplage implicite carte(Q, P_amont) sur le coefficient P² — v19.
+/// Ce n'est pas un bilan enthalpique : le flux reste dérivé de Δ(P²) via Darcy-Weisbach simplifié.
 fn pipe_flow_derivatives_head_jac(
     pipe: &IndexedPipe,
     pressures_sq: &[f64],

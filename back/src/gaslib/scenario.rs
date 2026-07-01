@@ -146,6 +146,9 @@ fn contract_boundary_refinement_enabled() -> bool {
 /// Sur un réseau transport GasLib, le débit au point de référence pression est
 /// une inconnue du solveur : imposer P et Q simultanément sur-contrainte le système.
 /// Idem pour les entries/exits avec enveloppe pression scénario + Q nominatif (v18).
+///
+/// **Attention scientifique** : les nœuds dans `contract_flow_relaxed` ne respectent plus
+/// la nomination GasLib ; comparer toujours `mass_balance_report` nominal vs effectif.
 pub fn effective_solver_demands(
     demands: &HashMap<String, f64>,
     scenario: &ScenarioDemands,

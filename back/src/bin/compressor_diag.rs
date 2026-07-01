@@ -87,6 +87,9 @@ struct DiagOutput {
     mass_balance_anchors: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     contract_flow_relaxed: Vec<String>,
+    /// Bilan massique avec demandes **nominales** du `.scn` (hors assouplissements v18).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nomination_mass_balance: Option<MassBalanceReport>,
 }
 
 fn parse_residual_from_error(err: &str) -> Option<f64> {
@@ -354,6 +357,7 @@ fn skipped_output(
         mass_balance_refinement_passes: None,
         mass_balance_anchors: Vec::new(),
         contract_flow_relaxed: Vec::new(),
+        nomination_mass_balance: None,
     }
 }
 
@@ -521,6 +525,11 @@ fn main() -> Result<()> {
     let output = match solve_result {
         Ok(result) => {
             let mass_balance = Some(mass_balance_report(&network, &demands, &result));
+            let nomination_mass_balance = Some(mass_balance_report(
+                &network,
+                &scenario.demands,
+                &result,
+            ));
             DiagOutput {
                 status: "ok",
                 dataset: cli.dataset.clone(),
@@ -538,6 +547,7 @@ fn main() -> Result<()> {
                 mass_balance_refinement_passes: Some(refinement_passes),
                 mass_balance_anchors: mass_balance_anchor_ids.clone(),
                 contract_flow_relaxed: contract_flow_relaxed.clone(),
+                nomination_mass_balance,
             }
         }
         Err(err) => {

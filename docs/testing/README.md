@@ -193,9 +193,9 @@ cargo run --bin compressor_diag -- GasLib-582 --json /tmp/582-diag.json --csv /t
 
 If `dat/GasLib-582.net` or a scenario file is missing, the binary exits gracefully with `status: "skipped"` JSON (no solve).
 
-Output JSON fields: `residual`, `demand_scale`, `continuation_scales`, `mass_balance` (with `worst_free_node`, `top_free_imbalances`), `mass_balance_refinement_passes`, `mass_balance_anchors`, `compressor_stations` (per-station `flow_m3s`, `ratio_max`, `effective_r2`, `map_target_ratio`, `map_eval_q_m3s`), and `flags` used.
+Output JSON fields: `residual`, `demand_scale`, `continuation_scales`, `mass_balance` (demandes **effectives**), `nomination_mass_balance` (demandes **nominales** `.scn`), `contract_flow_relaxed`, `mass_balance_refinement_passes`, `mass_balance_anchors`, `compressor_stations`, `flags`.
 
-Current bench (mild_618, measurement, v17): residual **~2.0 m³/s** (partial accept; target 3×10⁻³). See [gaslib-582-compressor-bench.md](./gaslib-582-compressor-bench.md) for full progression v1–v17.
+Référence nomination intacte (v17) : résidu **2,045 m³/s** (partial accept ; cible 3×10⁻³). Voir [gaslib-582-compressor-bench.md](./gaslib-582-compressor-bench.md).
 
 Bench results (I-A0, juin 2026) : [gaslib-582-compressor-bench.md](./gaslib-582-compressor-bench.md). Architecture : [gaslib-582-compressor-diagnosis.md](./gaslib-582-compressor-diagnosis.md).
 
