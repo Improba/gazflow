@@ -2,24 +2,23 @@
 
 Protocole figé : `compressor_diag`, réseau baseline connecté, CDF off, scénario `nomination_mild_618.scn`, slack pression retiré des demandes, preset `robust` (release).
 
-## Synthèse (v18, juin 2026)
+## Synthèse (v19, juillet 2026)
 
 | Indicateur | Valeur |
 |------------|--------|
-| Résidu measurement (mild_618) | **~2,0 m³/s** (2,000 vs 2,045 v17) |
+| Résidu measurement (mild_618) | **~2,0 m³/s** (inchangé vs v18) |
 | Tolérance preset robust | **3×10⁻³ m³/s** |
 | Convergence stricte | Non (partial accept ~2 m³/s) |
-| Pire nœud libre | `innode_402` (extrémité compresseur) |
-| Boundaries assouplies (v18) | `sink_24`, `source_20`, `sink_114`, `sink_120` |
+| Pire nœud libre | `innode_402` / cluster ±2 m³/s |
 | Objectif Phase I | 3×10⁻³ m³/s |
 
 Progression du plancher :
 
 ```
-8,2 → 5,0 (v4) → 3,0 (v13) → 2,045 (v14–v17) → ~2,000 (v18)
+8,2 → 5,0 (v4) → 3,0 (v13) → 2,045 (v14–v17) → ~2,000 (v18) → ~2,0 (v19)
 ```
 
-v18 : assouplissement itératif Q contractuel (`try_relax_contract_boundary`) dans `solve_with_mass_balance_refinement` — retire le débit nominatif sur les pires `source_*`/`sink_*` (max 3/passe, 4 passes). Gain marginal ; plancher ~2 m³/s lié au partial accept et au MVP P² compresseur.
+v19 : infrastructure Jacobian tête/carte in-Newton (`GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC=1`, opt-in) et convergence stricte optionnelle (`GAZFLOW_COMPRESSOR_STRICT_NEWTON=1`). Bench mild_618 : pas de gain au plancher ; HEAD_JAC ON légèrement pire (2,045). Prochain levier : modèle enthalpique complet ou convergence sans partial accept.
 
 Référence architecture : [gaslib-582-compressor-diagnosis.md](./gaslib-582-compressor-diagnosis.md).
 
@@ -92,6 +91,12 @@ Artefact de référence v17 : `/tmp/582-v17.json`.
 
 ## Détail par version
 
+### v19 — Jacobian tête/carte in-Newton (opt-in)
+
+`pipe_flow_derivatives_head_jac` : couplage implicite ∂(coeff carte)/∂Q et ∂/∂P_amont via `had_to_pressure_ratio` et sensibilités numériques. Activé par `GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC=1` (défaut **off** — régression légère observée ON : 2,045 vs 2,0 m³/s).
+
+`GAZFLOW_COMPRESSOR_STRICT_NEWTON=1` : désactive `accept_partial_solution` dans l'outer loop (diagnostic convergence stricte).
+
 ### v18 — assouplissement contractuel Q (itératif)
 
 `effective_solver_demands` + `try_relax_contract_boundary` : retire le Q nominatif sur les pires boundaries (`source_*`/`sink_*`, |imbalance| ≥ 1,5 m³/s), max 3/passe, 4 passes. JSON diag : `contract_flow_relaxed`.
@@ -151,7 +156,8 @@ Cap r²≤9 stabilise Newton (5 vs 8,2) mais empêche ratio nominal `.net`. Oute
 3. **Ancrages pression (v13–v16)** : corrigent les junctions sous-déterminées Q≈0 ; gain 5 → 2 m³/s ; sur-ancrage dégrade.
 4. **Couplage Q–ratio (outer + in-Newton)** : ratios carte cohérents (~1,46 transport) ; plancher 2 m³/s persiste car partial accept + boundaries Q imposées.
 5. **Assouplissement contractuel (v18)** : retrait Q itératif sur 4 boundaries ; gain marginal (2,045 → 2,000) ; partial accept ~2 m³/s persiste.
-6. **Prochain levier (v19+)** : modèle compresseur enthalpique in-Newton ou convergence stricte (partial accept).
+6. **Jacobian tête (v19)** : couplage carte in-Newton opt-in ; pas de gain plancher mild_618.
+7. **Prochain levier (v20+)** : modèle enthalpique complet in-Newton ou convergence sans partial accept.
 
 ## Test intégration
 

@@ -22,7 +22,8 @@ use super::iterative::solve_sparse_gmres_ilu0;
 use super::steady_state::{
     NondimScaling, PipeElevationContext, SolverControl, SolverProgress, SolverResult,
     compressor_pressure_from_coeff_for_config, compressor_r2_cap_disabled,
-    effective_compressor_pressure_from_coeff, effective_pipe_geometry, flow_reference_from_demands,
+    effective_compressor_pressure_from_coeff, effective_pipe_geometry, flow_and_conductance,
+    flow_reference_from_demands, gravity_dp_sq_bar, gravity_dp_sq_derivatives_wrt_pressure_sq,
     pipe_flow_with_gravity, pipe_resistance_at_pressure_with_composition,
     pressure_sq_reference_from_fixed,
 };
@@ -93,28 +94,26 @@ struct NewtonMapContext<'a> {
     catalog: &'a CompressorCatalog,
     prefer_biquadratic: bool,
     disable_r2_cap: bool,
+    /// Dérivées implicites ∂(coeff carte)/∂Q et ∂/∂P_amont (v19 head-Jacobian).
+    head_jac: bool,
 }
 
-fn newton_compressor_map_enabled(_config: &SteadyStateConfig) -> bool {
-    env_bool(
-        "GAZFLOW_NEWTON_COMPRESSOR_MAP",
-        matches!(
-            compressor_map_mode(),
-            CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
-        ),
-    )
+fn newton_compressor_head_jac_enabled(_config: &SteadyStateConfig) -> bool {
+    // Opt-in : bench mild_618 montre une légère régression avec défaut ON (2,045 vs 2,0 m³/s).
+    env_bool("GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC", false)
 }
 
-fn compressor_coeff_from_map(
+fn compressor_coeff_from_map_with_p_in(
     pipe: &IndexedPipe,
     pressures_sq: &[f64],
     q_m3s_norm: f64,
     map_ctx: &NewtonMapContext<'_>,
+    p_in_bar: f64,
 ) -> f64 {
     let Some(station) = map_ctx.catalog.station(&pipe.id) else {
         return pipe.pressure_from_coeff;
     };
-    let p_in = pressures_sq[pipe.from_idx].sqrt().max(1e-3);
+    let p_in = p_in_bar.max(1e-3);
     let ctx = CompressorOperatingContext {
         q_m3s_norm: q_m3s_norm.abs().max(1e-3),
         p_in_bar: p_in,
@@ -133,8 +132,56 @@ fn compressor_coeff_from_map(
     }
     effective_compressor_pressure_from_coeff(
         target_coeff,
-        pressures_sq[pipe.from_idx],
+        p_in * p_in,
         pressures_sq[pipe.to_idx],
+    )
+}
+
+fn compressor_coeff_from_map(
+    pipe: &IndexedPipe,
+    pressures_sq: &[f64],
+    q_m3s_norm: f64,
+    map_ctx: &NewtonMapContext<'_>,
+) -> f64 {
+    compressor_coeff_from_map_with_p_in(
+        pipe,
+        pressures_sq,
+        q_m3s_norm,
+        map_ctx,
+        pressures_sq[pipe.from_idx].sqrt().max(1e-3),
+    )
+}
+
+/// Sensibilités numériques du coefficient P² issu de la carte (Q normatif, P_amont).
+fn compressor_map_coeff_sensitivities(
+    pipe: &IndexedPipe,
+    pressures_sq: &[f64],
+    q_abs: f64,
+    map_ctx: &NewtonMapContext<'_>,
+) -> (f64, f64, f64) {
+    let p_from = pressures_sq[pipe.from_idx].sqrt().max(1e-3);
+    let c = compressor_coeff_from_map(pipe, pressures_sq, q_abs, map_ctx);
+    let hq = (q_abs.abs() * 1e-4).max(1e-5);
+    let dc_dq = (compressor_coeff_from_map(pipe, pressures_sq, q_abs + hq, map_ctx) - c) / hq;
+    let hp = (p_from * 1e-4).max(1e-5);
+    let dc_dp = (compressor_coeff_from_map_with_p_in(
+        pipe,
+        pressures_sq,
+        q_abs,
+        map_ctx,
+        p_from + hp,
+    ) - c)
+        / hp;
+    (c, dc_dq, dc_dp)
+}
+
+fn newton_compressor_map_enabled(_config: &SteadyStateConfig) -> bool {
+    env_bool(
+        "GAZFLOW_NEWTON_COMPRESSOR_MAP",
+        matches!(
+            compressor_map_mode(),
+            CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
+        ),
     )
 }
 
@@ -354,6 +401,7 @@ where
             catalog,
             prefer_biquadratic: matches!(compressor_map_mode(), CompressorMapMode::Biquadratic),
             disable_r2_cap: compressor_r2_cap_disabled(config),
+            head_jac: newton_compressor_head_jac_enabled(config),
         })
     } else {
         None
@@ -850,6 +898,18 @@ fn pipe_flow_derivatives(
     gas_composition: GasComposition,
     map_ctx: Option<&NewtonMapContext<'_>>,
 ) -> PipeFlowDerivatives {
+    if pipe.kind == ConnectionKind::CompressorStation
+        && map_ctx.is_some_and(|ctx| ctx.head_jac)
+    {
+        return pipe_flow_derivatives_head_jac(
+            pipe,
+            pressures_sq,
+            scaling,
+            gas_composition,
+            map_ctx.unwrap(),
+        );
+    }
+
     let p_from = pressures_sq[pipe.from_idx].sqrt();
     let p_to = pressures_sq[pipe.to_idx].sqrt();
     let avg_p = 0.5 * (p_from + p_to);
@@ -903,6 +963,86 @@ fn pipe_flow_derivatives(
         q,
         conductance_from,
         conductance_to,
+    }
+}
+
+/// Jacobian compresseur avec couplage implicite carte(Q, P_amont) — v19.
+fn pipe_flow_derivatives_head_jac(
+    pipe: &IndexedPipe,
+    pressures_sq: &[f64],
+    scaling: NondimScaling,
+    gas_composition: GasComposition,
+    map_ctx: &NewtonMapContext<'_>,
+) -> PipeFlowDerivatives {
+    let p_from_sq = pressures_sq[pipe.from_idx];
+    let p_to_sq = pressures_sq[pipe.to_idx];
+    let p_from = p_from_sq.sqrt();
+    let p_to = p_to_sq.sqrt();
+    let avg_p = 0.5 * (p_from + p_to);
+    let mut pressure_from_coeff = if pipe.pressure_from_coeff > 1.0 + 1e-6 {
+        effective_compressor_pressure_from_coeff(
+            pipe.pressure_from_coeff,
+            p_from_sq,
+            p_to_sq,
+        )
+    } else {
+        pipe.pressure_from_coeff
+    };
+    let resistance = pipe_resistance_at_pressure_with_composition(
+        pipe.length_km,
+        pipe.diameter_mm,
+        pipe.roughness_mm,
+        avg_p,
+        DEFAULT_GAS_TEMPERATURE_K,
+        gas_composition,
+        0.0,
+    )
+    .max(MIN_ABS_DP);
+    let rho =
+        gas_density_kg_per_m3_with_composition(avg_p, DEFAULT_GAS_TEMPERATURE_K, &gas_composition);
+    let elev = PipeElevationContext {
+        height_from_m: pipe.height_from_m,
+        height_to_m: pipe.height_to_m,
+        density_kg_per_m3: rho,
+    };
+    let (q_boot, _, _) = pipe_flow_with_gravity(
+        p_from_sq,
+        p_to_sq,
+        pressure_from_coeff,
+        resistance,
+        scaling,
+        elev,
+    );
+    pressure_from_coeff =
+        compressor_coeff_from_map(pipe, pressures_sq, q_boot.abs(), map_ctx);
+    let grav = gravity_dp_sq_bar(
+        elev.height_from_m,
+        elev.height_to_m,
+        p_from,
+        p_to,
+        elev.density_kg_per_m3,
+    );
+    let dp_sq = pressure_from_coeff * p_from_sq - p_to_sq - grav;
+    let (q, g) = flow_and_conductance(dp_sq, resistance, scaling);
+    let (dgrav_from, dgrav_to) = gravity_dp_sq_derivatives_wrt_pressure_sq(
+        elev.height_from_m,
+        elev.height_to_m,
+        p_from,
+        p_to,
+        elev.density_kg_per_m3,
+    );
+    let (_, dc_dq, dc_dp) =
+        compressor_map_coeff_sensitivities(pipe, pressures_sq, q.abs(), map_ctx);
+    let dc_d_pi_from = dc_dp / (2.0 * p_from.max(1e-3));
+    let a = pressure_from_coeff + p_from_sq * dc_d_pi_from - dgrav_from;
+    let b = p_from_sq * dc_dq * g;
+    let denom = (1.0 - b).max(0.05);
+    let d_dp_d_from = if denom.is_finite() { a / denom } else { a };
+    let d_dp_d_to = -1.0 - dgrav_to;
+    PipeFlowDerivatives {
+        q,
+        conductance_from: g * d_dp_d_from,
+        conductance_to: g * (-d_dp_d_to),
     }
 }
 

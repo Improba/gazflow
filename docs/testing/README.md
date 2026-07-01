@@ -214,6 +214,8 @@ Bench results (I-A0, juin 2026) : [gaslib-582-compressor-bench.md](./gaslib-582-
 | `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT` | Assouplissement itératif Q sur boundaries contractuelles (v18) | 1 |
 | `GAZFLOW_CONTRACT_FIX_PRESSURE` | Fixer P (pression résolue) lors de l'assouplissement contractuel | 0 |
 | `GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS` | Retirer Q upfront sur toutes entries/exits à enveloppe P lower+upper (expérimental) | 0 |
+| `GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC` | Jacobian in-Newton couplé carte(Q, P_amont) — v19, opt-in | 0 |
+| `GAZFLOW_COMPRESSOR_STRICT_NEWTON` | Désactive partial accept dans l'outer loop compresseur | 0 |
 | `GAZFLOW_SKIP_CDF_ROUTING` / `GAZFLOW_SKIP_CDF` | Disable automatic `.cdf` routing | off (forced on by `compressor_diag`) |
 | `GAZFLOW_FORCE_CDF_ROUTING` | Run CDF screening on large connected baselines | off when baseline connected and N > 500 |
 | `GAZFLOW_ENABLE_LARGE_DATASET_TESTS` | Enable `test_solve_gaslib_582` / 4197 in `cargo test` | off in CI |

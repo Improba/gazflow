@@ -2,15 +2,14 @@
 
 Document de référence architecture et décisions. Bench chiffré : [gaslib-582-compressor-bench.md](./gaslib-582-compressor-bench.md).
 
-## État actuel (v18)
+## État actuel (v19)
 
 | | |
 |--|--|
-| Résidu measurement | **~2,0 m³/s** (2,000 vs 2,045 v17) |
+| Résidu measurement | **~2,0 m³/s** |
 | Tolérance cible | 3×10⁻³ m³/s |
-| Pire nœud | `innode_402` (extrémité compresseur) |
-| Boundaries assouplies | `sink_24`, `source_20`, `sink_114`, `sink_120` |
-| Statut solve | partial accept (`accept_partial_solution` en outer loop) |
+| Pire nœud | cluster ±2 m³/s (`innode_402`, junctions) |
+| Statut solve | partial accept (sauf `GAZFLOW_COMPRESSOR_STRICT_NEWTON=1`) |
 
 ## Décision structurante : Option 1
 
@@ -110,6 +109,7 @@ Résultat mild_618 : **identique** à outer loop seul (2,0 m³/s) — les ratios
 | v14 | 2,0 | junction `innode_381` |
 | v15–v17 | 2,045 | spine, mass refine, in-Newton map |
 | v18 | **~2,000** | assouplissement Q contractuel (4 boundaries) |
+| v19 | ~2,0 | head-Jacobian opt-in (pas de gain ; ON légèrement pire) |
 
 ## Assouplissement contractuel (v18)
 
@@ -124,9 +124,15 @@ Option expérimentale : `GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS=1` retire le Q de
 
 Env : `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=0` désactive v18 ; `GAZFLOW_CONTRACT_FIX_PRESSURE=1` fixe P à la pression résolue lors de l'assouplissement (défaut : Q seul).
 
-## Prochaines étapes (v19+)
+## Couplage Jacobian tête (v19)
 
-1. **Modèle compresseur complet** : tête adiabatique + rendement in-Newton avec Jacobian couplé (au-delà MVP ratio P²).
-2. **Convergence stricte** : investiguer partial accept à ~2 m³/s (2400 iter preset robust) vs relâcher tolérance smoke pour bench.
+`GAZFLOW_NEWTON_COMPRESSOR_HEAD_JAC=1` active `pipe_flow_derivatives_head_jac` : résidu compresseur avec coefficient carte `c(Q, P_in)` et dérivées implicites (Picard sur ∂c/∂Q). Défaut **off** : bench mild_618 montre 2,045 m³/s avec ON vs ~2,0 avec OFF.
+
+`GAZFLOW_COMPRESSOR_STRICT_NEWTON=1` : outer loop sans partial accept (Newton doit converger à tol ou échouer).
+
+## Prochaines étapes (v20+)
+
+1. **Modèle compresseur enthalpique** : bilan énergétique nodal ou défaut enthalpique in-Newton (au-delà du Jacobian ratio P²).
+2. **Convergence stricte** : outer loop sans partial accept + plus d'itérations ; investiguer plancher ~2 m³/s comme attracteur numérique.
 
 Objectif Phase I : **2 → 3×10⁻³ m³/s** sur mild_618.

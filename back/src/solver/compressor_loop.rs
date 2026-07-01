@@ -88,6 +88,14 @@ fn compressor_relax() -> f64 {
     env_f64("GAZFLOW_COMPRESSOR_RELAX", DEFAULT_RELAX).clamp(0.0, 1.0)
 }
 
+fn compressor_strict_newton() -> bool {
+    env_bool("GAZFLOW_COMPRESSOR_STRICT_NEWTON", false)
+}
+
+fn compressor_accept_partial() -> bool {
+    !compressor_strict_newton()
+}
+
 fn steady_config_for_outer_iter(
     base: SteadyStateConfig,
     mode: CompressorMapMode,
@@ -536,7 +544,7 @@ where
             .collect();
         let step_network = network_with_scaled_compressor_lift(network, scale);
         let mut step_config = steady_config_for_outer_iter(config, mode, f64::INFINITY);
-        step_config.accept_partial_solution = true;
+        step_config.accept_partial_solution = compressor_accept_partial();
         let mut result = solve_steady_state_with_progress(
             &step_network,
             &scaled_demands,
@@ -611,7 +619,7 @@ where
                     .unwrap_or(f64::INFINITY),
             )
         };
-        steady_config.accept_partial_solution = true;
+        steady_config.accept_partial_solution = compressor_accept_partial();
         let result = solve_steady_state_with_progress(
             &adjusted_network,
             demands,
