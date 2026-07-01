@@ -42,7 +42,9 @@ fn env_flag(name: &str) -> bool {
 }
 
 fn diag_env_enthalpic() -> bool {
-    env_flag("GAZFLOW_COMPRESSOR_ENTHALPIC") || env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE")
+    env_flag("GAZFLOW_COMPRESSOR_ENTHALPIC")
+        || env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE")
+        || env_flag("GAZFLOW_COMPRESSOR_ENERGY_EQUATION")
 }
 
 #[derive(Debug)]
@@ -65,6 +67,8 @@ struct DiagFlags {
     compressor_enthalpic: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     compressor_energy_closure: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    compressor_energy_equation: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -419,6 +423,7 @@ fn main() -> Result<()> {
             preset: "robust",
             compressor_enthalpic: diag_env_enthalpic(),
             compressor_energy_closure: env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE"),
+            compressor_energy_equation: env_flag("GAZFLOW_COMPRESSOR_ENERGY_EQUATION"),
         };
         emit_json(
             &skipped_output(
@@ -447,6 +452,7 @@ fn main() -> Result<()> {
             preset: "robust",
             compressor_enthalpic: diag_env_enthalpic(),
             compressor_energy_closure: env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE"),
+            compressor_energy_equation: env_flag("GAZFLOW_COMPRESSOR_ENERGY_EQUATION"),
         };
         emit_json(
             &skipped_output(cli.dataset.clone(), network_display, None, flags, reason),
@@ -476,6 +482,7 @@ fn main() -> Result<()> {
         preset: "robust",
         compressor_enthalpic: diag_env_enthalpic(),
         compressor_energy_closure: env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE"),
+        compressor_energy_equation: env_flag("GAZFLOW_COMPRESSOR_ENERGY_EQUATION"),
     };
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;

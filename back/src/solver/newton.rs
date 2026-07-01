@@ -9,8 +9,9 @@ use faer::sparse::{SparseColMat, Triplet};
 use rayon::prelude::*;
 
 use crate::compressor::{
-    CompressorCatalog, CompressorOperatingContext, effective_ratio_energy_closure_for_mode,
-    effective_ratio_with_nominal_for_mode,
+    CompressorCatalog, CompressorOperatingContext, compressor_energy_head_mismatch_kj_per_kg,
+    effective_ratio_energy_closure_for_mode, effective_ratio_with_nominal_for_mode,
+    head_mismatch_penalty_psq, isentropic_outlet_temperature_k,
 };
 use crate::graph::{ConnectionKind, GasNetwork};
 
@@ -102,14 +103,46 @@ struct NewtonMapContext<'a> {
     enthalpic: bool,
     /// Fermeture énergétique H_map(Q) ↔ H_req(P_in,P_out) in-Newton (v21).
     energy_closure: bool,
+    /// Équation énergétique explicite H_map − H_req dans Δ(P²) (v22).
+    energy_equation: bool,
+    /// T_sortie isentrope pour ρ aval des compresseurs (v22).
+    discharge_t_out: bool,
+    energy_penalty_weight: f64,
+    /// Nœud aval compresseur → (from_idx, to_idx) de la station.
+    compressor_discharge_nodes: HashMap<usize, (usize, usize)>,
+}
+
+const DEFAULT_COMPRESSOR_GAMMA: f64 = 1.3;
+
+fn newton_compressor_energy_equation_enabled(_config: &SteadyStateConfig) -> bool {
+    env_bool("GAZFLOW_COMPRESSOR_ENERGY_EQUATION", false)
+}
+
+fn newton_compressor_discharge_t_out_enabled(config: &SteadyStateConfig) -> bool {
+    if newton_compressor_energy_equation_enabled(config) {
+        return env_bool("GAZFLOW_COMPRESSOR_DISCHARGE_T_OUT", true);
+    }
+    env_bool("GAZFLOW_COMPRESSOR_DISCHARGE_T_OUT", false)
+}
+
+fn compressor_energy_penalty_weight() -> f64 {
+    std::env::var("GAZFLOW_COMPRESSOR_ENERGY_PENALTY_WEIGHT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|w| w.is_finite() && *w > 0.0)
+        .unwrap_or(0.35)
 }
 
 fn newton_compressor_energy_closure_enabled(_config: &SteadyStateConfig) -> bool {
+    if newton_compressor_energy_equation_enabled(_config) {
+        return false;
+    }
     env_bool("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE", false)
 }
 
 fn newton_compressor_enthalpic_enabled(config: &SteadyStateConfig) -> bool {
-    newton_compressor_energy_closure_enabled(config)
+    newton_compressor_energy_equation_enabled(config)
+        || newton_compressor_energy_closure_enabled(config)
         || env_bool("GAZFLOW_COMPRESSOR_ENTHALPIC", false)
 }
 
@@ -158,10 +191,10 @@ fn compressor_coeff_from_map_with_p_in(
         )
     };
     let mut target_coeff = ratio.powi(2);
-    if ratio > 3.0 && !map_ctx.disable_r2_cap && !map_ctx.enthalpic && !map_ctx.energy_closure {
+    if ratio > 3.0 && !map_ctx.disable_r2_cap && !map_ctx.enthalpic && !map_ctx.energy_closure && !map_ctx.energy_equation {
         target_coeff = target_coeff.min(9.0);
     }
-    if map_ctx.enthalpic || map_ctx.energy_closure {
+    if map_ctx.enthalpic || map_ctx.energy_closure || map_ctx.energy_equation {
         effective_compressor_pressure_from_coeff_enthalpic(
             target_coeff,
             p_in * p_in,
@@ -223,9 +256,62 @@ fn compressor_map_coeff_sensitivities(
     (c, dc_dq, dc_dp_in, dc_dp_out)
 }
 
+fn inlet_temperature_k_for_pipe(
+    pipe: &IndexedPipe,
+    map_ctx: Option<&NewtonMapContext<'_>>,
+    pressures_sq: &[f64],
+) -> f64 {
+    let Some(ctx) = map_ctx else {
+        return DEFAULT_GAS_TEMPERATURE_K;
+    };
+    if !ctx.discharge_t_out {
+        return DEFAULT_GAS_TEMPERATURE_K;
+    }
+    let Some(&(cs_from, cs_to)) = ctx.compressor_discharge_nodes.get(&pipe.from_idx) else {
+        return DEFAULT_GAS_TEMPERATURE_K;
+    };
+    let p_in = pressures_sq[cs_from].sqrt().max(1e-3);
+    let p_out = pressures_sq[cs_to].sqrt().max(1e-3);
+    isentropic_outlet_temperature_k(
+        DEFAULT_GAS_TEMPERATURE_K,
+        p_in,
+        p_out,
+        DEFAULT_COMPRESSOR_GAMMA,
+    )
+}
+
+fn compressor_energy_penalty_psq(
+    pipe: &IndexedPipe,
+    map_ctx: &NewtonMapContext<'_>,
+    p_in: f64,
+    p_out: f64,
+    q_abs: f64,
+    p_ref: f64,
+) -> f64 {
+    if !map_ctx.energy_equation || pipe.kind != ConnectionKind::CompressorStation {
+        return 0.0;
+    }
+    let Some(station) = map_ctx.catalog.station(&pipe.id) else {
+        return 0.0;
+    };
+    let ctx = CompressorOperatingContext {
+        q_m3s_norm: q_abs.max(1e-3),
+        p_in_bar: p_in.max(1e-3),
+        t_in_k: DEFAULT_GAS_TEMPERATURE_K,
+    };
+    let (_, _, delta_h) = compressor_energy_head_mismatch_kj_per_kg(
+        station,
+        &ctx,
+        p_out.max(1e-3),
+        map_ctx.prefer_biquadratic,
+    );
+    head_mismatch_penalty_psq(delta_h, p_ref.max(1e-3), map_ctx.energy_penalty_weight)
+}
+
 fn newton_compressor_map_enabled(config: &SteadyStateConfig) -> bool {
     if newton_compressor_enthalpic_enabled(config)
         || newton_compressor_energy_closure_enabled(config)
+        || newton_compressor_energy_equation_enabled(config)
     {
         return true;
     }
@@ -450,6 +536,12 @@ where
     let active_regulator_nodes = collect_active_regulator_nodes(network, &id_pos, &fixed);
     let guard_jacobi_fallback = env_bool("GAZFLOW_GUARD_JACOBI_FALLBACK", n > 2000);
     let newton_map_ctx = if newton_compressor_map_enabled(config) {
+        let mut compressor_discharge_nodes = HashMap::new();
+        for pipe in &pipes {
+            if pipe.kind == ConnectionKind::CompressorStation {
+                compressor_discharge_nodes.insert(pipe.to_idx, (pipe.from_idx, pipe.to_idx));
+            }
+        }
         network.compressor_catalog.as_ref().map(|catalog| NewtonMapContext {
             catalog,
             prefer_biquadratic: matches!(compressor_map_mode(), CompressorMapMode::Biquadratic),
@@ -457,6 +549,10 @@ where
             head_jac: newton_compressor_head_jac_enabled(config),
             enthalpic: newton_compressor_enthalpic_enabled(config),
             energy_closure: newton_compressor_energy_closure_enabled(config),
+            energy_equation: newton_compressor_energy_equation_enabled(config),
+            discharge_t_out: newton_compressor_discharge_t_out_enabled(config),
+            energy_penalty_weight: compressor_energy_penalty_weight(),
+            compressor_discharge_nodes,
         })
     } else {
         None
@@ -954,7 +1050,9 @@ fn pipe_flow_derivatives(
     map_ctx: Option<&NewtonMapContext<'_>>,
 ) -> PipeFlowDerivatives {
     if pipe.kind == ConnectionKind::CompressorStation
-        && map_ctx.is_some_and(|ctx| ctx.enthalpic || ctx.energy_closure || ctx.head_jac)
+        && map_ctx.is_some_and(|ctx| {
+            ctx.enthalpic || ctx.energy_closure || ctx.energy_equation || ctx.head_jac
+        })
     {
         return pipe_flow_derivatives_enthalpic(
             pipe,
@@ -968,6 +1066,7 @@ fn pipe_flow_derivatives(
     let p_from = pressures_sq[pipe.from_idx].sqrt();
     let p_to = pressures_sq[pipe.to_idx].sqrt();
     let avg_p = 0.5 * (p_from + p_to);
+    let t_local = inlet_temperature_k_for_pipe(pipe, map_ctx, pressures_sq);
     let mut pressure_from_coeff = if pipe.pressure_from_coeff > 1.0 + 1e-6 {
         effective_compressor_pressure_from_coeff(
             pipe.pressure_from_coeff,
@@ -982,13 +1081,12 @@ fn pipe_flow_derivatives(
         pipe.diameter_mm,
         pipe.roughness_mm,
         avg_p,
-        DEFAULT_GAS_TEMPERATURE_K,
+        t_local,
         gas_composition,
         0.0,
     )
     .max(MIN_ABS_DP);
-    let rho =
-        gas_density_kg_per_m3_with_composition(avg_p, DEFAULT_GAS_TEMPERATURE_K, &gas_composition);
+    let rho = gas_density_kg_per_m3_with_composition(avg_p, t_local, &gas_composition);
     let elev = PipeElevationContext {
         height_from_m: pipe.height_from_m,
         height_to_m: pipe.height_to_m,
@@ -1034,8 +1132,9 @@ fn pipe_flow_derivatives_enthalpic(
     let p_from = p_from_sq.sqrt();
     let p_to = p_to_sq.sqrt();
     let avg_p = 0.5 * (p_from + p_to);
+    let t_local = inlet_temperature_k_for_pipe(pipe, Some(map_ctx), pressures_sq);
     let mut pressure_from_coeff = if pipe.pressure_from_coeff > 1.0 + 1e-6 {
-        if map_ctx.enthalpic || map_ctx.energy_closure {
+        if map_ctx.enthalpic || map_ctx.energy_closure || map_ctx.energy_equation {
             effective_compressor_pressure_from_coeff_enthalpic(
                 pipe.pressure_from_coeff,
                 p_from_sq,
@@ -1056,13 +1155,12 @@ fn pipe_flow_derivatives_enthalpic(
         pipe.diameter_mm,
         pipe.roughness_mm,
         avg_p,
-        DEFAULT_GAS_TEMPERATURE_K,
+        t_local,
         gas_composition,
         0.0,
     )
     .max(MIN_ABS_DP);
-    let rho =
-        gas_density_kg_per_m3_with_composition(avg_p, DEFAULT_GAS_TEMPERATURE_K, &gas_composition);
+    let rho = gas_density_kg_per_m3_with_composition(avg_p, t_local, &gas_composition);
     let elev = PipeElevationContext {
         height_from_m: pipe.height_from_m,
         height_to_m: pipe.height_to_m,
@@ -1078,6 +1176,14 @@ fn pipe_flow_derivatives_enthalpic(
     );
     pressure_from_coeff =
         compressor_coeff_from_map(pipe, pressures_sq, q_boot.abs(), map_ctx);
+    let head_penalty = compressor_energy_penalty_psq(
+        pipe,
+        map_ctx,
+        p_from,
+        p_to,
+        q_boot.abs(),
+        avg_p,
+    );
     let grav = gravity_dp_sq_bar(
         elev.height_from_m,
         elev.height_to_m,
@@ -1085,7 +1191,7 @@ fn pipe_flow_derivatives_enthalpic(
         p_to,
         elev.density_kg_per_m3,
     );
-    let dp_sq = pressure_from_coeff * p_from_sq - p_to_sq - grav;
+    let dp_sq = pressure_from_coeff * p_from_sq - p_to_sq - grav - head_penalty;
     let (q, g) = flow_and_conductance(dp_sq, resistance, scaling);
     let (dgrav_from, dgrav_to) = gravity_dp_sq_derivatives_wrt_pressure_sq(
         elev.height_from_m,
@@ -1096,13 +1202,51 @@ fn pipe_flow_derivatives_enthalpic(
     );
     let (_, dc_dq, dc_dp_in, dc_dp_out) =
         compressor_map_coeff_sensitivities(pipe, pressures_sq, q.abs(), map_ctx);
+    let mut d_penalty_d_pin = 0.0;
+    let mut d_penalty_d_pout = 0.0;
+    let mut d_penalty_d_q = 0.0;
+    if map_ctx.energy_equation {
+        let hq = (q.abs() * 1e-4).max(1e-5);
+        let hp_in = (p_from * 1e-4).max(1e-5);
+        let hp_out = (p_to * 1e-4).max(1e-5);
+        let base = head_penalty;
+        d_penalty_d_q = (compressor_energy_penalty_psq(
+            pipe,
+            map_ctx,
+            p_from,
+            p_to,
+            q.abs() + hq,
+            avg_p,
+        ) - base)
+            / hq;
+        d_penalty_d_pin = (compressor_energy_penalty_psq(
+            pipe,
+            map_ctx,
+            p_from + hp_in,
+            p_to,
+            q.abs(),
+            avg_p,
+        ) - base)
+            / hp_in;
+        d_penalty_d_pout = (compressor_energy_penalty_psq(
+            pipe,
+            map_ctx,
+            p_from,
+            p_to + hp_out,
+            q.abs(),
+            avg_p,
+        ) - base)
+            / hp_out;
+    }
     let dc_d_pi_from = dc_dp_in / (2.0 * p_from.max(1e-3));
     let dc_d_pi_to = dc_dp_out / (2.0 * p_to.max(1e-3));
-    let a = pressure_from_coeff + p_from_sq * dc_d_pi_from - dgrav_from;
-    let b = p_from_sq * dc_dq * g;
+    let d_penalty_d_pi_from = d_penalty_d_pin / (2.0 * p_from.max(1e-3));
+    let d_penalty_d_pi_to = d_penalty_d_pout / (2.0 * p_to.max(1e-3));
+    let a = pressure_from_coeff + p_from_sq * dc_d_pi_from - dgrav_from - d_penalty_d_pi_from;
+    let b = p_from_sq * (dc_dq + d_penalty_d_q) * g;
     let denom = (1.0 - b).max(0.05);
     let d_dp_d_from = if denom.is_finite() { a / denom } else { a };
-    let d_dp_d_to = p_from_sq * dc_d_pi_to - 1.0 - dgrav_to;
+    let d_dp_d_to = p_from_sq * dc_d_pi_to - 1.0 - dgrav_to - d_penalty_d_pi_to;
     PipeFlowDerivatives {
         q,
         conductance_from: g * d_dp_d_from,

@@ -487,6 +487,57 @@ pub fn coupled_compressor_head_kj_per_kg(h_map: f64, h_req: f64) -> f64 {
     }
 }
 
+/// Écart énergétique compresseur H_map(Q) − H_req(P_in,P_out) [kJ/kg].
+pub fn compressor_energy_head_mismatch_kj_per_kg(
+    station: &StationModel,
+    ctx: &CompressorOperatingContext,
+    p_out_bar: f64,
+    prefer_biquadratic: bool,
+) -> (f64, f64, f64) {
+    let h_map = map_head_kj_per_kg_for_mode(station, ctx, prefer_biquadratic).unwrap_or(0.0);
+    let h_req = head_required_from_pressures(
+        p_out_bar,
+        ctx.p_in_bar,
+        ctx.t_in_k,
+        DEFAULT_GAMMA,
+        DEFAULT_CP_J_PER_KG_K,
+        DEFAULT_EFFICIENCY,
+    );
+    (h_map, h_req, h_map - h_req)
+}
+
+/// Température aval isentrope T_out = T_in · π^((γ−1)/γ).
+pub fn isentropic_outlet_temperature_k(
+    t_in_k: f64,
+    p_in_bar: f64,
+    p_out_bar: f64,
+    gamma: f64,
+) -> f64 {
+    if !t_in_k.is_finite()
+        || !p_in_bar.is_finite()
+        || !p_out_bar.is_finite()
+        || t_in_k <= 0.0
+        || p_in_bar <= 0.0
+        || p_out_bar <= p_in_bar
+        || gamma <= 1.0
+    {
+        return t_in_k.max(1.0);
+    }
+    let pi = (p_out_bar / p_in_bar).max(1.0);
+    (t_in_k * pi.powf((gamma - 1.0) / gamma)).max(1.0)
+}
+
+const HEAD_MISMATCH_REF_KJ_PER_KG: f64 = 80.0;
+
+/// Pénalité Δ(P²) [bar²] pour l'équation énergétique explicite (v22).
+pub fn head_mismatch_penalty_psq(delta_h_kj_per_kg: f64, p_ref_bar: f64, weight: f64) -> f64 {
+    if !delta_h_kj_per_kg.is_finite() || !p_ref_bar.is_finite() || !weight.is_finite() || weight <= 0.0
+    {
+        return 0.0;
+    }
+    weight * (delta_h_kj_per_kg / HEAD_MISMATCH_REF_KJ_PER_KG) * p_ref_bar.powi(2)
+}
+
 /// Ratio P_out/P_in avec fermeture H_map(Q) ↔ H_req(P_in,P_out) (v21).
 pub fn effective_ratio_energy_closure_for_mode(
     station: &StationModel,
@@ -653,6 +704,7 @@ mod tests {
         effective_ratio_with_nominal_for_mode, eval_biquadratic_head, eval_quadratic,
         find_operating_point, find_operating_point_for_mode, had_to_pressure_ratio,
         head_required_from_pressures, interpolate_head, coupled_compressor_head_kj_per_kg,
+        isentropic_outlet_temperature_k,
     };
     use crate::compressor::station::{StationModel, TurboMeasurement};
 
@@ -976,5 +1028,11 @@ mod tests {
         let h = 80.0;
         assert_abs_diff_eq!(coupled_compressor_head_kj_per_kg(h, h), h, epsilon = 1e-12);
         assert_abs_diff_eq!(coupled_compressor_head_kj_per_kg(60.0, 100.0), 80.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_isentropic_outlet_temperature_rises_with_pressure_ratio() {
+        let t_out = isentropic_outlet_temperature_k(288.15, 40.0, 58.0, 1.3);
+        assert!(t_out > 288.15);
     }
 }

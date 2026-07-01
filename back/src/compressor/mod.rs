@@ -17,6 +17,8 @@ pub use map::{
     find_operating_point, find_operating_point_for_mode, had_to_pressure_ratio,
     head_required_from_pressures, interpolate_head, map_head_kj_per_kg_for_mode,
     coupled_compressor_head_kj_per_kg, effective_ratio_energy_closure_for_mode,
+    compressor_energy_head_mismatch_kj_per_kg, head_mismatch_penalty_psq,
+    isentropic_outlet_temperature_k,
 };
 pub use flow_topology::estimated_map_flow_m3s;
 pub use parse::load_compressor_catalog;

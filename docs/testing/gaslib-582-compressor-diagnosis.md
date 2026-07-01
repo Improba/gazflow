@@ -79,6 +79,7 @@ Sur-ancrage (>2–3 junctions) dégrade le résidu (~3,6 m³/s observé).
 | v19 | 2,045 | head-Jac off ; ON = 2,045 (run unique) |
 | v20 | 2,159 | cap in-Newton assoupli (opt-in, pas de gain) |
 | v21 | **2,045** | fermeture H_map ↔ H_req (opt-in, = baseline) |
+| v22 | **2,045** | équation H explicite + T_out aval (opt-in, = baseline) |
 
 ## Abandon nomination Q (v18) — limites scientifiques
 
@@ -102,15 +103,17 @@ Sur-ancrage (>2–3 junctions) dégrade le résidu (~3,6 m³/s observé).
 
 **v21** (`GAZFLOW_COMPRESSOR_ENERGY_CLOSURE=1`) : fermeture explicite `H_eff = (H_map + H_req)/2` avec `H_req(P_in,P_out)` et dérivées ∂coeff/∂P_aval. Bench unique : **2,045 m³/s** (= baseline v17, pas de gain). Opt-in, défaut off.
 
-## Prochaines étapes (v22+)
+**v22** (`GAZFLOW_COMPRESSOR_ENERGY_EQUATION=1`) : pénalité explicite `H_map − H_req` dans Δ(P²) + T_sortie isentrope aval. Bench unique : **2,045 m³/s** (= baseline). Opt-in, défaut off.
+
+## Prochaines étapes (v23+)
 
 1. **Modèle compresseur avec bilan énergétique étendu** (T_sortie aval, hors MVP P² seul) si v20 ne suffit pas.
 2. **Convergence stricte** (`GAZFLOW_COMPRESSOR_STRICT_NEWTON=1`) + budget iter : qualifier si ~2 m³/s est attracteur physique ou purement numérique.
 3. **Bench reproductible** : `./scripts/bench-gaslib-582.sh` (3 runs manuels recommandés, médiane).
 
 ```bash
-# v21 fermeture énergétique in-Newton (opt-in)
-GAZFLOW_COMPRESSOR_ENERGY_CLOSURE=1 ./scripts/bench-gaslib-582.sh energy-closure
+# v22 équation énergétique explicite + T_sortie (opt-in)
+GAZFLOW_COMPRESSOR_ENERGY_EQUATION=1 ./scripts/bench-gaslib-582.sh energy-equation
 ```
 
 Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (non atteint).

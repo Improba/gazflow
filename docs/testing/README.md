@@ -214,6 +214,7 @@ Bench results (I-A0, juin 2026) : [gaslib-582-compressor-bench.md](./gaslib-582-
 | `GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES` | Passes post-solve d'ancrage pression guidé par bilan massique (582 transport) | 4 |
 | `GAZFLOW_COMPRESSOR_ENTHALPIC` | Carte in-Newton, cap achieved-ratio assoupli (v20, **opt-in** bench) | 0 |
 | `GAZFLOW_COMPRESSOR_ENERGY_CLOSURE` | Fermeture H_map ↔ H_req in-Newton (v21, **opt-in** bench) | 0 |
+| `GAZFLOW_COMPRESSOR_ENERGY_EQUATION` | Équation H_map − H_req + T_out aval (v22, **opt-in** bench) | 0 |
 | `GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT` | Abandon itératif Q nominatif sur boundaries (v18, **opt-in** bench) | 0 |
 | `GAZFLOW_CONTRACT_FIX_PRESSURE` | Fixer P (pression résolue) lors de l'abandon Q v18 | 0 |
 | `GAZFLOW_RELAX_DUAL_PRESSURE_CONTRACTS` | Retirer Q upfront sur toutes entries/exits à enveloppe P lower+upper (expérimental) | 0 |
