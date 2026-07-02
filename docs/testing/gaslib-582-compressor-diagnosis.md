@@ -197,13 +197,36 @@ sink_83   need=21.0  max_up=4.81   gap=16.2 bar
 
 Le dual contract identifie honnêtement cette infeasibilité contractuelle. Ce n'est pas un bug : c'est une limite du modèle MVP Q-seul.
 
+## Phase II — test décisif : ancrage entries en régime transport (juillet 2026)
+
+Flag `GAZFLOW_ENTRY_TRANSPORT_ANCHOR=1` (`GAZFLOW_ENTRY_TRANSPORT_ANCHOR_BAR=70`) : fixe P aux entries nominées (régime transport), libère leur Q. Test scientifique : distingue l'artefact basse-pression (référence exit-slack unique) d'une infeasibilité réelle.
+
+### Résultats (entries ancrées, dual contract actif)
+
+| Config | Résidu | sink_122 | sink_125 | sink_88 | Notes |
+|--------|--------|----------|----------|---------|-------|
+| dual contract (entries libres) | **69,3** m³/s | 4,7 bar (viol 69) | 10,9 bar | 2,5 bar | entries à 4 bar (non physique) |
+| entry-anchor 70 bar | **23,5** m³/s | **résolu** | 34,6 bar | 2,5 bar | −66 % ; régime transport partiel |
+| entry-anchor 80 bar | **23,5** m³/s | résolu | 34,6 bar | 2,5 bar | 80 bar n'aide pas sink_88 |
+| entry-anchor + enthalpic | **23,5** m³/s | résolu | 34,6 bar | 2,5 bar | enthalpic n'aide pas (comp. off) |
+| entry-anchor + refinement=4 | **23,5** m³/s | résolu | 34,6 bar | 2,5 bar | refinement n'aide pas |
+
+**Conclusion scientifique** :
+1. L'état basse-pression (entries à 4 bar) était **en partie un artefact** de la référence exit-slack unique. Ancrer les entries à 70 bar résout le flagship `sink_122` (74 bar) via le merge shortPipe et atteint un régime transport partiel.
+2. Le résidu chute de 69,3 à **23,5 m³/s** (−66 %), stable across toutes les variantes (80 bar, enthalpic, refinement).
+3. Deux catégories de violations résiduelles :
+   - **Branches alimentées mais à grosse chute** (`innode_3` max_up=70 bar / nœud 9 bar, `sink_125` max_up=70 / 34,6 bar) : compresseur OFF sur le chemin → activation compresseur requise.
+   - **Branches non alimentées** (`sink_88` max_up=2,5 bar, `sink_83` max_up=4,95) : aucune entry haute pression n'atteint ces branches → **infeasibilité réelle** sans nouveau compresseur/infrastructure.
+
+C'est exactement le problème de **validation of nominations** de la littérature GasLib (Pfetsch, Geißler et al.) : la nomination est feasible ssi il existe des réglages d'éléments actifs (compresseurs) satisfaisant les bornes. Le résidu résiduel (23,5 m³/s) est la violation minimale que les compresseurs doivent annuler.
+
 ## Prochaines étapes (Phase II suite)
 
-1. **Entry pressure** : imposer/ancrer les entries à haute pression (régime transport ~50–80 bar) au lieu de Q-seul. Décision modèle.
-2. **Compresseurs** : vérifier pourquoi `flow=0` sur les stations principales (innode_14→389 etc.).
-3. **Modèle frontière dual Q+P** au niveau physique (entries P∈[pmin,pmax] actif, pas juste Q).
+1. **Activation compresseurs sur branches alimentées** : `innode_3`, `sink_125` ont de la pression amont (70 bar) mais grosse chute. Vérifier pourquoi les compresseurs sont OFF (r² cap, map, outer loop) et les activer.
+2. **Branches non alimentées** (`sink_88`, `sink_83`) : confirmer l'infeasibilité topologique (aucun compresseur sur le chemin). Résultat négatif valide = la nomination nécessite des investissements.
+3. **Modèle validation of nominations** : compresseurs en variables de décision, minimise la violation P (NLP feasibility).
 
-Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (**non atteint** ; cause racine : modèle MVP Q-seul → état basse-pression, exits à plancher P infaisable sans compresseur amont).
+Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (**non atteint** ; cause racine identifiée et quantifiée : 23,5 m³/s de violation P résiduelle nécessitant activation compresseurs / infeasibilité topologique sur sink_88).
 
 1. **Modèle frontière GasLib** : égalités/inégalités dual Q+P au niveau physique (pas pénalité soft seule).
 2. **Couplage shortPipe** : même nœud physique `sink_*` ↔ `source_*` — pression unique, Q net.

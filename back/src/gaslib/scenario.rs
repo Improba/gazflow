@@ -198,6 +198,9 @@ pub fn effective_solver_demands_for_network(
     scenario: &ScenarioDemands,
 ) -> HashMap<String, f64> {
     let mut adjusted = effective_solver_demands(demands, scenario);
+    for id in entry_transport_anchored_ids(scenario) {
+        adjusted.remove(&id);
+    }
     merge_shortpipe_boundary_demands(network, &mut adjusted);
     adjusted
 }
@@ -332,6 +335,62 @@ pub fn scenario_boundary_partial_accept_enabled() -> bool {
     std::env::var("GAZFLOW_SCENARIO_BOUNDARY_PARTIAL_ACCEPT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+/// Ancrage des entries en régime transport (P fixé, Q libre). Test décisif Phase II.
+pub fn entry_transport_anchor_enabled() -> bool {
+    std::env::var("GAZFLOW_ENTRY_TRANSPORT_ANCHOR")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Pression d'ancrage des entries (bar). Défaut 70 bar (régime transport).
+pub fn entry_transport_anchor_bar() -> f64 {
+    std::env::var("GAZFLOW_ENTRY_TRANSPORT_ANCHOR_BAR")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|p: &f64| p.is_finite() && *p > 1.0)
+        .unwrap_or(70.0)
+}
+
+/// Vrai si le nœud est une entry ancrable (source avec nomination Q > 0).
+fn is_nominated_entry(scenario: &ScenarioDemands, node_id: &str) -> bool {
+    node_id.starts_with("source_")
+        && scenario.demands.get(node_id).is_some_and(|q| *q > 0.0)
+}
+
+/// Fixe P aux entries nominées (régime transport) ; leur Q devient libre.
+/// Test décisif : distingue l'artefact basse-pression (slack exit unique) d'une infeasibilité réelle.
+fn apply_entry_transport_anchors(network: &mut GasNetwork, scenario: &ScenarioDemands) {
+    if !entry_transport_anchor_enabled() {
+        return;
+    }
+    let anchor_bar = entry_transport_anchor_bar();
+    let entry_ids: Vec<String> = network
+        .nodes()
+        .filter(|n| is_nominated_entry(scenario, &n.id))
+        .map(|n| n.id.clone())
+        .collect();
+    for id in entry_ids {
+        if let Some(node) = network.node_mut(&id) {
+            if node.pressure_fixed_bar.is_none() {
+                node.pressure_fixed_bar = Some(anchor_bar);
+            }
+        }
+    }
+}
+
+/// Entries ancrées (P fixé) dont le Q doit être libéré (retiré des demandes).
+pub fn entry_transport_anchored_ids(scenario: &ScenarioDemands) -> Vec<String> {
+    if !entry_transport_anchor_enabled() {
+        return Vec::new();
+    }
+    scenario
+        .demands
+        .iter()
+        .filter(|(id, q)| id.starts_with("source_") && **q > 0.0)
+        .map(|(id, _)| id.clone())
+        .collect()
 }
 
 fn merge_pressure_bound(
@@ -782,6 +841,9 @@ pub fn network_with_scenario_boundaries(
 ) -> GasNetwork {
     let mut network = base.clone();
     apply_scenario_boundaries(&mut network, scenario);
+    if entry_transport_anchor_enabled() {
+        apply_entry_transport_anchors(&mut network, scenario);
+    }
     if scenario_pressure_envelopes_enabled() {
         apply_scenario_pressure_envelopes(&mut network, scenario);
     }

@@ -22,7 +22,7 @@ use gazflow_back::gaslib::{
     scenario_boundary_active_envelopes_enabled, scenario_boundary_partial_accept_enabled,
     scenario_pressure_envelopes_enabled, scenario_pressure_floor_anchor_enabled,
     scenario_pressure_in_newton_enabled, shortpipe_coupled_envelopes_enabled,
-    shortpipe_merge_boundaries_enabled,
+    shortpipe_merge_boundaries_enabled, entry_transport_anchor_enabled,
     transport_minimal_anchors_enabled, ShortPipeBoundaryPair,
 };
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
@@ -96,6 +96,8 @@ struct DiagFlags {
     scenario_boundary_partial_accept: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     scenario_shortpipe_merge_boundaries: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    entry_transport_anchor: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -481,6 +483,7 @@ fn main() -> Result<()> {
             scenario_boundary_active_envelopes: scenario_boundary_active_envelopes_enabled(),
             scenario_boundary_partial_accept: scenario_boundary_partial_accept_enabled(),
             scenario_shortpipe_merge_boundaries: shortpipe_merge_boundaries_enabled(),
+            entry_transport_anchor: entry_transport_anchor_enabled(),
         };
         emit_json(
             &skipped_output(
@@ -519,6 +522,7 @@ fn main() -> Result<()> {
             scenario_boundary_active_envelopes: scenario_boundary_active_envelopes_enabled(),
             scenario_boundary_partial_accept: scenario_boundary_partial_accept_enabled(),
             scenario_shortpipe_merge_boundaries: shortpipe_merge_boundaries_enabled(),
+            entry_transport_anchor: entry_transport_anchor_enabled(),
         };
         emit_json(
             &skipped_output(cli.dataset.clone(), network_display, None, flags, reason),
@@ -558,6 +562,7 @@ fn main() -> Result<()> {
         scenario_boundary_active_envelopes: scenario_boundary_active_envelopes_enabled(),
         scenario_boundary_partial_accept: scenario_boundary_partial_accept_enabled(),
         scenario_shortpipe_merge_boundaries: shortpipe_merge_boundaries_enabled(),
+        entry_transport_anchor: entry_transport_anchor_enabled(),
     };
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;

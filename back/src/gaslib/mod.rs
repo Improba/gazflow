@@ -31,6 +31,7 @@ pub use scenario::{
     scenario_pressure_clamp_in_newton_enabled, scenario_pressure_in_newton_enabled,
     scenario_pressure_penalty_weight, shortpipe_coupled_envelopes_enabled,
     shortpipe_merge_boundaries_enabled, shortpipe_partner_for,
+    entry_transport_anchor_enabled, entry_transport_anchor_bar,
     transport_minimal_anchors_enabled, try_add_mass_balance_anchor, try_relax_contract_boundary,
 };
 pub use solution::{ReferenceSolution, load_reference_solution};
