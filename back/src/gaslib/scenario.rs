@@ -1608,6 +1608,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_merge_shortpipe_boundary_demands() {
         use crate::graph::{ConnectionKind, GasNetwork, Node, Pipe};
 
@@ -1639,6 +1640,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_boundary_active_envelopes_flags() {
         unsafe {
             std::env::set_var("GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES", "1");

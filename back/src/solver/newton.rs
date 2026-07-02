@@ -882,6 +882,28 @@ where
             );
         }
 
+        // Dérivées de la pénalité enveloppe P dans le Jacobian sparse (dual Q+P).
+        // f_node += w*shortfall (shortfall=lo-p) => d(f)/d(p_sq) = -w/(2p).
+        if let Some(bounds) = pressure_bounds_ref {
+            for &idx in free_indices.iter() {
+                let p = pressures_sq[idx].sqrt().max(1e-3);
+                let pos = free_pos[idx];
+                if pos == usize::MAX {
+                    continue;
+                }
+                if let Some(lo) = bounds.lower_bar.get(idx).and_then(|o| *o) {
+                    if (lo - p).max(0.0) > 0.0 {
+                        jacobian_triplets.push((pos, pos, -bounds.penalty_weight / (2.0 * p)));
+                    }
+                }
+                if let Some(hi) = bounds.upper_bar.get(idx).and_then(|o| *o) {
+                    if (p - hi).max(0.0) > 0.0 {
+                        jacobian_triplets.push((pos, pos, -bounds.penalty_weight / (2.0 * p)));
+                    }
+                }
+            }
+        }
+
         let gmres_max_iters_default = if m > 1200 { 220 } else { GMRES_MAX_ITERS };
         let gmres_max_iters =
             env_usize_opt("GAZFLOW_GMRES_MAX_ITERS").unwrap_or(gmres_max_iters_default);

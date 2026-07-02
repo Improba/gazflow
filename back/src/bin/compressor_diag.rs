@@ -673,7 +673,9 @@ fn main() -> Result<()> {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            let contract_violated = result.residual > preset.tolerance;
+            let contract_active = scenario_boundary_active_envelopes_enabled();
+            let contract_violated =
+                contract_active && result.residual > preset.tolerance;
             DiagOutput {
                 status: if contract_violated {
                     "contract_violation"
