@@ -84,6 +84,13 @@ case "$TAG" in
     export GAZFLOW_TRANSPORT_MINIMAL_ANCHORS=0
     export GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES=0
     ;;
+  phase-ii-enthalpic-smoke)
+    export GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES=1
+    export GAZFLOW_SCENARIO_PRESSURE_ENVELOPES=1
+    export GAZFLOW_COMPRESSOR_ENTHALPIC=1
+    export GAZFLOW_TRANSPORT_MINIMAL_ANCHORS=0
+    export GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES=0
+    ;;
   phase-ibis)
     export GAZFLOW_SCENARIO_PRESSURE_ENVELOPES="${GAZFLOW_SCENARIO_PRESSURE_ENVELOPES:-1}"
     export GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON="${GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON:-0}"
@@ -132,4 +139,10 @@ for s in sps[:5]:
 trace = d.get("worst_pressure_upstream_trace") or []
 if trace:
     print("upstream_trace:", [(h["node_id"], round(h["pressure_bar"],2)) for h in trace[:8]])
+supply = d.get("boundary_pressure_supply") or []
+print("pressure_supply:", len(supply))
+for s in supply[:5]:
+    print(" ", s["node_id"], "need=", s.get("required_lower_bar"),
+          "max_up=", round(s["max_upstream_pressure_bar"],2),
+          "gap=", round(s["supply_gap_bar"],1))
 PY

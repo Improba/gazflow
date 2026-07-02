@@ -32,7 +32,8 @@ use gazflow_back::solver::{
     compressor_accept_partial_enabled, compressor_map_mode,
     compressor_pressure_from_coeff, estimated_compressor_map_flow_m3s, mass_balance_report,
     preset_robust, scenario_pressure_slips, solve_with_mass_balance_refinement,
-    upstream_pressure_trace, BoundaryNominationSlip, CompressorMapMode, ScenarioPressureSlip,
+    boundary_pressure_supply_reports, upstream_pressure_trace, BoundaryPressureSupplyReport,
+    BoundaryNominationSlip, CompressorMapMode, ScenarioPressureSlip,
 };
 use serde::Serialize;
 
@@ -158,6 +159,9 @@ struct DiagOutput {
     /// Trace amont depuis le pire `scenario_pressure_slip` (6 sauts max).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     worst_pressure_upstream_trace: Vec<UpstreamPressureHop>,
+    /// Alimentation pression amont vs plancher contractuel (Phase II diag).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    boundary_pressure_supply: Vec<BoundaryPressureSupplyReport>,
 }
 
 fn parse_residual_from_error(err: &str) -> Option<f64> {
@@ -430,6 +434,7 @@ fn skipped_output(
         scenario_pressure_slips: Vec::new(),
         shortpipe_boundary_couplings: Vec::new(),
         worst_pressure_upstream_trace: Vec::new(),
+        boundary_pressure_supply: Vec::new(),
     }
 }
 
@@ -648,6 +653,8 @@ fn main() -> Result<()> {
                 &excluded,
             );
             let scenario_pressure_slips = scenario_pressure_slips(&network, &result);
+            let boundary_pressure_supply =
+                boundary_pressure_supply_reports(&network, &result, &scenario_pressure_slips, 12);
             let shortpipe_boundary_couplings = detect_shortpipe_boundary_pairs(&network);
             let worst_pressure_upstream_trace = scenario_pressure_slips
                 .first()
@@ -661,8 +668,13 @@ fn main() -> Result<()> {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            let contract_violated = result.residual > preset.tolerance;
             DiagOutput {
-                status: "ok",
+                status: if contract_violated {
+                    "contract_violation"
+                } else {
+                    "ok"
+                },
                 dataset: cli.dataset.clone(),
                 network: network_display,
                 scenario: Some(scenario_path.display().to_string()),
@@ -672,7 +684,14 @@ fn main() -> Result<()> {
                 continuation_scales,
                 flags,
                 compressor_stations: stations,
-                reason: None,
+                reason: if contract_violated {
+                    Some(format!(
+                        "residual {:.4e} m³/s exceeds tolerance {:.4e} (contract Q+P)",
+                        result.residual, preset.tolerance
+                    ))
+                } else {
+                    None
+                },
                 error: None,
                 mass_balance,
                 mass_balance_refinement_passes: Some(refinement_passes),
@@ -683,6 +702,7 @@ fn main() -> Result<()> {
                 scenario_pressure_slips,
                 shortpipe_boundary_couplings,
                 worst_pressure_upstream_trace,
+                boundary_pressure_supply,
             }
         }
         Err(err) => {
@@ -710,6 +730,7 @@ fn main() -> Result<()> {
                 scenario_pressure_slips: Vec::new(),
                 shortpipe_boundary_couplings: detect_shortpipe_boundary_pairs(&network),
                 worst_pressure_upstream_trace: Vec::new(),
+                boundary_pressure_supply: Vec::new(),
             }
         }
     };
@@ -721,7 +742,7 @@ fn main() -> Result<()> {
 
     emit_json(&output, cli.json_out.as_deref())?;
 
-    if output.status == "error" {
+    if output.status == "error" || output.status == "contract_violation" {
         std::process::exit(1);
     }
     Ok(())

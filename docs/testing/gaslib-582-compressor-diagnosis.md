@@ -161,16 +161,41 @@ Ce n'est pas un bug numérique : le MVP P² impose Q mais ne couple pas la press
 
 Artefacts : `/tmp/582-phase-ic-dual-contract.json`, `/tmp/582-phase-ic-dual-contract-smoke.json`.
 
-### Phase II — fusion shortPipe (juillet 2026)
+### Phase II — fusion shortPipe + diagnostic alimentation (juillet 2026)
 
 Flag `GAZFLOW_SCENARIO_SHORTPIPE_MERGE_BOUNDARIES=1` (auto avec dual contract) :
 - alias pression : `source_*` esclave → `sink_*` maître dans Newton
 - Q net sur le maître ; shortPipe retiré du graphe hydraulique
 - pipes amont du `source_*` recollés au `sink_*`
 
-Bench dual contract + merge smoke : **échec @ 69,3 m³/s** (vs 69,8 sans merge) — amélioration marginale ; la branche amont reste basse pression (~4 bar).
+JSON diag : `status="contract_violation"` (résolu honnête, exit 1), `boundary_pressure_supply` (déficit amont par violation).
+
+### Résultats Phase II smoke (refinement=0)
+
+| Config | Status | Résidu | sink_122 P | gap amont |
+|--------|--------|--------|------------|-----------|
+| dual-contract | contract_violation | **69,32** m³/s | 4,69 bar | 69,3 bar |
+| enthalpic (`ENTHALPIC=1`) | contract_violation | **69,32** m³/s | 4,69 bar | 69,3 bar |
+
+**Compresseur enthalpic : aucun effet** (résidu identique). Diagnostic `boundary_pressure_supply` :
+
+```
+sink_122  need=74.0  max_up=4.69   gap=69.3 bar
+innode_3  need=61.9  max_up=9.58   gap=52.3 bar
+sink_125  need=41.0  max_up=10.91  gap=30.1 bar
+sink_88   need=26.0  max_up=2.48   gap=23.5 bar
+sink_83   need=21.0  max_up=4.81   gap=16.2 bar
+```
+
+**Cause racine Phase II** : le réseau amont est à **4–11 bar** (régime dégénéré basse pression), pas en régime transport (50–80 bar). Les compresseurs sont à `flow_m3s=0`. La continuation (échelle demande 0,05→1,0) ne soulève pas la pression : à basse pression, fortes pertes de charge → effondrement. Ce n'est pas un problème de couplage shortPipe ni d'enthalpie, c'est un **problème d'initialisation / continuation** qui n'atteint pas le régime transport.
 
 ## Prochaines étapes (Phase II suite)
+
+1. **Initialisation pression transport** : démarrer la continuation à ~50–70 bar (pas 70 bar uniforme qui s'effondre), ou continuation en pression plutôt qu'en débit.
+2. **Activation compresseurs** : investiguer pourquoi `flow_m3s=0` (r² cap, map, outer loop).
+3. **Modèle frontière dual Q+P** au niveau physique si le régime transport est atteint.
+
+Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (**non atteint** ; cause racine identifiée : état basse-pression dégénéré, compresseurs inactifs).
 
 1. **Modèle frontière GasLib** : égalités/inégalités dual Q+P au niveau physique (pas pénalité soft seule).
 2. **Couplage shortPipe** : même nœud physique `sink_*` ↔ `source_*` — pression unique, Q net.

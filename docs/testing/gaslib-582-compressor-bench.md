@@ -118,8 +118,9 @@ Artefact référence nomination intacte : `/tmp/582-v17.json` (résidu 2,045 m³
 | v21 | **2,045** | fermeture H_map ↔ H_req (opt-in, = baseline) |
 | v22 | **2,045** | équation H explicite + T_out aval (opt-in, = baseline) |
 | I-bis | **2,159** / **2,045** | enveloppes post-check ; in-Newton soft (w=0,01) = baseline + 11 viol. P |
-| I-c dual | **échec @ 69,8 m³/s** | `BOUNDARY_ACTIVE_ENVELOPES=1` ; partial accept bloqué ; ~2,5 min |
-| I-c dual smoke | **échec @ 69,8 m³/s** | idem sans refinement ; comparaison parallèle ~3 min / 3 tags |
+| I-c dual | **échec @ 69,3 m³/s** | `BOUNDARY_ACTIVE_ENVELOPES=1` ; partial accept bloqué ; résolu honnête `contract_violation` |
+| I-c dual smoke | **contract_violation @ 69,3** | idem sans refinement ; `boundary_pressure_supply` révèle réseau amont 4–11 bar |
+| II enthalpic smoke | **contract_violation @ 69,3** | `ENTHALPIC=1` : aucun effet vs dual ; compresseurs `flow=0` |
 | strict | **échec @ 3,0** | partial accept off ; plancher 2,045 = artefact numérique |
 
 ## Interprétation globale

@@ -1395,6 +1395,51 @@ pub fn upstream_pressure_trace(
     trace
 }
 
+/// Rapport d'alimentation pression amont vs plancher contractuel scénario.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BoundaryPressureSupplyReport {
+    pub node_id: String,
+    pub required_lower_bar: Option<f64>,
+    pub solved_pressure_bar: f64,
+    pub max_upstream_pressure_bar: f64,
+    pub upstream_hops: usize,
+    /// Déficit amont : `required_lower − max_upstream` (bar).
+    pub supply_gap_bar: f64,
+}
+
+/// Pour chaque violation P, estime la pression max reachable en remontant le réseau.
+pub fn boundary_pressure_supply_reports(
+    network: &GasNetwork,
+    result: &SolverResult,
+    slips: &[ScenarioPressureSlip],
+    max_hops: usize,
+) -> Vec<BoundaryPressureSupplyReport> {
+    slips
+        .iter()
+        .filter(|s| s.shortfall_bar > PRESSURE_SLIP_TOL_BAR)
+        .take(12)
+        .map(|slip| {
+            let trace = upstream_pressure_trace(network, result, &slip.node_id, max_hops);
+            let max_upstream = trace
+                .iter()
+                .map(|(_, p)| *p)
+                .fold(slip.solved_pressure_bar, f64::max);
+            let supply_gap_bar = slip
+                .lower_bar
+                .map(|lo| (lo - max_upstream).max(0.0))
+                .unwrap_or(0.0);
+            BoundaryPressureSupplyReport {
+                node_id: slip.node_id.clone(),
+                required_lower_bar: slip.lower_bar,
+                solved_pressure_bar: slip.solved_pressure_bar,
+                max_upstream_pressure_bar: max_upstream,
+                upstream_hops: trace.len().saturating_sub(1),
+                supply_gap_bar,
+            }
+        })
+        .collect()
+}
+
 /// Résultat d'un solve avec raffinement itératif des ancrages pression.
 #[derive(Debug, Clone)]
 pub struct MassBalanceRefinementOutcome {

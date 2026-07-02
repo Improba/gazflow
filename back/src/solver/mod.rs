@@ -45,10 +45,11 @@ pub use regulator::{EquipmentState, RegulatorMode};
 pub use steady_state::{
     BoundaryNominationSlip, MassBalanceRefinementOutcome, MassBalanceReport, NodeMassImbalance,
     ScenarioPressureSlip, SolverControl, SolverProgress, SolverResult, boundary_nomination_slips,
-    compressor_pressure_from_coeff, mass_balance_report, scenario_pressure_slips, solve_steady_state,
+    compressor_pressure_from_coeff, boundary_pressure_supply_reports, mass_balance_report,
+    scenario_pressure_slips, solve_steady_state,
     solve_steady_state_jacobi, solve_steady_state_with_composition,
     solve_steady_state_with_initial_pressures, solve_steady_state_with_progress,
-    solve_with_mass_balance_refinement, upstream_pressure_trace,
+    solve_with_mass_balance_refinement, upstream_pressure_trace, BoundaryPressureSupplyReport,
 };
 pub use timeseries::{
     TimeseriesConfig, TimeseriesControl, TimeseriesResult, TimeseriesStepResult, WeatherStep,

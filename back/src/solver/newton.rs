@@ -1020,11 +1020,21 @@ where
                     let env_viol =
                         bounds.max_free_violation_m3s(&free_indices, &pressures_sq);
                     if env_viol > tolerance {
-                        bail!(
-                            "Newton-hybrid solver: scenario P envelope violation {:.3e} m³/s exceeds {:.3e} (dual Q+P contract)",
-                            env_viol,
-                            tolerance
-                        );
+                        let contract_residual = final_state.residual.max(env_viol);
+                        let mut result_pressures = HashMap::new();
+                        for (i, id) in node_ids.iter().enumerate() {
+                            result_pressures.insert(id.clone(), pressures_sq[i].sqrt());
+                        }
+                        let mut result_flows = HashMap::new();
+                        for (pipe_idx, pipe) in pipes.iter().enumerate() {
+                            result_flows.insert(pipe.id.clone(), final_state.flows[pipe_idx]);
+                        }
+                        return Ok(SolverResult::from_core(
+                            result_pressures,
+                            result_flows,
+                            iterations,
+                            contract_residual,
+                        ));
                     }
                 }
             }
