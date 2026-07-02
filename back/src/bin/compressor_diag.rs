@@ -16,11 +16,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use gazflow_back::compressor::{CompressorOperatingContext, effective_ratio_with_nominal};
 use gazflow_back::gaslib::{
-    detect_shortpipe_boundary_pairs, effective_solver_demands, enrich_scenario_with_balance_hub,
+    detect_shortpipe_boundary_pairs, effective_solver_demands_for_network,
+    enrich_scenario_with_balance_hub,
     load_network, load_scenario_demands, network_with_scenario_boundaries,
     scenario_boundary_active_envelopes_enabled, scenario_boundary_partial_accept_enabled,
     scenario_pressure_envelopes_enabled, scenario_pressure_floor_anchor_enabled,
     scenario_pressure_in_newton_enabled, shortpipe_coupled_envelopes_enabled,
+    shortpipe_merge_boundaries_enabled,
     transport_minimal_anchors_enabled, ShortPipeBoundaryPair,
 };
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
@@ -91,6 +93,8 @@ struct DiagFlags {
     scenario_boundary_active_envelopes: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     scenario_boundary_partial_accept: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    scenario_shortpipe_merge_boundaries: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -471,6 +475,7 @@ fn main() -> Result<()> {
             scenario_pressure_floor_anchor: scenario_pressure_floor_anchor_enabled(),
             scenario_boundary_active_envelopes: scenario_boundary_active_envelopes_enabled(),
             scenario_boundary_partial_accept: scenario_boundary_partial_accept_enabled(),
+            scenario_shortpipe_merge_boundaries: shortpipe_merge_boundaries_enabled(),
         };
         emit_json(
             &skipped_output(
@@ -508,6 +513,7 @@ fn main() -> Result<()> {
             scenario_pressure_floor_anchor: scenario_pressure_floor_anchor_enabled(),
             scenario_boundary_active_envelopes: scenario_boundary_active_envelopes_enabled(),
             scenario_boundary_partial_accept: scenario_boundary_partial_accept_enabled(),
+            scenario_shortpipe_merge_boundaries: shortpipe_merge_boundaries_enabled(),
         };
         emit_json(
             &skipped_output(cli.dataset.clone(), network_display, None, flags, reason),
@@ -546,6 +552,7 @@ fn main() -> Result<()> {
         scenario_pressure_floor_anchor: scenario_pressure_floor_anchor_enabled(),
         scenario_boundary_active_envelopes: scenario_boundary_active_envelopes_enabled(),
         scenario_boundary_partial_accept: scenario_boundary_partial_accept_enabled(),
+        scenario_shortpipe_merge_boundaries: shortpipe_merge_boundaries_enabled(),
     };
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;
@@ -560,7 +567,6 @@ fn main() -> Result<()> {
         GasComposition::pure_ch4(),
         Some(|ev: ContinuationStepEvent| continuation_scales.push(ev.scale)),
     );
-    let demands = effective_solver_demands(&scenario.demands, &scenario);
     let (network, solve_result, refinement_passes) = match refinement_outcome {
         Ok(outcome) => (
             outcome.network,
@@ -572,6 +578,7 @@ fn main() -> Result<()> {
             (net, Err(err), 0)
         }
     };
+    let demands = effective_solver_demands_for_network(&network, &scenario.demands, &scenario);
     let mass_balance_anchor_ids: Vec<String> = scenario
         .mass_balance_anchors
         .iter()

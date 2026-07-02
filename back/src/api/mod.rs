@@ -1394,7 +1394,11 @@ fn load_dataset_from_disk(
         match gaslib::load_scenario_demands(&scenario_path) {
             Ok(mut scenario) => {
                 network = gaslib::prepare_transport_scenario(&network, &mut scenario);
-                gaslib::effective_solver_demands(&scenario.demands, &scenario)
+                gaslib::effective_solver_demands_for_network(
+                    &network,
+                    &scenario.demands,
+                    &scenario,
+                )
             }
             Err(err) => {
                 tracing::warn!("Impossible de charger {:?}: {err:#}", scenario_path);

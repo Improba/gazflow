@@ -68,7 +68,11 @@ async fn main() -> anyhow::Result<()> {
                     scenario.balance_hubs.first().map(|s| &s.node_id)
                 );
                 (
-                    gaslib::effective_solver_demands(&scenario.demands, &scenario),
+                    gaslib::effective_solver_demands_for_network(
+                        &network,
+                        &scenario.demands,
+                        &scenario,
+                    ),
                     network,
                 )
             }

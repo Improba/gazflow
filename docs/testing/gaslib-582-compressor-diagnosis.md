@@ -161,7 +161,16 @@ Ce n'est pas un bug numérique : le MVP P² impose Q mais ne couple pas la press
 
 Artefacts : `/tmp/582-phase-ic-dual-contract.json`, `/tmp/582-phase-ic-dual-contract-smoke.json`.
 
-## Prochaines étapes (Phase II)
+### Phase II — fusion shortPipe (juillet 2026)
+
+Flag `GAZFLOW_SCENARIO_SHORTPIPE_MERGE_BOUNDARIES=1` (auto avec dual contract) :
+- alias pression : `source_*` esclave → `sink_*` maître dans Newton
+- Q net sur le maître ; shortPipe retiré du graphe hydraulique
+- pipes amont du `source_*` recollés au `sink_*`
+
+Bench dual contract + merge smoke : **échec @ 69,3 m³/s** (vs 69,8 sans merge) — amélioration marginale ; la branche amont reste basse pression (~4 bar).
+
+## Prochaines étapes (Phase II suite)
 
 1. **Modèle frontière GasLib** : égalités/inégalités dual Q+P au niveau physique (pas pénalité soft seule).
 2. **Couplage shortPipe** : même nœud physique `sink_*` ↔ `source_*` — pression unique, Q net.

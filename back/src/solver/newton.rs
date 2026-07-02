@@ -14,9 +14,10 @@ use crate::compressor::{
     head_mismatch_penalty_psq, isentropic_outlet_temperature_k,
 };
 use crate::gaslib::{
-    scenario_boundary_active_envelopes_enabled, scenario_boundary_partial_accept_enabled,
-    scenario_pressure_clamp_in_newton_enabled, scenario_pressure_envelopes_enabled,
-    scenario_pressure_in_newton_enabled, scenario_pressure_penalty_weight,
+    detect_shortpipe_boundary_pairs, scenario_boundary_active_envelopes_enabled,
+    scenario_boundary_partial_accept_enabled, scenario_pressure_clamp_in_newton_enabled,
+    scenario_pressure_envelopes_enabled, scenario_pressure_in_newton_enabled,
+    scenario_pressure_penalty_weight, shortpipe_merge_boundaries_enabled,
 };
 use crate::graph::{ConnectionKind, GasNetwork};
 
@@ -107,6 +108,73 @@ impl PressureBoundContext {
             .iter()
             .map(|&idx| self.violation_m3s(idx, pressures_sq[idx].sqrt()))
             .fold(0.0_f64, f64::max)
+    }
+}
+
+/// Alias pression / bilan massique pour couples shortPipe (source esclave → sink maître).
+struct ShortPipeAliasContext {
+    resolve: Vec<usize>,
+    slaves: Vec<(usize, usize)>,
+}
+
+impl ShortPipeAliasContext {
+    fn from_network(network: &GasNetwork, id_pos: &HashMap<String, usize>, n: usize) -> Self {
+        if !shortpipe_merge_boundaries_enabled() {
+            return Self {
+                resolve: (0..n).collect(),
+                slaves: Vec::new(),
+            };
+        }
+        let mut resolve = (0..n).collect::<Vec<_>>();
+        let mut slaves = Vec::new();
+        for pair in detect_shortpipe_boundary_pairs(network) {
+            let Some(&master) = id_pos.get(&pair.sink_id) else {
+                continue;
+            };
+            let Some(&slave) = id_pos.get(&pair.source_id) else {
+                continue;
+            };
+            resolve[slave] = master;
+            slaves.push((slave, master));
+        }
+        for i in 0..n {
+            let mut r = i;
+            while resolve[r] != r {
+                r = resolve[r];
+            }
+            let mut cur = i;
+            while resolve[cur] != cur {
+                let next = resolve[cur];
+                resolve[cur] = r;
+                cur = next;
+            }
+        }
+        Self { resolve, slaves }
+    }
+
+    fn is_canonical(&self, idx: usize) -> bool {
+        self.resolve.get(idx).is_some_and(|&r| r == idx)
+    }
+
+    fn sync_pressures(&self, pressures_sq: &mut [f64]) {
+        for &(slave, master) in &self.slaves {
+            pressures_sq[slave] = pressures_sq[master];
+        }
+    }
+
+    fn merge_demands_vec(&self, demands_vec: &mut [f64]) {
+        for &(slave, master) in &self.slaves {
+            demands_vec[master] += demands_vec[slave];
+            demands_vec[slave] = 0.0;
+        }
+    }
+
+    fn inherit_fixed(&self, fixed: &mut HashMap<usize, f64>) {
+        for &(slave, master) in &self.slaves {
+            if let Some(&p_sq) = fixed.get(&master) {
+                fixed.insert(slave, p_sq);
+            }
+        }
     }
 }
 
@@ -486,6 +554,8 @@ where
         .map(|(i, id)| (id.clone(), i))
         .collect();
 
+    let shortpipe_alias = ShortPipeAliasContext::from_network(network, &id_pos, n);
+
     let pressure_bounds = if scenario_pressure_envelopes_enabled()
         && scenario_pressure_in_newton_enabled()
     {
@@ -528,6 +598,7 @@ where
         };
         demands_vec[idx] += demand;
     }
+    shortpipe_alias.merge_demands_vec(&mut demands_vec);
 
     let node_heights: HashMap<String, f64> = network
         .nodes()
@@ -540,8 +611,11 @@ where
             if !pipe.hydraulically_active() {
                 return None;
             }
-            let from_idx = id_pos.get(&pipe.from).copied()?;
-            let to_idx = id_pos.get(&pipe.to).copied()?;
+            let from_idx = shortpipe_alias.resolve[*id_pos.get(&pipe.from)?];
+            let to_idx = shortpipe_alias.resolve[*id_pos.get(&pipe.to)?];
+            if from_idx == to_idx {
+                return None;
+            }
             let (length_km, diameter_mm, roughness_mm) = effective_pipe_geometry(pipe);
             Some(IndexedPipe {
                 id: pipe.id.clone(),
@@ -572,6 +646,10 @@ where
     let mut anchored_components = 0usize;
     for start_idx in 0..n {
         if visited[start_idx] {
+            continue;
+        }
+        if !shortpipe_alias.is_canonical(start_idx) {
+            visited[start_idx] = true;
             continue;
         }
 
@@ -628,7 +706,12 @@ where
         anchored_components
     );
 
-    let free_indices: Vec<usize> = (0..n).filter(|i| !fixed.contains_key(i)).collect();
+    shortpipe_alias.inherit_fixed(&mut fixed);
+    shortpipe_alias.sync_pressures(&mut pressures_sq);
+
+    let free_indices: Vec<usize> = (0..n)
+        .filter(|&i| !fixed.contains_key(&i) && shortpipe_alias.is_canonical(i))
+        .collect();
     let mut free_pos = vec![usize::MAX; n];
     for (pos, &node_idx) in free_indices.iter().enumerate() {
         free_pos[node_idx] = pos;
@@ -878,6 +961,7 @@ where
             );
             if trial_state.residual < residual {
                 pressures_sq = trial_pressures;
+                shortpipe_alias.sync_pressures(&mut pressures_sq);
                 accepted = true;
                 break;
             }
@@ -911,9 +995,11 @@ where
                     pressure_bounds_ref,
                 );
             }
+            shortpipe_alias.sync_pressures(&mut pressures_sq);
         }
     }
 
+    shortpipe_alias.sync_pressures(&mut pressures_sq);
     let final_state = evaluate_state(
         &pipes,
         &demands_vec,

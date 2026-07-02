@@ -1418,8 +1418,8 @@ where
     G: FnMut(crate::solver::continuation::ContinuationStepEvent),
 {
     use crate::gaslib::{
-        effective_solver_demands, network_with_scenario_boundaries, try_add_mass_balance_anchor,
-        try_relax_contract_boundary,
+        effective_solver_demands_for_network, network_with_scenario_boundaries,
+        try_add_mass_balance_anchor, try_relax_contract_boundary,
     };
     use crate::solver::continuation::solve_steady_state_with_preset;
 
@@ -1429,7 +1429,7 @@ where
         .unwrap_or(4);
 
     let mut network = network_with_scenario_boundaries(base_network, scenario);
-    let mut demands = effective_solver_demands(&scenario.demands, scenario);
+    let mut demands = effective_solver_demands_for_network(base_network, &scenario.demands, scenario);
     let mut result = solve_steady_state_with_preset(
         &network,
         &demands,
@@ -1463,7 +1463,7 @@ where
             break;
         }
         network = network_with_scenario_boundaries(base_network, scenario);
-        demands = effective_solver_demands(&scenario.demands, scenario);
+        demands = effective_solver_demands_for_network(base_network, &scenario.demands, scenario);
         result = solve_steady_state_with_preset(
             &network,
             &demands,

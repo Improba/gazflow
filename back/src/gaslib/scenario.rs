@@ -167,6 +167,41 @@ pub fn shortpipe_coupled_envelopes_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Fusionne les couples `sink_*`/`source_*` shortPipe en une frontière physique (Phase II).
+pub fn shortpipe_merge_boundaries_enabled() -> bool {
+    std::env::var("GAZFLOW_SCENARIO_SHORTPIPE_MERGE_BOUNDARIES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+        || scenario_boundary_active_envelopes_enabled()
+}
+
+/// Somme les nominations Q du `source_*` esclave sur le `sink_*` maître (même point physique).
+pub fn merge_shortpipe_boundary_demands(
+    network: &GasNetwork,
+    demands: &mut HashMap<String, f64>,
+) {
+    if !shortpipe_merge_boundaries_enabled() {
+        return;
+    }
+    for pair in detect_shortpipe_boundary_pairs(network) {
+        let slave_q = demands.remove(&pair.source_id).unwrap_or(0.0);
+        if slave_q.is_finite() && slave_q != 0.0 {
+            *demands.entry(pair.sink_id.clone()).or_insert(0.0) += slave_q;
+        }
+    }
+}
+
+/// Demandes effectives + fusion shortPipe si [`shortpipe_merge_boundaries_enabled`].
+pub fn effective_solver_demands_for_network(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    scenario: &ScenarioDemands,
+) -> HashMap<String, f64> {
+    let mut adjusted = effective_solver_demands(demands, scenario);
+    merge_shortpipe_boundary_demands(network, &mut adjusted);
+    adjusted
+}
+
 /// Propage l'enveloppe P du `sink_*` nominé vers le `source_*` couplé (même point physique).
 fn apply_shortpipe_coupled_envelopes(network: &mut GasNetwork, scenario: &ScenarioDemands) {
     if !shortpipe_coupled_envelopes_enabled() || !scenario_pressure_envelopes_enabled() {
@@ -1508,6 +1543,36 @@ mod tests {
         assert!(scenario.junction_anchors.is_empty());
         assert!(scenario.boundary_spine_anchors.is_empty());
         unsafe { std::env::remove_var("GAZFLOW_TRANSPORT_MINIMAL_ANCHORS") };
+    }
+
+    fn test_merge_shortpipe_boundary_demands() {
+        use crate::graph::{ConnectionKind, GasNetwork, Node, Pipe};
+
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "sink_122".into(),
+            ..Default::default()
+        });
+        net.add_node(Node {
+            id: "source_10".into(),
+            ..Default::default()
+        });
+        net.add_pipe(Pipe {
+            id: "shortPipe_55".into(),
+            from: "sink_122".into(),
+            to: "source_10".into(),
+            kind: ConnectionKind::ShortPipe,
+            ..Default::default()
+        });
+        unsafe { std::env::set_var("GAZFLOW_SCENARIO_SHORTPIPE_MERGE_BOUNDARIES", "1") };
+        let mut demands = HashMap::from([
+            ("sink_122".into(), -10.4),
+            ("source_10".into(), 0.0),
+        ]);
+        merge_shortpipe_boundary_demands(&net, &mut demands);
+        assert_eq!(demands.get("sink_122"), Some(&-10.4));
+        assert!(!demands.contains_key("source_10"));
+        unsafe { std::env::remove_var("GAZFLOW_SCENARIO_SHORTPIPE_MERGE_BOUNDARIES") };
     }
 
     #[test]
