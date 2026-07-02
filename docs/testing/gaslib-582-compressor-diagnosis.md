@@ -228,6 +228,52 @@ C'est exactement le problème de **validation of nominations** de la littératur
 
 Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (**non atteint** ; cause racine identifiée et quantifiée : 23,5 m³/s de violation P résiduelle nécessitant activation compresseurs / infeasibilité topologique sur sink_88).
 
+## Phase II — correction alias shortPipe + sonde pression (juillet 2026)
+
+### Bug racine : l'alias shortPipe écrasait la pression transport des entries ancrées
+
+Investigation compresseur : les stations `compressorStation_1/2/3` (inlet 9 bar, ratio 1,08) sont **choked** (débit volumique réel ~10 m³/s >> choke line ~2 m³/s de la carte turbo) → ratio dégénéré. La cause n'est pas le compresseur mais l'inlet à 9 bar.
+
+Sonde `GAZFLOW_DIAG_PROBE_NODES` (commit 2886fc1) sur la branche `innode_3` :
+
+| Nœud | fixed_bar | P avant fix | P après fix |
+|------|-----------|-------------|-------------|
+| `source_22` | 70 | **9,16** | **70,00** |
+| `source_26` | 70 | 64,97 | 70,00 |
+| `source_27` | 70 | 64,98 | 70,00 |
+| `source_28` | 70 | 70,00 (non couplé) | 70,00 |
+| `innode_3` | — | 9,16 | **69,97** |
+| `innode_14` | — | 9,32 | 71,48 |
+
+**Racine** : `source_22` est couplée par shortPipe à `sink_114` (`detect_shortpipe_boundary_pairs`). Le merging shortPipe traitait la source comme **esclave** du sink ; `sync_pressures` copiait alors la pression basse du sink (~9 bar) vers la source, **écrasant** son `pressure_fixed_bar=70`. `source_28` (non couplée) restait à 70 — d'où le régime transport partiel.
+
+**Fix** (`back/src/solver/newton.rs`, `ShortPipeAliasContext::from_network`) : on saute les paires dont la source a `pressure_fixed_bar.is_some()`. La source ancrée reste maître à pression fixée ; le shortPipe haute conductance propage 70 bar au sink et à l'innode aval. Après fix, `innode_3` passe de 9,16 à **69,97 bar** — le flagship `innode_3` (shortfall 52,8 bar) est **résolu**.
+
+### Résidu résiduel = infeasibilité topologique réelle (sink_88, sink_83)
+
+Après la correction, le résidu 23,5 m³/s est **dominé à 100 %** par `sink_88` (P=2,52, lower=26,01, gap=23,50) :
+
+| Nœud | P (bar) | lower (bar) | gap (bar) | max_upstream | hops | diagnostic |
+|------|---------|-------------|-----------|--------------|------|------------|
+| `sink_88` | 2,52 | 26,01 | **23,50** | 2,52 | 3 | infeasible |
+| `sink_83` | 2,01 | 21,01 | 15,96 | 5,06 | 12 | infeasible |
+| `sink_108` | 7,18 | 16,01 | 7,48 | 8,54 | 14 | infeasible (partiel) |
+| `sink_125` | 34,88 | 41,01 | 0 | 70,00 | 14 | alimenté, friction |
+| `sink_122` | 69,98 | 74,01 | 4,04 | 69,98 | 5 | entry anchor 70 < bound 74 |
+
+**Trace topologique** (`.net`) : `sink_88` et `sink_83` sont connectées aux sources (source_22, source_28) mais via **43 à 57 hops** de tuyaux. Les control valves sont modélisées quasi-transparentes (pas de throttling, `steady_state.rs` l.235), donc la chute de 70 → 2,5 bar est **pure friction** sur un long trajet de distribution. Aucun compresseur n'est sur ces chemins.
+
+**Conclusion** : `nomination_mild_618` est **hydrauliquement infeasible** pour `sink_88`/`sink_83` — le réseau ne peut pas délivrer 16 m³/s à 26 bar à ces points sans compression supplémentaire sur la branche de distribution. C'est le résultat négatif valide du problème de **validation of nominations** (Pfetsch et al.) : la nomination nécessite des investissements (nouveau compresseur ou renforcement tuyau) pour être satisfiable.
+
+### Conclusion Phase II
+
+- L'artefact basse-pression (entries à 4 bar) est **éliminé** par l'ancrage entry transport + la correction alias shortPipe. Le régime transport (70 bar) se propage désormais jusqu'aux branches alimentées.
+- Le résidu résiduel 23,5 m³/s n'est plus un artefact numérique : c'est l'**infeasibilité hydraulique réelle** de `sink_88`/`sink_83` (branches de distribution longues sans compresseur, bornes transport non atteignables).
+- `sink_125` (alimenté, friction 70→35) et `sink_122` (entry 70 < bound 74) sont marginaux : activation compresseur sur le chemin `innode_63→innode_53` (CS4, ratio 1,226) pourrait combler.
+- La nomination mild_618 est **infeasible** sous le modèle MVP ; la feasibility exigerait de traiter les compresseurs comme variables de décision (NLP validation of nominations).
+
+
+
 1. **Modèle frontière GasLib** : égalités/inégalités dual Q+P au niveau physique (pas pénalité soft seule).
 2. **Couplage shortPipe** : même nœud physique `sink_*` ↔ `source_*` — pression unique, Q net.
 3. **Compresseur / enthalpie** : lever le plancher massique si le réseau peut physiquement alimenter les planchers P.
