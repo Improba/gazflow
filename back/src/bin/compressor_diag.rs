@@ -23,6 +23,7 @@ use gazflow_back::gaslib::{
     scenario_pressure_envelopes_enabled, scenario_pressure_floor_anchor_enabled,
     scenario_pressure_in_newton_enabled, shortpipe_coupled_envelopes_enabled,
     shortpipe_merge_boundaries_enabled, entry_transport_anchor_enabled,
+    entry_transport_anchored_ids,
     transport_minimal_anchors_enabled, ShortPipeBoundaryPair,
 };
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
@@ -164,6 +165,59 @@ struct DiagOutput {
     /// Alimentation pression amont vs plancher contractuel (Phase II diag).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     boundary_pressure_supply: Vec<BoundaryPressureSupplyReport>,
+    /// Sondes pression/débit sur nœuds/arcs demandés (GAZFLOW_DIAG_PROBE_NODES).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    probe_nodes: Vec<ProbeNode>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    entry_transport_anchored_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProbeNode {
+    node_id: String,
+    pressure_bar: Option<f64>,
+    fixed_bar: Option<f64>,
+    lower_bar: Option<f64>,
+    upper_bar: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    incident_flow_m3s: Option<f64>,
+}
+
+fn probe_node_reports(network: &GasNetwork, result: &SolverResult) -> Vec<ProbeNode> {
+    let raw = std::env::var("GAZFLOW_DIAG_PROBE_NODES").unwrap_or_default();
+    let ids: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    ids.iter()
+        .filter_map(|id| {
+            let node = network.nodes().find(|n| n.id == *id)?;
+            // débit net incident (somme signée selon orientation from->to).
+            let mut net = 0.0;
+            let mut found = false;
+            for pipe in network.pipes() {
+                if pipe.from == *id {
+                    net += result.flows.get(&pipe.id).copied().unwrap_or(0.0);
+                    found = true;
+                } else if pipe.to == *id {
+                    net -= result.flows.get(&pipe.id).copied().unwrap_or(0.0);
+                    found = true;
+                }
+            }
+            Some(ProbeNode {
+                node_id: id.clone(),
+                pressure_bar: result.pressures.get(id).copied(),
+                fixed_bar: node.pressure_fixed_bar,
+                lower_bar: node.pressure_lower_bar,
+                upper_bar: node.pressure_upper_bar,
+                incident_flow_m3s: found.then_some(net),
+            })
+        })
+        .collect()
 }
 
 fn parse_residual_from_error(err: &str) -> Option<f64> {
@@ -437,6 +491,8 @@ fn skipped_output(
         shortpipe_boundary_couplings: Vec::new(),
         worst_pressure_upstream_trace: Vec::new(),
         boundary_pressure_supply: Vec::new(),
+        probe_nodes: Vec::new(),
+        entry_transport_anchored_ids: Vec::new(),
     }
 }
 
@@ -660,6 +716,8 @@ fn main() -> Result<()> {
             let scenario_pressure_slips = scenario_pressure_slips(&network, &result);
             let boundary_pressure_supply =
                 boundary_pressure_supply_reports(&network, &result, &scenario_pressure_slips, 12);
+            let probe_nodes = probe_node_reports(&network, &result);
+            let entry_transport_anchored_ids = entry_transport_anchored_ids(&scenario);
             let shortpipe_boundary_couplings = detect_shortpipe_boundary_pairs(&network);
             let worst_pressure_upstream_trace = scenario_pressure_slips
                 .first()
@@ -710,6 +768,8 @@ fn main() -> Result<()> {
                 shortpipe_boundary_couplings,
                 worst_pressure_upstream_trace,
                 boundary_pressure_supply,
+                probe_nodes,
+                entry_transport_anchored_ids,
             }
         }
         Err(err) => {
@@ -738,6 +798,8 @@ fn main() -> Result<()> {
                 shortpipe_boundary_couplings: detect_shortpipe_boundary_pairs(&network),
                 worst_pressure_upstream_trace: Vec::new(),
                 boundary_pressure_supply: Vec::new(),
+                probe_nodes: Vec::new(),
+                entry_transport_anchored_ids: Vec::new(),
             }
         }
     };

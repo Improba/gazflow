@@ -134,6 +134,14 @@ impl ShortPipeAliasContext {
             let Some(&slave) = id_pos.get(&pair.source_id) else {
                 continue;
             };
+            // Garde-fou : une source ancrée (entry transport, pressure_fixed_bar)
+            // doit rester maître à pression fixée. L'aliasing en esclave écraserait
+            // sa pression transport (70 bar) par celle, basse, du sink partenaire.
+            if let Some(src_node) = network.nodes().find(|n| n.id == pair.source_id) {
+                if src_node.pressure_fixed_bar.is_some() {
+                    continue;
+                }
+            }
             resolve[slave] = master;
             slaves.push((slave, master));
         }
