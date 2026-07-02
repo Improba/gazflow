@@ -1545,6 +1545,7 @@ mod tests {
         unsafe { std::env::remove_var("GAZFLOW_TRANSPORT_MINIMAL_ANCHORS") };
     }
 
+    #[test]
     fn test_merge_shortpipe_boundary_demands() {
         use crate::graph::{ConnectionKind, GasNetwork, Node, Pipe};
 
