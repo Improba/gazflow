@@ -133,18 +133,38 @@ Le JSON diag expose désormais `scenario_pressure_slips` (tri par shortfall, fla
 
 **Conclusion Phase I-bis** : le plancher **~2 m³/s** coexiste avec **violation systématique des enveloppes P** sur les contrats dual Q+P. Ce n'est pas résolu par post-check seul ni par pénalité soft faible (w=0,01).
 
-## Prochaines étapes (Phase I-c)
+## Phase I-c — contrat dual Q+P actif (juillet 2026)
 
-1. **Contrat dual Q+P** : le MVP impose Q ; P reste libre → 11 violations sur sorties nominées.
-2. **Couplage shortPipe** (`sink_122` ↔ `source_10`) : même point physique GasLib ; `source_10` Q=0, `sink_122` Q nominé + enveloppe 74–81 bar. Branche amont `innode_49` ~4 bar (`pipe_256` 2,1 km).
-3. **Modes bench opt-in** :
-   - `GAZFLOW_SCENARIO_SHORTPIPE_COUPLED_ENVELOPES=1` : propage enveloppe P vers le `source_*` couplé
-   - `GAZFLOW_SCENARIO_PRESSURE_FLOOR_ANCHOR=1` : fixe P à la borne basse (égalité — change le problème)
-4. JSON diag : `shortpipe_boundary_couplings`, `worst_pressure_upstream_trace`, `shortpipe_partner_id` dans `scenario_pressure_slips`.
+Flag `GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES=1` :
+- active enveloppes P + pénalité in-Newton (défaut **1 m³/s par bar**)
+- bloque partial accept si violation P scénario > tolérance
+- opt-out partial : `GAZFLOW_SCENARIO_BOUNDARY_PARTIAL_ACCEPT=1`
+
+### Résultats smoke (refinement=0, ~3 min en parallèle)
+
+| Tag | Status | Résidu massique | Violations P scénario |
+|-----|--------|-----------------|------------------------|
+| `nominal-smoke` | ok (partial) | **2,045** m³/s | 1 (`innode_3`) |
+| `phase-ibis-in-newton-smoke` | ok (partial) | **2,11** m³/s | **11** (pire `sink_122` −69,8 bar) |
+| `phase-ic-dual-contract-smoke` | **error** | — | **69,8 m³/s** (critère contractuel) |
+
+**Interprétation** : le dual contract ne masque plus l'infaisabilité. Le partial accept à 2,045 m³/s cachait 11 violations P ; le mode actif échoue honnêtement avec un résidu contractuel dominé par `sink_122` (4,2 bar vs 74–81 bar, Q=−10,4 m³/s imposé).
+
+Ce n'est pas un bug numérique : le MVP P² impose Q mais ne couple pas la pression amont aux planchers contractuels. Les ancrages `innode_*` ou floor-anchor ne règlent pas la sémantique GasLib.
+
+### Bench
 
 ```bash
-./scripts/bench-gaslib-582.sh phase-ic-coupled
-./scripts/bench-gaslib-582.sh phase-ic-floor-anchor
+./scripts/bench-gaslib-582.sh phase-ic-dual-contract        # ~2,5 min (échec honnête)
+./scripts/bench-gaslib-582-parallel.sh 3 nominal-smoke phase-ibis-in-newton-smoke phase-ic-dual-contract-smoke
 ```
 
-Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (non atteint).
+Artefacts : `/tmp/582-phase-ic-dual-contract.json`, `/tmp/582-phase-ic-dual-contract-smoke.json`.
+
+## Prochaines étapes (Phase II)
+
+1. **Modèle frontière GasLib** : égalités/inégalités dual Q+P au niveau physique (pas pénalité soft seule).
+2. **Couplage shortPipe** : même nœud physique `sink_*` ↔ `source_*` — pression unique, Q net.
+3. **Compresseur / enthalpie** : lever le plancher massique si le réseau peut physiquement alimenter les planchers P.
+
+Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (**non atteint** ; cause racine identifiée : infaisabilité contractuelle P sous MVP Q-seul).

@@ -48,12 +48,15 @@ Référence architecture : [gaslib-582-compressor-diagnosis.md](./gaslib-582-com
 # Bench reproductible (nomination intacte par défaut)
 ./scripts/bench-gaslib-582.sh nominal
 
-cd back && cargo build --release --bin compressor_diag
+# Smoke rapide dual contract (~5–8 min, sans passes refinement)
+./scripts/bench-gaslib-582.sh phase-ic-dual-contract-smoke
 
-GAZFLOW_COMPRESSOR_MAP_MODE=measurement ./target/release/compressor_diag GasLib-582 --json /tmp/582-measurement.json
+# Plusieurs tags en parallèle (build unique, N processus indépendants)
+# Règle : jobs ≈ nproc/6 (chaque run ~6 threads Rayon)
+./scripts/bench-gaslib-582-parallel.sh 3 phase-ic-dual-contract-smoke nominal phase-ibis-nominal-anchors
 
-# Expérience abandon Q boundaries (hors nomination, opt-in)
-GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1 ./scripts/bench-gaslib-582.sh contract-relax
+# Re-run sans rebuild
+GAZFLOW_582_SKIP_BUILD=1 ./scripts/bench-gaslib-582.sh phase-ic-dual-contract
 ```
 
 ## Variables d'environnement (Phase I)
@@ -80,6 +83,8 @@ GAZFLOW_CONTRACT_BOUNDARY_REFINEMENT=1 ./scripts/bench-gaslib-582.sh contract-re
 | `GAZFLOW_TRANSPORT_MINIMAL_ANCHORS` | Slack seul, sans hubs/junction/spine (Phase I-bis, **opt-in**) | `0` |
 | `GAZFLOW_SCENARIO_SHORTPIPE_COUPLED_ENVELOPES` | Propage enveloppe P vers `source_*` couplé shortPipe | `0` |
 | `GAZFLOW_SCENARIO_PRESSURE_FLOOR_ANCHOR` | Fixe P à borne basse scénario (Phase I-c bench, **opt-in**) | `0` |
+| `GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES` | Contrat dual Q+P : enveloppes P in-Newton + pas de partial accept si violation P (Phase I-c) | `0` |
+| `GAZFLOW_SCENARIO_BOUNDARY_PARTIAL_ACCEPT` | Autorise partial accept malgré violation P quand dual contract actif | `0` |
 | `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED` | Plafond r²≤9 jusqu'à convergence | `1` |
 | `GAZFLOW_COMPRESSOR_OUTER_MAX_ITERS` | Itérations outer loop ratio | 12 |
 | `GAZFLOW_COMPRESSOR_RELAX` | Relaxation ω mise à jour ratio | 0.5 |
@@ -112,6 +117,8 @@ Artefact référence nomination intacte : `/tmp/582-v17.json` (résidu 2,045 m³
 | v21 | **2,045** | fermeture H_map ↔ H_req (opt-in, = baseline) |
 | v22 | **2,045** | équation H explicite + T_out aval (opt-in, = baseline) |
 | I-bis | **2,159** / **2,045** | enveloppes post-check ; in-Newton soft (w=0,01) = baseline + 11 viol. P |
+| I-c dual | **échec @ 69,8 m³/s** | `BOUNDARY_ACTIVE_ENVELOPES=1` ; partial accept bloqué ; ~2,5 min |
+| I-c dual smoke | **échec @ 69,8 m³/s** | idem sans refinement ; comparaison parallèle ~3 min / 3 tags |
 | strict | **échec @ 3,0** | partial accept off ; plancher 2,045 = artefact numérique |
 
 ## Interprétation globale
@@ -122,7 +129,8 @@ Artefact référence nomination intacte : `/tmp/582-v17.json` (résidu 2,045 m³
 4. **v18** : heuristique numérique (abandon Q), pas solution GasLib ; reporter `nomination_mass_balance` et `boundary_nomination_slips`.
 5. **v19–v22** : Jacobian / cap / fermeture H / équation explicite — plancher **2,045** inchangé ; v23 = résidu compresseur dédié ou modèle hors MVP P².
 6. **Phase I-bis** : enveloppes P `.scn` in-Newton + ancrages minimaux ; bench `./scripts/bench-gaslib-582.sh phase-ibis`.
-7. **Prochain levier** : bilan énergétique compresseur ou convergence stricte pour qualifier le plancher.
+7. **Phase I-c dual contract** : `./scripts/bench-gaslib-582.sh phase-ic-dual-contract` — inégalités P actives in-Newton, critère honnête (pas de partial accept si violation P scénario).
+8. **Prochain levier** : bilan énergétique compresseur ou modèle hors MVP P² pour lever le plancher massique.
 
 ## Test intégration
 

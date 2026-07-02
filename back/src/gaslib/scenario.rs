@@ -248,13 +248,22 @@ pub fn scenario_pressure_envelopes_enabled() -> bool {
     std::env::var("GAZFLOW_SCENARIO_PRESSURE_ENVELOPES")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+        || scenario_boundary_active_envelopes_enabled()
 }
 
-/// Clamp / pénalité pression dans le Newton (nécessite [`scenario_pressure_envelopes_enabled`]).
+/// Contrat dual Q+P GasLib : enveloppes P actives in-Newton + pas de partial accept si violation.
+pub fn scenario_boundary_active_envelopes_enabled() -> bool {
+    std::env::var("GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Pénalité / inégalités P dans le Newton (enveloppes scénario appliquées).
 pub fn scenario_pressure_in_newton_enabled() -> bool {
     std::env::var("GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+        || scenario_boundary_active_envelopes_enabled()
 }
 
 /// Clamp pression en line-search Newton (avec [`scenario_pressure_in_newton_enabled`]).
@@ -276,7 +285,18 @@ pub fn scenario_pressure_penalty_weight() -> f64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|w: &f64| w.is_finite() && *w > 0.0)
-        .unwrap_or(0.01)
+        .unwrap_or(if scenario_boundary_active_envelopes_enabled() {
+            1.0
+        } else {
+            0.01
+        })
+}
+
+/// Partial accept autorisé quand le contrat dual Q+P est actif (désactivé par défaut).
+pub fn scenario_boundary_partial_accept_enabled() -> bool {
+    std::env::var("GAZFLOW_SCENARIO_BOUNDARY_PARTIAL_ACCEPT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 fn merge_pressure_bound(
@@ -1488,6 +1508,24 @@ mod tests {
         assert!(scenario.junction_anchors.is_empty());
         assert!(scenario.boundary_spine_anchors.is_empty());
         unsafe { std::env::remove_var("GAZFLOW_TRANSPORT_MINIMAL_ANCHORS") };
+    }
+
+    #[test]
+    fn test_boundary_active_envelopes_flags() {
+        unsafe {
+            std::env::set_var("GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES", "1");
+            std::env::remove_var("GAZFLOW_SCENARIO_PRESSURE_ENVELOPES");
+            std::env::remove_var("GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON");
+            std::env::remove_var("GAZFLOW_SCENARIO_PRESSURE_PENALTY_WEIGHT");
+        }
+        assert!(scenario_boundary_active_envelopes_enabled());
+        assert!(scenario_pressure_envelopes_enabled());
+        assert!(scenario_pressure_in_newton_enabled());
+        assert!((scenario_pressure_penalty_weight() - 1.0).abs() < 1e-12);
+        assert!(!scenario_boundary_partial_accept_enabled());
+        unsafe {
+            std::env::remove_var("GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES");
+        }
     }
 
     #[test]

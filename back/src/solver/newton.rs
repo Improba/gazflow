@@ -14,6 +14,7 @@ use crate::compressor::{
     head_mismatch_penalty_psq, isentropic_outlet_temperature_k,
 };
 use crate::gaslib::{
+    scenario_boundary_active_envelopes_enabled, scenario_boundary_partial_accept_enabled,
     scenario_pressure_clamp_in_newton_enabled, scenario_pressure_envelopes_enabled,
     scenario_pressure_in_newton_enabled, scenario_pressure_penalty_weight,
 };
@@ -95,6 +96,17 @@ impl PressureBoundContext {
             viol = viol.max((pressure_bar - hi).max(0.0) * self.penalty_weight);
         }
         viol
+    }
+
+    fn max_free_violation_m3s(
+        &self,
+        free_indices: &[usize],
+        pressures_sq: &[f64],
+    ) -> f64 {
+        free_indices
+            .iter()
+            .map(|&idx| self.violation_m3s(idx, pressures_sq[idx].sqrt()))
+            .fold(0.0_f64, f64::max)
     }
 }
 
@@ -915,6 +927,21 @@ where
 
     if final_state.residual >= tolerance && !free_indices.is_empty() {
         if config.accept_partial_solution && final_state.residual.is_finite() {
+            if scenario_boundary_active_envelopes_enabled()
+                && !scenario_boundary_partial_accept_enabled()
+            {
+                if let Some(bounds) = pressure_bounds_ref {
+                    let env_viol =
+                        bounds.max_free_violation_m3s(&free_indices, &pressures_sq);
+                    if env_viol > tolerance {
+                        bail!(
+                            "Newton-hybrid solver: scenario P envelope violation {:.3e} m³/s exceeds {:.3e} (dual Q+P contract)",
+                            env_viol,
+                            tolerance
+                        );
+                    }
+                }
+            }
             let mut result_pressures = HashMap::new();
             for (i, id) in node_ids.iter().enumerate() {
                 result_pressures.insert(id.clone(), pressures_sq[i].sqrt());
