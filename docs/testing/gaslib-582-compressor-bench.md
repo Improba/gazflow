@@ -86,6 +86,7 @@ GAZFLOW_582_SKIP_BUILD=1 ./scripts/bench-gaslib-582.sh phase-ic-dual-contract
 | `GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES` | Contrat dual Q+P : enveloppes P in-Newton + pas de partial accept si violation P (Phase I-c) | `0` |
 | `GAZFLOW_SCENARIO_BOUNDARY_PARTIAL_ACCEPT` | Autorise partial accept malgré violation P quand dual contract actif | `0` |
 | `GAZFLOW_SCENARIO_SHORTPIPE_MERGE_BOUNDARIES` | Fusionne sink/source shortPipe en frontière unique (Phase II ; auto si dual contract) | `0` |
+| `GAZFLOW_CONTINUATION_SCALES` | Surcharge échelles continuation (ex. `1.0` ou `0.3,0.6,1.0`) | défaut preset |
 | `GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED` | Plafond r²≤9 jusqu'à convergence | `1` |
 | `GAZFLOW_COMPRESSOR_OUTER_MAX_ITERS` | Itérations outer loop ratio | 12 |
 | `GAZFLOW_COMPRESSOR_RELAX` | Relaxation ω mise à jour ratio | 0.5 |

@@ -187,15 +187,23 @@ sink_88   need=26.0  max_up=2.48   gap=23.5 bar
 sink_83   need=21.0  max_up=4.81   gap=16.2 bar
 ```
 
-**Cause racine Phase II** : le réseau amont est à **4–11 bar** (régime dégénéré basse pression), pas en régime transport (50–80 bar). Les compresseurs sont à `flow_m3s=0`. La continuation (échelle demande 0,05→1,0) ne soulève pas la pression : à basse pression, fortes pertes de charge → effondrement. Ce n'est pas un problème de couplage shortPipe ni d'enthalpie, c'est un **problème d'initialisation / continuation** qui n'atteint pas le régime transport.
+**Cause racine Phase II (modèle, pas numerique)** : quelle que soit la continuation (`1.0`, `0.3,0.6,1.0`, `0.05…1.0`), le solveur converge vers le **même** état basse-pression (sink_122 = 4,69 bar, noyau ~9 bar). Ce n'est pas un effondrement continuation — c'est la solution du modèle P².
+
+- Sources GasLib-582 : `pressureMin=1,01 bar`, `pressureMax=121 bar`, mais le MVP impose **Q seul** aux entries et laisse P libre.
+- Une seule référence P : slack `sink_109` à 51 bar.
+- Le solveur choisit le P minimal satisfaisant le bilan massique → entries à ~4 bar, exits à 4–11 bar.
+- `sink_122` exige 74 bar > slack 51 bar : **physiquement infaisable** sans compresseur sur la branche (aucun compresseur sur innode_49→…→sink_122).
+- Compresseurs : `flow_m3s=0` (aucun sur les branches violantes ; enthalpic n'aide pas).
+
+Le dual contract identifie honnêtement cette infeasibilité contractuelle. Ce n'est pas un bug : c'est une limite du modèle MVP Q-seul.
 
 ## Prochaines étapes (Phase II suite)
 
-1. **Initialisation pression transport** : démarrer la continuation à ~50–70 bar (pas 70 bar uniforme qui s'effondre), ou continuation en pression plutôt qu'en débit.
-2. **Activation compresseurs** : investiguer pourquoi `flow_m3s=0` (r² cap, map, outer loop).
-3. **Modèle frontière dual Q+P** au niveau physique si le régime transport est atteint.
+1. **Entry pressure** : imposer/ancrer les entries à haute pression (régime transport ~50–80 bar) au lieu de Q-seul. Décision modèle.
+2. **Compresseurs** : vérifier pourquoi `flow=0` sur les stations principales (innode_14→389 etc.).
+3. **Modèle frontière dual Q+P** au niveau physique (entries P∈[pmin,pmax] actif, pas juste Q).
 
-Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (**non atteint** ; cause racine identifiée : état basse-pression dégénéré, compresseurs inactifs).
+Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (**non atteint** ; cause racine : modèle MVP Q-seul → état basse-pression, exits à plancher P infaisable sans compresseur amont).
 
 1. **Modèle frontière GasLib** : égalités/inégalités dual Q+P au niveau physique (pas pénalité soft seule).
 2. **Couplage shortPipe** : même nœud physique `sink_*` ↔ `source_*` — pression unique, Q net.

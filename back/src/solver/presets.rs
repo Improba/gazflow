@@ -148,7 +148,25 @@ pub fn preset_robust(node_count: usize) -> SolverPreset {
     preset.timeout_ms = preset.timeout_ms.max(120_000);
     preset.max_iter = preset.max_iter.max(400);
     preset.continuation_auto_bridges = preset.continuation_auto_bridges.max(4);
+    if let Some(scales) = env_continuation_scales() {
+        preset.continuation_scales = scales;
+    }
     preset
+}
+
+/// Surcharge des échelles de continuation via env (ex. `GAZFLOW_CONTINUATION_SCALES=1.0`).
+fn env_continuation_scales() -> Option<Vec<f64>> {
+    let raw = std::env::var("GAZFLOW_CONTINUATION_SCALES").ok()?;
+    let scales: Vec<f64> = raw
+        .split(',')
+        .filter_map(|s| s.trim().parse::<f64>().ok())
+        .filter(|s| *s > 0.0)
+        .collect();
+    if scales.is_empty() {
+        None
+    } else {
+        Some(scales)
+    }
 }
 
 #[cfg(test)]
