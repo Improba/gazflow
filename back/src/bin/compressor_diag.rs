@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use gazflow_back::compressor::{CompressorOperatingContext, effective_ratio_with_nominal};
 use gazflow_back::gaslib::{
+    compressor_decision_variables_enabled,
     detect_shortpipe_boundary_pairs, effective_solver_demands_for_network,
     enrich_scenario_with_balance_hub,
     load_network, load_scenario_demands, network_with_scenario_boundaries,
@@ -29,6 +30,7 @@ use gazflow_back::gaslib::{
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
 use gazflow_back::solver::{
     ContinuationStepEvent, GasComposition, MassBalanceReport, SolverResult,
+    apply_compressor_decision_updates,
     apply_map_ratios_after_continuation_step, boundary_nomination_slips,
     compressor_accept_partial_enabled, compressor_map_mode,
     compressor_pressure_from_coeff, estimated_compressor_map_flow_m3s, mass_balance_report,
@@ -44,6 +46,7 @@ const MAX_PLAUSIBLE_COMPRESSOR_FLOW_M3S: f64 = 250.0;
 const HANDOFF_PREFER_ESTIMATED_RESIDUAL: f64 = 7.0;
 /// Pression amont indicative transport quand le solve échoue avant convergence (582 mild_618).
 const TRANSPORT_FALLBACK_INLET_BAR: f64 = 40.0;
+const DECISION_MIN_FED_P_IN_BAR: f64 = 5.0;
 
 fn env_flag(name: &str) -> bool {
     std::env::var(name)
@@ -55,6 +58,58 @@ fn diag_env_enthalpic() -> bool {
     env_flag("GAZFLOW_COMPRESSOR_ENTHALPIC")
         || env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE")
         || env_flag("GAZFLOW_COMPRESSOR_ENERGY_EQUATION")
+}
+
+fn diag_compressor_relax() -> f64 {
+    std::env::var("GAZFLOW_COMPRESSOR_RELAX")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.5)
+        .clamp(0.0, 1.0)
+}
+
+fn compressor_decision_report(
+    network: &GasNetwork,
+    result: &SolverResult,
+) -> Option<Vec<CompressorDecisionReportEntry>> {
+    if !compressor_decision_variables_enabled() {
+        return None;
+    }
+    let mut preview_network = network.clone();
+    let updates = apply_compressor_decision_updates(
+        &mut preview_network,
+        result,
+        diag_compressor_relax(),
+        DECISION_MIN_FED_P_IN_BAR,
+    );
+    let total_slack_before = updates.total_slack_before;
+    let total_slack_after = updates.total_slack_after;
+    let mut report = updates
+        .updates
+        .into_iter()
+        .map(|entry| CompressorDecisionReportEntry {
+            cs_id: entry.cs_id,
+            from_node: entry.from_node,
+            to_node: entry.to_node,
+            ratio_before: entry.ratio_before,
+            ratio_after: entry.ratio_after,
+            p_in_bar: entry.p_in_bar,
+            downstream_deficits: entry
+                .downstream_deficits
+                .into_iter()
+                .map(|d| CompressorDecisionSinkDeficit {
+                    sink_id: d.sink_id,
+                    lower_bar: d.lower_bar,
+                    p_resolved: d.p_resolved_bar,
+                    deficit_bar: d.deficit_bar,
+                })
+                .collect(),
+            total_slack_before,
+            total_slack_after,
+        })
+        .collect::<Vec<_>>();
+    report.sort_by(|a, b| a.cs_id.cmp(&b.cs_id));
+    Some(report)
 }
 
 #[derive(Debug)]
@@ -137,6 +192,8 @@ struct DiagOutput {
     flags: DiagFlags,
     compressor_stations: Vec<CompressorStationDiag>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    compressor_decision_report: Option<Vec<CompressorDecisionReportEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
@@ -170,6 +227,27 @@ struct DiagOutput {
     probe_nodes: Vec<ProbeNode>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     entry_transport_anchored_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CompressorDecisionSinkDeficit {
+    sink_id: String,
+    lower_bar: f64,
+    p_resolved: f64,
+    deficit_bar: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct CompressorDecisionReportEntry {
+    cs_id: String,
+    from_node: String,
+    to_node: String,
+    ratio_before: f64,
+    ratio_after: f64,
+    p_in_bar: f64,
+    downstream_deficits: Vec<CompressorDecisionSinkDeficit>,
+    total_slack_before: f64,
+    total_slack_after: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -479,6 +557,7 @@ fn skipped_output(
         continuation_scales: Vec::new(),
         flags,
         compressor_stations: Vec::new(),
+        compressor_decision_report: None,
         reason: Some(reason),
         error: None,
         mass_balance: None,
@@ -660,7 +739,8 @@ fn main() -> Result<()> {
             if matches!(
                 mode,
                 CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
-            ) {
+            ) && !compressor_decision_variables_enabled()
+            {
                 apply_map_ratios_after_continuation_step(
                     &mut report_network,
                     &demands,
@@ -681,7 +761,8 @@ fn main() -> Result<()> {
             if matches!(
                 mode,
                 CompressorMapMode::Measurement | CompressorMapMode::Biquadratic
-            ) {
+            ) && !compressor_decision_variables_enabled()
+            {
                 apply_map_ratios_after_continuation_step(
                     &mut report_network,
                     &demands,
@@ -734,6 +815,7 @@ fn main() -> Result<()> {
             let contract_active = scenario_boundary_active_envelopes_enabled();
             let contract_violated =
                 contract_active && result.residual > preset.tolerance;
+            let compressor_decision_report = compressor_decision_report(&network, &result);
             DiagOutput {
                 status: if contract_violated {
                     "contract_violation"
@@ -749,6 +831,7 @@ fn main() -> Result<()> {
                 continuation_scales,
                 flags,
                 compressor_stations: stations,
+                compressor_decision_report,
                 reason: if contract_violated {
                     Some(format!(
                         "residual {:.4e} m³/s exceeds tolerance {:.4e} (contract Q+P)",
@@ -775,17 +858,20 @@ fn main() -> Result<()> {
         Err(err) => {
             eprintln!("solve failed: {err:#}");
             let err_text = format!("{err:#}");
+            let residual = parse_residual_from_error(&err_text).unwrap_or(8.0);
+            let preview = synthetic_result_for_map_preview(&network, residual);
             DiagOutput {
                 status: "error",
                 dataset: cli.dataset.clone(),
                 network: network_display,
                 scenario: Some(scenario_path.display().to_string()),
-                residual: parse_residual_from_error(&err_text),
+                residual: Some(residual),
                 demand_scale: None,
                 iterations: None,
                 continuation_scales,
                 flags,
                 compressor_stations: stations,
+                compressor_decision_report: compressor_decision_report(&network, &preview),
                 reason: None,
                 error: Some(err_text),
                 mass_balance: None,

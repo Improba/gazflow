@@ -4,8 +4,9 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::compressor::{
     CompressorCatalog, CompressorOperatingContext, effective_ratio_with_nominal_for_mode,
-    estimated_map_flow_m3s,
+    downstream_bounded_sinks, estimated_map_flow_m3s,
 };
+use crate::gaslib::compressor_decision_variables_enabled;
 use crate::graph::{ConnectionKind, GasNetwork, Pipe};
 use crate::solver::gas_properties::DEFAULT_GAS_TEMPERATURE_K;
 
@@ -29,6 +30,8 @@ const MAP_REFINE_SCALES: &[f64] = &[0.92, 0.96, 1.0];
 const HANDOFF_PREFER_ESTIMATED_RESIDUAL: f64 = 7.0;
 const MAX_PLAUSIBLE_COMPRESSOR_FLOW_M3S: f64 = 250.0;
 const STUCK_RESIDUAL_RATIO_THRESHOLD: f64 = 10.0;
+const DECISION_MIN_FED_P_IN_BAR: f64 = 5.0;
+const DECISION_SLACK_EPS: f64 = 1e-6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressorMapMode {
@@ -179,6 +182,66 @@ fn ratio_step_if_changed(current: f64, next: f64) -> Option<f64> {
         Some(next)
     } else {
         None
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DecisionSinkDeficit {
+    pub sink_id: String,
+    pub lower_bar: f64,
+    pub p_resolved_bar: f64,
+    pub deficit_bar: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CompressorDecisionUpdate {
+    pub cs_id: String,
+    pub from_node: String,
+    pub to_node: String,
+    pub ratio_before: f64,
+    pub ratio_after: f64,
+    pub p_in_bar: f64,
+    pub downstream_deficits: Vec<DecisionSinkDeficit>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CompressorDecisionUpdateStats {
+    pub updated: usize,
+    pub max_delta: f64,
+    pub total_slack_before: f64,
+    pub total_slack_after: f64,
+    pub updates: Vec<CompressorDecisionUpdate>,
+}
+
+/// Cible de ratio en mode "variables de décision" (NoVa NLP relaxé).
+fn decision_ratio_target(
+    current_ratio: f64,
+    p_in_bar: f64,
+    deficit_bar: f64,
+    cap_ratio: f64,
+    min_fed_p_in_bar: f64,
+) -> Option<f64> {
+    if !current_ratio.is_finite()
+        || !p_in_bar.is_finite()
+        || !deficit_bar.is_finite()
+        || !cap_ratio.is_finite()
+    {
+        return None;
+    }
+    if p_in_bar < min_fed_p_in_bar || p_in_bar <= 0.0 {
+        return None;
+    }
+    if deficit_bar <= 0.0 {
+        return None;
+    }
+    let upper = cap_ratio.max(current_ratio);
+    let r_target = ((p_in_bar + deficit_bar) / p_in_bar)
+        .max(1.0)
+        .clamp(current_ratio, upper);
+    if r_target <= current_ratio + 1e-6 {
+        None
+    } else {
+        Some(r_target)
     }
 }
 
@@ -411,6 +474,103 @@ pub struct RatioUpdateStats {
     max_delta: f64,
 }
 
+pub fn apply_compressor_decision_updates(
+    network: &mut GasNetwork,
+    result: &SolverResult,
+    relax: f64,
+    min_fed_p_in_bar: f64,
+) -> CompressorDecisionUpdateStats {
+    let downstream_by_cs: HashMap<String, Vec<(String, f64)>> = network
+        .pipes()
+        .filter(|p| p.kind == ConnectionKind::CompressorStation && p.hydraulically_active())
+        .map(|pipe| {
+            (
+                pipe.id.clone(),
+                downstream_bounded_sinks(network, &pipe.to),
+            )
+        })
+        .collect();
+
+    let mut stats = CompressorDecisionUpdateStats::default();
+    let mut sink_slack_before: HashMap<String, f64> = HashMap::new();
+    let mut sink_slack_after: HashMap<String, f64> = HashMap::new();
+
+    for pipe in network.pipes_mut() {
+        if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
+            continue;
+        }
+
+        let current = pipe
+            .compressor_ratio_max
+            .or(pipe.equipment.compressor_nominal_ratio)
+            .unwrap_or(1.08)
+            .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
+        let cap = pipe
+            .equipment
+            .compressor_pressure_cap_ratio
+            .unwrap_or(MAX_COMPRESSOR_RATIO)
+            .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
+        let p_in_bar = result.pressures.get(&pipe.from).copied().unwrap_or(0.0);
+
+        let mut deficits = Vec::new();
+        let mut max_deficit = 0.0_f64;
+        for (sink_id, lower_bar) in downstream_by_cs.get(&pipe.id).cloned().unwrap_or_default() {
+            let p_resolved_bar = result.pressures.get(&sink_id).copied().unwrap_or(0.0);
+            let deficit_bar = (lower_bar - p_resolved_bar).max(0.0);
+            max_deficit = max_deficit.max(deficit_bar);
+            deficits.push(DecisionSinkDeficit {
+                sink_id: sink_id.clone(),
+                lower_bar,
+                p_resolved_bar,
+                deficit_bar,
+            });
+            sink_slack_before.entry(sink_id.clone()).or_insert(deficit_bar);
+            sink_slack_after
+                .entry(sink_id)
+                .and_modify(|v| *v = v.min(deficit_bar))
+                .or_insert(deficit_bar);
+        }
+
+        let ratio_after = if let Some(target) =
+            decision_ratio_target(current, p_in_bar, max_deficit, cap, min_fed_p_in_bar)
+        {
+            (current + relax * (target - current)).clamp(current, cap)
+        } else {
+            current
+        };
+        let delta = (ratio_after - current).abs();
+        if delta > 1e-6 {
+            pipe.compressor_ratio_max = Some(ratio_after);
+            stats.updated += 1;
+            stats.max_delta = stats.max_delta.max(delta);
+        }
+
+        // Projection "one pass": la hausse de ratio lève ~p_in*(dr) sur les sinks aval.
+        let projected_lift = (p_in_bar * (ratio_after - current)).max(0.0);
+        for d in &deficits {
+            let projected = (d.deficit_bar - projected_lift).max(0.0);
+            sink_slack_after
+                .entry(d.sink_id.clone())
+                .and_modify(|v| *v = v.min(projected))
+                .or_insert(projected);
+        }
+
+        stats.updates.push(CompressorDecisionUpdate {
+            cs_id: pipe.id.clone(),
+            from_node: pipe.from.clone(),
+            to_node: pipe.to.clone(),
+            ratio_before: current,
+            ratio_after,
+            p_in_bar,
+            downstream_deficits: deficits,
+        });
+    }
+
+    stats.total_slack_before = sink_slack_before.values().sum::<f64>();
+    stats.total_slack_after = sink_slack_after.values().sum::<f64>();
+    stats
+}
+
 fn apply_compressor_map_updates(
     network: &mut GasNetwork,
     result: &SolverResult,
@@ -610,6 +770,11 @@ where
     let mut total_iterations = 0usize;
     let mut last_result: Option<SolverResult> = None;
     let mut best_result: Option<SolverResult> = None;
+    let decision_mode = compressor_decision_variables_enabled();
+    let mut best_slack_result: Option<SolverResult> = None;
+    let mut best_slack_network: Option<GasNetwork> = None;
+    let mut best_slack = f64::INFINITY;
+    let mut previous_slack: Option<f64> = None;
 
     for outer in 0..max_iters {
         let mut steady_config = if outer == 0 {
@@ -644,27 +809,82 @@ where
             best_result = Some(result.clone());
         }
 
-        let updates = apply_compressor_map_updates(
-            &mut adjusted_network,
-            &result,
-            catalog,
-            mode,
-            relax,
-            t_in_k,
-            config.tolerance,
-            demands,
-            1.0,
-            true,
-            prefer_estimated_flow_for_map(&result, config.tolerance),
-        );
+        let network_before_update = if decision_mode {
+            Some(adjusted_network.clone())
+        } else {
+            None
+        };
+        let (updated, max_delta) = if decision_mode {
+            let updates = apply_compressor_decision_updates(
+                &mut adjusted_network,
+                &result,
+                relax,
+                DECISION_MIN_FED_P_IN_BAR,
+            );
+            let slack = updates.total_slack_before;
+            if slack + DECISION_SLACK_EPS < best_slack {
+                best_slack = slack;
+                best_slack_result = Some(result.clone());
+                best_slack_network = network_before_update;
+            }
+            if let Some(prev) = previous_slack
+                && slack >= prev - DECISION_SLACK_EPS
+            {
+                if slack > best_slack + DECISION_SLACK_EPS
+                    && let (Some(best_net), Some(best_res)) =
+                        (best_slack_network.as_ref(), best_slack_result.as_ref())
+                {
+                    adjusted_network = best_net.clone();
+                    warm_start = Some(best_res.pressures.clone());
+                }
+                tracing::debug!(
+                    outer = outer + 1,
+                    slack,
+                    prev_slack = prev,
+                    "compressor decision outer loop: slack stopped decreasing, stopping"
+                );
+                break;
+            }
+            previous_slack = Some(slack);
+            tracing::debug!(
+                outer = outer + 1,
+                updated = updates.updated,
+                max_delta = updates.max_delta,
+                residual = result.residual,
+                slack_before = updates.total_slack_before,
+                slack_after = updates.total_slack_after,
+                "compressor decision outer iteration updated ratios"
+            );
+            (updates.updated, updates.max_delta)
+        } else {
+            let updates = apply_compressor_map_updates(
+                &mut adjusted_network,
+                &result,
+                catalog,
+                mode,
+                relax,
+                t_in_k,
+                config.tolerance,
+                demands,
+                1.0,
+                true,
+                prefer_estimated_flow_for_map(&result, config.tolerance),
+            );
+            tracing::debug!(
+                outer = outer + 1,
+                updated = updates.updated,
+                max_delta = updates.max_delta,
+                residual = result.residual,
+                "compressor map outer iteration updated ratios"
+            );
+            (updates.updated, updates.max_delta)
+        };
 
-        if result.residual <= config.tolerance
-            && (updates.updated == 0 || updates.max_delta <= RATIO_SETTLE_EPS)
-        {
+        if result.residual <= config.tolerance && (updated == 0 || max_delta <= RATIO_SETTLE_EPS) {
             return Ok(result);
         }
 
-        if updates.updated == 0 {
+        if updated == 0 {
             if result.residual <= config.tolerance {
                 return Ok(result);
             }
@@ -675,14 +895,16 @@ where
             );
             break;
         }
+    }
 
-        tracing::debug!(
-            outer = outer + 1,
-            updated = updates.updated,
-            max_delta = updates.max_delta,
-            residual = result.residual,
-            "compressor map outer iteration updated ratios"
-        );
+    if decision_mode
+        && let Some(best) = best_slack_result.clone()
+    {
+        best_result = Some(best.clone());
+        if let Some(best_net) = best_slack_network {
+            adjusted_network = best_net;
+        }
+        warm_start = Some(best.pressures.clone());
     }
 
     if let Some(result) = best_result {
@@ -808,7 +1030,10 @@ mod tests {
     use std::collections::HashMap;
 
     use super::CompressorMapMode;
-    use super::{FLOW_UPDATE_THRESHOLD_M3S, RatioUpdateContext, guarded_compressor_ratio_step};
+    use super::{
+        FLOW_UPDATE_THRESHOLD_M3S, RatioUpdateContext, decision_ratio_target,
+        guarded_compressor_ratio_step,
+    };
 
     fn ctx(q: f64, residual: f64, tolerance: f64, nominal: f64, relax: f64) -> RatioUpdateContext {
         RatioUpdateContext {
@@ -834,6 +1059,36 @@ mod tests {
         let update = guarded_compressor_ratio_step(2.0, 1.5, ctx(0.005, 1e-7, 1e-6, 4.0, 0.5));
         assert!(update.is_none());
         assert!(0.005 < FLOW_UPDATE_THRESHOLD_M3S);
+    }
+
+    #[test]
+    fn decision_ratio_target_skips_not_fed() {
+        let target = decision_ratio_target(1.2, 4.9, 8.0, 3.0, 5.0);
+        assert!(target.is_none());
+    }
+
+    #[test]
+    fn decision_ratio_target_skips_zero_deficit() {
+        let target = decision_ratio_target(1.2, 50.0, 0.0, 3.0, 5.0);
+        assert!(target.is_none());
+    }
+
+    #[test]
+    fn decision_ratio_target_bumps_normally() {
+        let target = decision_ratio_target(1.1, 50.0, 10.0, 3.0, 5.0).expect("target");
+        assert!((target - 1.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn decision_ratio_target_clamps_to_cap() {
+        let target = decision_ratio_target(1.1, 50.0, 200.0, 2.0, 5.0).expect("target");
+        assert!((target - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn decision_ratio_target_never_lowers_current() {
+        let target = decision_ratio_target(1.4, 50.0, 2.0, 1.2, 5.0);
+        assert!(target.is_none());
     }
 
     #[test]

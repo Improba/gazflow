@@ -78,6 +78,80 @@ fn reaches_merge_inlet(network: &GasNetwork, start_node: &str, merge_inlet: &str
     false
 }
 
+fn traversable_without_compressor_crossing(pipe: &Pipe) -> bool {
+    pipe.hydraulically_active()
+        && matches!(
+            pipe.kind,
+            ConnectionKind::Pipe | ConnectionKind::ShortPipe | ConnectionKind::Valve
+        )
+}
+
+/// Variante pour la recherche de sinks aval en mode variables de décision.
+/// Inclut `Resistor` et `ControlValve` (quasi-transparent dans le MVP courant),
+/// gated par `hydraulically_active()` (une CV fermée reste bloquante).
+fn traversable_for_decision_reach(pipe: &Pipe) -> bool {
+    pipe.hydraulically_active()
+        && matches!(
+            pipe.kind,
+            ConnectionKind::Pipe
+                | ConnectionKind::ShortPipe
+                | ConnectionKind::Valve
+                | ConnectionKind::Resistor
+                | ConnectionKind::ControlValve
+        )
+}
+
+/// Sinks bornés (enveloppes scénario) atteignables à l'aval d'une sortie compresseur.
+///
+/// Le parcours est non orienté sur `Pipe`/`ShortPipe`/`Valve` actifs et ne traverse
+/// aucun arc compresseur actif.
+pub(crate) fn downstream_bounded_sinks(
+    network: &GasNetwork,
+    cs_from_node: &str,
+) -> Vec<(String, f64)> {
+    let Some(start) = network.node_index(cs_from_node) else {
+        return Vec::new();
+    };
+
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::from([start]);
+    let mut sink_seen = HashSet::new();
+    let mut sinks = Vec::new();
+
+    while let Some(node) = queue.pop_front() {
+        if !visited.insert(node) {
+            continue;
+        }
+
+        if let Some(node_data) = network.graph.node_weight(node)
+            && node_data.id.starts_with("sink_")
+            && network
+                .scenario_pressure_envelope_nodes
+                .contains(&node_data.id)
+            && let Some(lower_bar) = node_data.pressure_lower_bar
+            && sink_seen.insert(node_data.id.clone())
+        {
+            sinks.push((node_data.id.clone(), lower_bar));
+        }
+
+        for edge in network.graph.edges(node) {
+            if !traversable_for_decision_reach(edge.weight()) {
+                continue;
+            }
+            queue.push_back(edge.target());
+        }
+        for edge in network.graph.edges_directed(node, Direction::Incoming) {
+            if !traversable_for_decision_reach(edge.weight()) {
+                continue;
+            }
+            queue.push_back(edge.source());
+        }
+    }
+
+    sinks.sort_by(|a, b| a.0.cmp(&b.0));
+    sinks
+}
+
 fn classify_compressor_flow_roles(network: &GasNetwork) -> CompressorFlowRoles {
     let high_transport: Vec<&Pipe> = active_compressor_pipes(network)
         .into_iter()
@@ -380,6 +454,28 @@ mod tests {
             kind: ConnectionKind::Valve,
             ..Default::default()
         });
+    }
+
+    #[test]
+    fn downstream_bounded_sinks_do_not_cross_compressor() {
+        let mut net = GasNetwork::new();
+        add_cs(&mut net, "CS_A", "src", "mid", 4.0);
+        add_link(&mut net, "mid", "sink_local", "v_local");
+        add_cs(&mut net, "CS_B", "mid", "far", 4.0);
+        add_link(&mut net, "far", "sink_far", "v_far");
+
+        if let Some(node) = net.node_mut("sink_local") {
+            node.pressure_lower_bar = Some(41.0);
+        }
+        if let Some(node) = net.node_mut("sink_far") {
+            node.pressure_lower_bar = Some(55.0);
+        }
+        net.scenario_pressure_envelope_nodes
+            .insert("sink_local".into());
+        net.scenario_pressure_envelope_nodes.insert("sink_far".into());
+
+        let sinks = downstream_bounded_sinks(&net, "mid");
+        assert_eq!(sinks, vec![("sink_local".into(), 41.0)]);
     }
 
     #[test]

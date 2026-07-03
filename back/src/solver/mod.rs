@@ -31,9 +31,10 @@ pub use continuation::{
     solve_steady_state_with_preset,
 };
 pub use compressor_loop::{
+    CompressorDecisionUpdate, CompressorDecisionUpdateStats, CompressorMapMode,
+    DecisionSinkDeficit, RatioUpdateStats, apply_compressor_decision_updates,
     apply_map_ratios_after_continuation_step, compressor_accept_partial_enabled,
-    estimate_station_norm_flow, estimated_compressor_map_flow_m3s, CompressorMapMode,
-    RatioUpdateStats, compressor_map_mode,
+    compressor_map_mode, estimate_station_norm_flow, estimated_compressor_map_flow_m3s,
 };
 pub use demand::{ClientCategory, DemandProfile, normalize_daily_weights, resolve_demands};
 pub use gas_properties::GasComposition;

@@ -344,6 +344,13 @@ pub fn entry_transport_anchor_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Active le mode compresseurs variables de décision (Phase III, opt-in).
+pub fn compressor_decision_variables_enabled() -> bool {
+    std::env::var("GAZFLOW_COMPRESSOR_DECISION_VARIABLES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Pression d'ancrage des entries (bar). Défaut 70 bar (régime transport).
 pub fn entry_transport_anchor_bar() -> f64 {
     std::env::var("GAZFLOW_ENTRY_TRANSPORT_ANCHOR_BAR")
@@ -1656,6 +1663,16 @@ mod tests {
         unsafe {
             std::env::remove_var("GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES");
         }
+    }
+
+    #[test]
+    #[serial]
+    fn test_compressor_decision_variables_flag_defaults_off() {
+        unsafe { std::env::remove_var("GAZFLOW_COMPRESSOR_DECISION_VARIABLES") };
+        assert!(!compressor_decision_variables_enabled());
+        unsafe { std::env::set_var("GAZFLOW_COMPRESSOR_DECISION_VARIABLES", "true") };
+        assert!(compressor_decision_variables_enabled());
+        unsafe { std::env::remove_var("GAZFLOW_COMPRESSOR_DECISION_VARIABLES") };
     }
 
     #[test]

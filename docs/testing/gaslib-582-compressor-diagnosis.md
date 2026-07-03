@@ -296,3 +296,42 @@ Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur 
 Prochaine étape d'implémentation : traiter les compresseurs comme **variables de décision** (modèle « validation of nominations ») plutôt que de pousser le ratio à l'aveugle. Objectif : combler les gaps marginaux `sink_122` (4 bar) et `sink_125` (6 bar) en activant sélectivement les CS présents sur les chemins alimentés, sans toucher aux branches topologiquement infeasibles (`sink_88`/`sink_83`).
 
 Choix de modélisation ouverts : booléen on/off par CS (MINLP relaxé) vs ratio continu borné, coût de démarrage, stratégie de sélection (greedy sur shortfall vs solve global). Détails à cadrer au lancement.
+
+## Phase III — compresseurs en variables de décision (juillet 2026, implémenté)
+
+Cadre scientifique : relaxation NLP du problème de **validation of nominations** (NoVa, Pfetsch/Geißler/Koch/Morsi/Schmidt — ZIB-Report 12-41). Le ratio compresseur `r ∈ [r_min, r_cap]` est traité comme variable de décision continue, et l'outer-loop minimise le slack total de violation des bornes P scénario par descente de coordonnées (un CS à la fois, re-solve, gate sur slack décroissant + revert au meilleur état).
+
+### Implémentation (opt-in, défaut OFF)
+
+- Flag `GAZFLOW_COMPRESSOR_DECISION_VARIABLES=1` (`back/src/gaslib/scenario.rs`).
+- Helper pur `decision_ratio_target(current, p_in, deficit, cap, min_fed_p_in)` (`compressor_loop.rs`) : `r_target = (p_in + deficit)/p_in`, clamp `[current, cap]`, skip si branche non alimentée (`p_in < 5 bar`) ou déficit nul. Tests unitaires inclus.
+- `downstream_bounded_sinks(network, cs_outlet)` (`flow_topology.rs`) : BFS non orientée depuis l'**outlet** compresseur, traverse `Pipe`/`ShortPipe`/`Valve`/`Resistor`/`ControlValve` actifs (CV quasi-transparente en MVP), ne traverse pas un compresseur actif. Fonction de traversabilité **dédiée** (`traversable_for_decision_reach`) pour ne pas impacter la traversabilité partagée (`reaches_merge_inlet`/`estimated_map_flow_m3s`) et préserver les baselines.
+- `apply_compressor_decision_updates` remplace `apply_compressor_map_updates` dans `solve_with_compressor_map` quand le flag est ON ; outer-loop existant (best_slack + revert) réutilisé.
+- Diagnostic JSON `compressor_decision_report` (par CS : `ratio_before/after`, `p_in_bar`, `downstream_deficits[]`, `total_slack_before/after`).
+
+### Résultats smoke (entry-anchor 70 + dual contract + shortpipe merge)
+
+| Config | Résidu | Ratios finaux | Slack projeté |
+|--------|--------|---------------|---------------|
+| baseline (flag OFF) | **23,4957** m³/s | 1,08 (tous) | — |
+| decision ON | **23,4957** m³/s | 1,08 (tous, **reverté**) | 66,8 → 24,4 (projection) |
+
+Le pass décision **monte bien les ratios** (1,08 → ~1,21) et projette un slack 66,8 → 24,4 bar, mais l'outer-loop **revert** à 1,08 : la re-solve avec ratios 1,21 ne réduit pas le slack réel, donc la gate « revert au meilleur » restore l'état baseline. Les slips finaux sont identiques au baseline (`sink_88` 23,5, `sink_83` 19,0, `sink_125` 6,1, `sink_122` 4,0…).
+
+### Verdict scientifique (cause racine = modèle compresseur soft)
+
+Le couplage compresseur du MVP est **soft** : `compressor_pressure_from_coeff` (`steady_state.rs` L331) traite le compresseur comme un « tuyau » `P_to² ≈ coeff·P_from² − terme_de_frottement` avec `coeff = r²`, ramolli par `effective_compressor_pressure_from_coeff` (overshoot cap `COMPRESSOR_ACHIEVED_RATIO_OVERSHOOT = 1,03`). Monter `r_max` à 1,21 **n'applique pas** `P_out = 1,21·P_in` comme contrainte dure : le débit s'ajuste, la pression aval ne suit pas, et les déficits des sinks éloignés (14 hops, friction 70 → 35) ne diminuent pas. Symptôme additionnel : les débits compresseurs reportés en mode measurement (~1,9 M m³/s) sont non physiques, cohérents avec un couplage soft dégénéré.
+
+Conséquence : **la descente de coordonnées NoVa ne peut pas descendre** sur le modèle soft actuel. Le ratio n'est pas une vraie variable de décision faisabilisante.
+
+### Sinks marginaux — verdict topologique
+
+- `sink_122` (gap 4,0 bar) : **épinglée à 70 bar** par l'ancre entry-transport via la fusion shortPipe_55 (`sink_122 ↔ source_10`, source ancrée maître). Aucun compresseur ne peut la lever (CS4 déjà à ratio 1,08 > cible 1,058 ; et `sink_122` est fixée par l'ancre, pas par l'outlet de CS4). Non closable par variable de décision — nécessiterait de relever l'ancre entry à 74 bar.
+- `sink_125` (gap 6,1 bar) : alimentée par friction depuis 70 bar (14 hops), atteignable topologiquement depuis les outlets compresseurs (après inclusion de ControlValve/Resistor dans la BFS), mais **non levée** en pratique par le ratio soft (cf. supra).
+- `sink_88` / `sink_83` (23,5 + 19,0 bar) : **hydrauliquement non alimentés** (branche de distribution longue, pas de haute pression amont). Non closables par quelque compresseur que ce soit. Infeasibilité topologique réelle confirmée.
+
+### Conclusion Phase III + prochaine étape
+
+L'infrastructure NoVa (variables de décision ratio continu + descente sur slack) est en place et correcte, mais **ineffective sur le modèle compresseur soft MVP**. Pour que la feasibility NoVa fonctionne, il faut un **couplage compresseur dur** : `P_out = r · P_in` comme contrainte (r ∈ [r_min, r_cap] DOF), à la place du coeff P² soft. C'est la formulation NLP/MINLP de la littérature (Pfetsch et al., modèle « compressor outlet pressure setpoint »). C'est un changement de solveur plus profond (réécriture du term compresseur dans le Jacobian Newton + contrainte d'égalité sur P_out), à cadrer comme Phase IV.
+
+Statut : baseline 582 préservée (flag OFF = 2,045 nominal / 23,50 entry-anchor, inchangés). GasLib-11 reste en quarantaine.
