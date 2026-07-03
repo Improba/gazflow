@@ -279,3 +279,20 @@ Après la correction, le résidu 23,5 m³/s est **dominé à 100 %** par `sink_8
 3. **Compresseur / enthalpie** : lever le plancher massique si le réseau peut physiquement alimenter les planchers P.
 
 Objectif Phase I : convergence nomination intacte vers **3×10⁻³ m³/s** sur mild_618 (**non atteint** ; cause racine identifiée : infaisabilité contractuelle P sous MVP Q-seul).
+
+## Décision de juillet 2026 : statut 582 accepté, GasLib-11 en quarantaine
+
+À l'issue de la Phase II (correction alias + sonde), le bilan est :
+
+- **582 (mild_618) — statut accepté** :
+  - `sink_88` / `sink_83` : infeasibilité topologique **réelle** (43–57 hops de distribution sans compresseur, control valves quasi-transparentes, chute 70 → 2,5 bar par friction pure). Résultat négatif valide du problème de validation of nominations : la nomination nécessite des investissements (compression ou renforcement) pour être satisfiable.
+  - `sink_122` (entry 70 < bound 74) et `sink_125` (alimenté 70 → 35 bar par friction) : **marginaux**. Un compresseur est présent sur le chemin (`innode_63 → innode_53`, CS4 ratio 1,226) ; son activation pourrait combler le gap restant. C'est la voie d'avancée retenue (Phase III).
+  - Baselines intactes : nominal 2,045 m³/s ; entry-anchor 23,50 m³/s.
+
+- **GasLib-11 — en quarantaine** (`#[ignore]`, commit `a9b03aa`) : le test `test_gaslib_11_vs_reference_solution` échouait à ~8 % sur `exit02`, mais l'échec n'est pas un bug modèle. Diagnostic complet dans [gaslib-11-quarantine.md](./gaslib-11-quarantine.md) : `.scn` sous-déterminé (aucune P d'entry fixée) + référence auto-générée qui viole les `pressureMax` natifs du `.net` (N05/exit02/exit03 à 75,6 bar > 70/60). Oracle invalide ; le compresseur CS02 applique bien son ratio 1,08. Prototype « bornes pressureMax natives + cap compresseur » reverté (rend GasLib-11 infeasible, neutre sur 582). Réactivation conditionnée à un oracle officiel ZIB `.sol` ou à un ancrage physique + réseau feasible sous bornes strictes.
+
+## Phase III — compresseurs en variables de décision (suite, juillet 2026)
+
+Prochaine étape d'implémentation : traiter les compresseurs comme **variables de décision** (modèle « validation of nominations ») plutôt que de pousser le ratio à l'aveugle. Objectif : combler les gaps marginaux `sink_122` (4 bar) et `sink_125` (6 bar) en activant sélectivement les CS présents sur les chemins alimentés, sans toucher aux branches topologiquement infeasibles (`sink_88`/`sink_83`).
+
+Choix de modélisation ouverts : booléen on/off par CS (MINLP relaxé) vs ratio continu borné, coût de démarrage, stratégie de sélection (greedy sur shortfall vs solve global). Détails à cadrer au lancement.
