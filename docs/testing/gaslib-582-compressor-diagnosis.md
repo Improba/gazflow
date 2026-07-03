@@ -335,3 +335,39 @@ Conséquence : **la descente de coordonnées NoVa ne peut pas descendre** sur le
 L'infrastructure NoVa (variables de décision ratio continu + descente sur slack) est en place et correcte, mais **ineffective sur le modèle compresseur soft MVP**. Pour que la feasibility NoVa fonctionne, il faut un **couplage compresseur dur** : `P_out = r · P_in` comme contrainte (r ∈ [r_min, r_cap] DOF), à la place du coeff P² soft. C'est la formulation NLP/MINLP de la littérature (Pfetsch et al., modèle « compressor outlet pressure setpoint »). C'est un changement de solveur plus profond (réécriture du term compresseur dans le Jacobian Newton + contrainte d'égalité sur P_out), à cadrer comme Phase IV.
 
 Statut : baseline 582 préservée (flag OFF = 2,045 nominal / 23,50 entry-anchor, inchangés). GasLib-11 reste en quarantaine.
+
+## Phase IV — couplage compresseur dur (tentative, juillet 2026, reverté)
+
+Pour rendre la feasibility NoVa effective (Phase III a montré que le modèle soft bloque la descente), la littérature (Pfetsch/Geißler, ZIB-Report 12-41) impose un **couplage dur** `P_out = r · P_in` (« compressor outlet pressure setpoint ») à la place du coeff P² soft.
+
+### Approche tentée (Option A : ratio-alias)
+
+Réutilisation de la mécanique d'alias du Newton (`ShortPipeAliasContext`) étendue avec un facteur `r²` par esclave :
+- flag opt-in `GAZFLOW_COMPRESSOR_HARD_COUPLING=1` (actif seulement avec `GAZFLOW_COMPRESSOR_DECISION_VARIABLES=1`) ;
+- `CompressorHardCouplingContext` : outlet `b` esclave de l'inlet `a` avec `P_b² = r²·P_a²`, arc compresseur retiré du graphe de flow, demand du outlet mergé dans l'inlet, redirection lignes/colonnes Jacobian (colonne esclave → maître avec facteur `r²`) ;
+- résolution de chaîne pour compressors en cascade (composition des ratios) ;
+- diagnostic `compressor_hard_coupling_report` ;
+- tests unitaires (math r², merge demand, exclusion arc, skip shortpipe-slaves).
+
+### Résultat smoke 582 (entry-anchor + decision + hard-coupling)
+
+| | résidu | sink_125 shortfall | sink_122 shortfall |
+|--|--------|---------------------|----------------------|
+| flag OFF (Phase III) | 23,4957 | 6,136 | 4,037 |
+| flag ON | 23,4953 | 6,128 | 4,059 |
+
+**Aucun gain**. Le rapport `compressor_hard_coupling_report` montre que la contrainte `P_out = r·P_in` n'est **pas respectée pour 4/5 compresseurs** (residual 9 à 32 bar ; CS5 seule respectée). Les ratios atteints (~1,49 pour CS1-3, ~1,23 pour CS4) suggèrent une **sur-composition des `ratio_sq`** dans la résolution de chaîne ou une incohérence sync/Newton (P_out n'étant pas une inconnue libre, sa valeur vient uniquement de `sync_pressures` ; un timing inconsistent laisse P_out incohérent avec P_in).
+
+### Décision : revert
+
+L'implémentation (450 lignes dans `newton.rs`) est numériquement buggy et ne respecte pas le couplage. **Revertée** pour garder le repo propre (pas de code numérique cassé). Phase III (clean, testée, baseline-preserving) conservée.
+
+### Verdict + next step
+
+Le couplage dur est bien le bon chemin scientifique mais c'est un **refactor substantiel du Newton** (l'alias existant remappe les indices `slave→master`, ce qui suppose `P_slave = P_master` ; un ratio `r²` casse ce remappage et exige une transformation `r²` dans `pipe_flow_derivatives` + redirection Jacobian). Une implémentation correcte demande :
+
+1. Soit Option A fiabilisée : debug de la résolution de chaîne (vérifier `ratio_sq_to_master` ne sur-compose pas), sync_pressures après **chaque** mise à jour de P_in (y compris line-search interne), et cohérence résidu/Jacobian avec la transformation `r²`.
+2. Soit Option B : inconnue de débit compresseur `Q_c` + équation de couplage `P_out² − r²·P_in² = 0` (élargit le vecteur d'inconnues pression → pression + débits compresseurs), conceptuellement plus clean mais plus invasif pour l'indexage.
+3. Stabilisation Picard éventuelle (appliquer `r²` graduellement sur quelques itérations internes) pour éviter la divergence Newton.
+
+Recommandation : Phase IV mérite un effort dédié et ciblé (pas un one-shot), avec bench intermédiaire sur un réseau trivial à un seul compresseur avant 582. La baseline 582 et le verdict Phase III (soft = blocker NoVa) restent acquis.
