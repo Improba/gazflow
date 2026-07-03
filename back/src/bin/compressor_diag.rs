@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use gazflow_back::compressor::{CompressorOperatingContext, effective_ratio_with_nominal};
 use gazflow_back::gaslib::{
-    compressor_decision_variables_enabled,
+    compressor_decision_variables_enabled, compressor_hard_coupling_enabled,
     detect_shortpipe_boundary_pairs, effective_solver_demands_for_network,
     enrich_scenario_with_balance_hub,
     load_network, load_scenario_demands, network_with_scenario_boundaries,
@@ -112,6 +112,43 @@ fn compressor_decision_report(
     Some(report)
 }
 
+fn compressor_hard_coupling_report(
+    network: &GasNetwork,
+    result: &SolverResult,
+) -> Option<Vec<CompressorHardCouplingEntry>> {
+    if !compressor_hard_coupling_enabled() || !compressor_decision_variables_enabled() {
+        return None;
+    }
+    let mut entries = Vec::new();
+    for pipe in network.pipes() {
+        if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
+            continue;
+        }
+        let r = pipe
+            .compressor_ratio_max
+            .or(pipe.equipment.compressor_nominal_ratio)
+            .unwrap_or(1.08)
+            .max(1.0);
+        let p_in = result.pressures.get(&pipe.from).copied().unwrap_or(0.0);
+        let p_out = result.pressures.get(&pipe.to).copied().unwrap_or(0.0);
+        let p_out_expected = r * p_in;
+        let achieved = if p_in > 1e-6 { p_out / p_in } else { 0.0 };
+        entries.push(CompressorHardCouplingEntry {
+            cs_id: pipe.id.clone(),
+            from_node: pipe.from.clone(),
+            to_node: pipe.to.clone(),
+            declared_ratio: r,
+            achieved_ratio: achieved,
+            p_in_bar: p_in,
+            p_out_bar: p_out,
+            p_out_expected_bar: p_out_expected,
+            coupling_residual_bar: p_out - p_out_expected,
+        });
+    }
+    entries.sort_by(|a, b| a.cs_id.cmp(&b.cs_id));
+    Some(entries)
+}
+
 #[derive(Debug)]
 struct CliArgs {
     dataset: String,
@@ -194,6 +231,8 @@ struct DiagOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     compressor_decision_report: Option<Vec<CompressorDecisionReportEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    compressor_hard_coupling_report: Option<Vec<CompressorHardCouplingEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
@@ -248,6 +287,24 @@ struct CompressorDecisionReportEntry {
     downstream_deficits: Vec<CompressorDecisionSinkDeficit>,
     total_slack_before: f64,
     total_slack_after: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct CompressorHardCouplingEntry {
+    cs_id: String,
+    from_node: String,
+    to_node: String,
+    /// Ratio déclaré sur le réseau à l'instant du diagnostic (peut différer du
+    /// ratio effectif si l'outer-loop de décision a modifié r sur un clone).
+    declared_ratio: f64,
+    /// Ratio réalisé P_out / P_in (reflète le r réellement appliqué au solve).
+    achieved_ratio: f64,
+    p_in_bar: f64,
+    p_out_bar: f64,
+    /// P_out attendu = declared_ratio · P_in.
+    p_out_expected_bar: f64,
+    /// P_out − P_out_attendu (vs ratio déclaré).
+    coupling_residual_bar: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -558,6 +615,7 @@ fn skipped_output(
         flags,
         compressor_stations: Vec::new(),
         compressor_decision_report: None,
+        compressor_hard_coupling_report: None,
         reason: Some(reason),
         error: None,
         mass_balance: None,
@@ -816,6 +874,8 @@ fn main() -> Result<()> {
             let contract_violated =
                 contract_active && result.residual > preset.tolerance;
             let compressor_decision_report = compressor_decision_report(&network, &result);
+            let compressor_hard_coupling_report =
+                compressor_hard_coupling_report(&network, &result);
             DiagOutput {
                 status: if contract_violated {
                     "contract_violation"
@@ -832,6 +892,7 @@ fn main() -> Result<()> {
                 flags,
                 compressor_stations: stations,
                 compressor_decision_report,
+                compressor_hard_coupling_report,
                 reason: if contract_violated {
                     Some(format!(
                         "residual {:.4e} m³/s exceeds tolerance {:.4e} (contract Q+P)",
@@ -872,6 +933,7 @@ fn main() -> Result<()> {
                 flags,
                 compressor_stations: stations,
                 compressor_decision_report: compressor_decision_report(&network, &preview),
+                compressor_hard_coupling_report: compressor_hard_coupling_report(&network, &preview),
                 reason: None,
                 error: Some(err_text),
                 mass_balance: None,

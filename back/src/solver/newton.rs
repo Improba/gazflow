@@ -14,6 +14,7 @@ use crate::compressor::{
     head_mismatch_penalty_psq, isentropic_outlet_temperature_k,
 };
 use crate::gaslib::{
+    compressor_decision_variables_enabled, compressor_hard_coupling_enabled,
     detect_shortpipe_boundary_pairs, scenario_boundary_active_envelopes_enabled,
     scenario_boundary_partial_accept_enabled, scenario_pressure_clamp_in_newton_enabled,
     scenario_pressure_envelopes_enabled, scenario_pressure_in_newton_enabled,
@@ -114,7 +115,13 @@ impl PressureBoundContext {
 /// Alias pression / bilan massique pour couples shortPipe (source esclave → sink maître).
 struct ShortPipeAliasContext {
     resolve: Vec<usize>,
-    slaves: Vec<(usize, usize)>,
+    /// (slave, master, ratio_sq) — `P_slave² = ratio_sq · P_master²`.
+    /// ratio_sq = 1.0 pour les fusions shortPipe (P_slave = P_master) ;
+    /// ratio_sq = r² pour les outlets compresseurs en couplage dur (Phase IV).
+    slaves: Vec<(usize, usize, f64)>,
+    /// Facteur de ratio par nœud (r² si le nœud est un outlet compresseur couplé,
+    /// 1.0 sinon). Sert à calculer le `from/to_pressure_factor` des `IndexedPipe`.
+    ratio_factor: Vec<f64>,
 }
 
 impl ShortPipeAliasContext {
@@ -123,10 +130,12 @@ impl ShortPipeAliasContext {
             return Self {
                 resolve: (0..n).collect(),
                 slaves: Vec::new(),
+                ratio_factor: vec![1.0; n],
             };
         }
         let mut resolve = (0..n).collect::<Vec<_>>();
         let mut slaves = Vec::new();
+        let mut ratio_factor = vec![1.0_f64; n];
         for pair in detect_shortpipe_boundary_pairs(network) {
             let Some(&master) = id_pos.get(&pair.sink_id) else {
                 continue;
@@ -143,8 +152,47 @@ impl ShortPipeAliasContext {
                 }
             }
             resolve[slave] = master;
-            slaves.push((slave, master));
+            slaves.push((slave, master, 1.0));
         }
+
+        // Phase IV : couplage dur compresseur. L'outlet (to) devient esclave de
+        // l'inlet (from) avec P_out² = r²·P_in². L'arc compresseur est retiré du
+        // graphe de flow (cf. IndexedPipe build) ; la fusion de mass-balance
+        // (remap resolve + merge demand) réutilise la mécanique shortPipe.
+        let hard_coupling = compressor_hard_coupling_enabled()
+            && compressor_decision_variables_enabled();
+        if hard_coupling {
+            for pipe in network.pipes() {
+                if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
+                    continue;
+                }
+                let Some(&outlet) = id_pos.get(&pipe.to) else { continue; };
+                let Some(&inlet) = id_pos.get(&pipe.from) else { continue; };
+                // Respecte le resolve shortPipe déjà appliqué (inlet/outlet via leur canonical).
+                let inlet_c = resolve[inlet];
+                let outlet_c = resolve[outlet];
+                if outlet_c == inlet_c {
+                    continue;
+                }
+                // Un nœud déjà esclave (shortPipe ou autre compresseur) n'est pas ré-aliasé.
+                if resolve[outlet_c] != outlet_c {
+                    continue;
+                }
+                let r = pipe
+                    .compressor_ratio_max
+                    .or(pipe.equipment.compressor_nominal_ratio)
+                    .unwrap_or(1.08)
+                    .max(1.0);
+                if !r.is_finite() || r <= 1.0 + 1e-9 {
+                    continue;
+                }
+                resolve[outlet_c] = inlet_c;
+                let r2 = r * r;
+                slaves.push((outlet_c, inlet_c, r2));
+                ratio_factor[outlet_c] = r2;
+            }
+        }
+
         for i in 0..n {
             let mut r = i;
             while resolve[r] != r {
@@ -157,7 +205,7 @@ impl ShortPipeAliasContext {
                 cur = next;
             }
         }
-        Self { resolve, slaves }
+        Self { resolve, slaves, ratio_factor }
     }
 
     fn is_canonical(&self, idx: usize) -> bool {
@@ -165,24 +213,34 @@ impl ShortPipeAliasContext {
     }
 
     fn sync_pressures(&self, pressures_sq: &mut [f64]) {
-        for &(slave, master) in &self.slaves {
-            pressures_sq[slave] = pressures_sq[master];
+        for &(slave, master, ratio_sq) in &self.slaves {
+            pressures_sq[slave] = ratio_sq * pressures_sq[master];
         }
     }
 
     fn merge_demands_vec(&self, demands_vec: &mut [f64]) {
-        for &(slave, master) in &self.slaves {
+        for &(slave, master, _) in &self.slaves {
             demands_vec[master] += demands_vec[slave];
             demands_vec[slave] = 0.0;
         }
     }
 
     fn inherit_fixed(&self, fixed: &mut HashMap<usize, f64>) {
-        for &(slave, master) in &self.slaves {
-            if let Some(&p_sq) = fixed.get(&master) {
-                fixed.insert(slave, p_sq);
+        for &(slave, master, ratio_sq) in &self.slaves {
+            if let Some(&master_p_sq) = fixed.get(&master) {
+                fixed.insert(slave, master_p_sq * ratio_sq);
+                continue;
+            }
+            if let Some(&slave_p_sq) = fixed.get(&slave) {
+                fixed.insert(master, (slave_p_sq / ratio_sq).max(MIN_PRESSURE_SQ));
             }
         }
+    }
+
+    /// Facteur de pression (r²) à appliquer sur l'endpoint d'un pipe dont le
+    /// nœud brut est `raw_idx`. 1.0 sauf pour les outlets compresseurs couplés.
+    fn pressure_factor_for(&self, raw_idx: usize) -> f64 {
+        self.ratio_factor.get(raw_idx).copied().unwrap_or(1.0)
     }
 }
 
@@ -262,6 +320,11 @@ struct IndexedPipe {
     pressure_cap_ratio: Option<f64>,
     height_from_m: f64,
     height_to_m: f64,
+    /// Facteur de pression (r²) sur l'endpoint `from` pour le couplage dur
+    /// compresseur (P_from²_effectif = from_pressure_factor · P_from²). 1.0 sinon.
+    from_pressure_factor: f64,
+    /// Idem sur l'endpoint `to`.
+    to_pressure_factor: f64,
 }
 
 struct NewtonMapContext<'a> {
@@ -563,6 +626,8 @@ where
         .collect();
 
     let shortpipe_alias = ShortPipeAliasContext::from_network(network, &id_pos, n);
+    let hard_coupling_active = compressor_hard_coupling_enabled()
+        && compressor_decision_variables_enabled();
 
     let pressure_bounds = if scenario_pressure_envelopes_enabled()
         && scenario_pressure_in_newton_enabled()
@@ -619,9 +684,16 @@ where
             if !pipe.hydraulically_active() {
                 return None;
             }
-            let from_idx = shortpipe_alias.resolve[*id_pos.get(&pipe.from)?];
-            let to_idx = shortpipe_alias.resolve[*id_pos.get(&pipe.to)?];
+            let raw_from = *id_pos.get(&pipe.from)?;
+            let raw_to = *id_pos.get(&pipe.to)?;
+            let from_idx = shortpipe_alias.resolve[raw_from];
+            let to_idx = shortpipe_alias.resolve[raw_to];
             if from_idx == to_idx {
+                return None;
+            }
+            // Phase IV : en couplage dur, l'arc compresseur est retiré du graphe de
+            // flow (remplacé par l'alias ratio P_out² = r²·P_in² sur l'outlet).
+            if hard_coupling_active && pipe.kind == ConnectionKind::CompressorStation {
                 return None;
             }
             let (length_km, diameter_mm, roughness_mm) = effective_pipe_geometry(pipe);
@@ -640,6 +712,8 @@ where
                 pressure_cap_ratio: pipe.equipment.compressor_pressure_cap_ratio,
                 height_from_m: node_heights.get(&pipe.from).copied().unwrap_or(0.0),
                 height_to_m: node_heights.get(&pipe.to).copied().unwrap_or(0.0),
+                from_pressure_factor: shortpipe_alias.pressure_factor_for(raw_from),
+                to_pressure_factor: shortpipe_alias.pressure_factor_for(raw_to),
             })
         })
         .collect();
@@ -1321,15 +1395,22 @@ fn pipe_flow_derivatives(
         );
     }
 
-    let p_from = pressures_sq[pipe.from_idx].sqrt();
-    let p_to = pressures_sq[pipe.to_idx].sqrt();
+    // Pressions effectives aux endpoints : pour le couplage dur compresseur
+    // (Phase IV), un endpoint aliasé comme outlet compresseur a sa pression²
+    // multipliée par r² (P_out² = r²·P_in²). Les conductances retournées par
+    // `pipe_flow_with_gravity` sont exprimées vs ces pressions effectives ; on
+    // les remultiplie par le facteur pour revenir aux pressions nodales.
+    let p_from_sq = pipe.from_pressure_factor * pressures_sq[pipe.from_idx];
+    let p_to_sq = pipe.to_pressure_factor * pressures_sq[pipe.to_idx];
+    let p_from = p_from_sq.sqrt();
+    let p_to = p_to_sq.sqrt();
     let avg_p = 0.5 * (p_from + p_to);
     let t_local = inlet_temperature_k_for_pipe(pipe, map_ctx, pressures_sq);
     let mut pressure_from_coeff = if pipe.pressure_from_coeff > 1.0 + 1e-6 {
         effective_compressor_pressure_from_coeff(
             pipe.pressure_from_coeff,
-            pressures_sq[pipe.from_idx],
-            pressures_sq[pipe.to_idx],
+            p_from_sq,
+            p_to_sq,
         )
     } else {
         pipe.pressure_from_coeff
@@ -1351,8 +1432,8 @@ fn pipe_flow_derivatives(
         density_kg_per_m3: rho,
     };
     let (q_boot, _, _) = pipe_flow_with_gravity(
-        pressures_sq[pipe.from_idx],
-        pressures_sq[pipe.to_idx],
+        p_from_sq,
+        p_to_sq,
         pressure_from_coeff,
         resistance,
         scaling,
@@ -1362,9 +1443,9 @@ fn pipe_flow_derivatives(
         pressure_from_coeff =
             compressor_coeff_from_map(pipe, pressures_sq, q_boot.abs(), map_ctx.unwrap());
     }
-    let (q, conductance_from, conductance_to) = pipe_flow_with_gravity(
-        pressures_sq[pipe.from_idx],
-        pressures_sq[pipe.to_idx],
+    let (q, conductance_from_eff, conductance_to_eff) = pipe_flow_with_gravity(
+        p_from_sq,
+        p_to_sq,
         pressure_from_coeff,
         resistance,
         scaling,
@@ -1372,8 +1453,8 @@ fn pipe_flow_derivatives(
     );
     PipeFlowDerivatives {
         q,
-        conductance_from,
-        conductance_to,
+        conductance_from: conductance_from_eff * pipe.from_pressure_factor,
+        conductance_to: conductance_to_eff * pipe.to_pressure_factor,
     }
 }
 
@@ -1687,8 +1768,10 @@ fn build_physical_initial_guess(
 
         for (pipe_idx, pipe) in pipes.iter().enumerate() {
             let c = linear_conductances[pipe_idx];
-            let p_from = pressures_sq[pipe.from_idx].sqrt();
-            let p_to = pressures_sq[pipe.to_idx].sqrt();
+            let p_from_sq = pipe.from_pressure_factor * pressures_sq[pipe.from_idx];
+            let p_to_sq = pipe.to_pressure_factor * pressures_sq[pipe.to_idx];
+            let p_from = p_from_sq.sqrt();
+            let p_to = p_to_sq.sqrt();
             let rho = gas_density_kg_per_m3_with_composition(
                 0.5 * (p_from + p_to),
                 DEFAULT_GAS_TEMPERATURE_K,
@@ -1702,14 +1785,14 @@ fn build_physical_initial_guess(
                 rho,
             );
             let q_lin = c
-                * (pipe.pressure_from_coeff * pressures_sq[pipe.from_idx]
-                    - pressures_sq[pipe.to_idx]
+                * (pipe.pressure_from_coeff * p_from_sq
+                    - p_to_sq
                     - grav);
 
             f_node[pipe.from_idx] -= q_lin;
             f_node[pipe.to_idx] += q_lin;
-            j_diag[pipe.from_idx] += c * pipe.pressure_from_coeff;
-            j_diag[pipe.to_idx] += c;
+            j_diag[pipe.from_idx] += c * pipe.pressure_from_coeff * pipe.from_pressure_factor;
+            j_diag[pipe.to_idx] += c * pipe.to_pressure_factor;
         }
 
         for i in 0..node_count {
@@ -1959,6 +2042,8 @@ mod tests {
                     pressure_cap_ratio: pipe.equipment.compressor_pressure_cap_ratio,
                     height_from_m: node_heights.get(&pipe.from).copied().unwrap_or(0.0),
                     height_to_m: node_heights.get(&pipe.to).copied().unwrap_or(0.0),
+                    from_pressure_factor: 1.0,
+                    to_pressure_factor: 1.0,
                 })
             })
             .collect();
@@ -2002,6 +2087,94 @@ mod tests {
         assert!(
             (fd_d_fsk_d_psk - expected_d_fsk_d_psk).abs() <= tol_sk,
             "dF_SK/dπ_SK mismatch: fd={fd_d_fsk_d_psk}, analytic={expected_d_fsk_d_psk}"
+        );
+    }
+
+    /// Réseau trivial : source (50 bar fixés) → compresseur (r=1,5) → tuyau → sink.
+    /// En couplage dur, P_outlet doit valoir exactement r·P_inlet = 75 bar.
+    fn hard_coupling_trivial_network() -> GasNetwork {
+        let mut net = GasNetwork::new();
+        for (id, fixed) in [("S", Some(50.0)), ("M", None), ("T", None)] {
+            net.add_node(Node {
+                id: id.to_string(),
+                x: 0.0,
+                y: 0.0,
+                lon: None,
+                lat: None,
+                height_m: 0.0,
+                pressure_lower_bar: None,
+                pressure_upper_bar: None,
+                pressure_fixed_bar: fixed,
+                flow_min_m3s: None,
+                flow_max_m3s: None,
+            });
+        }
+        // Compresseur S → M, ratio 1.5, cap 1.5 (non-"transport" pour éviter
+        // l'outer loop de blending ; le ratio reste fixé à 1.5).
+        net.add_pipe(Pipe {
+            id: "CS".into(),
+            from: "S".into(),
+            to: "M".into(),
+            kind: ConnectionKind::CompressorStation,
+            is_open: true,
+            length_km: 0.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.05,
+            compressor_ratio_max: Some(1.5),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec {
+                compressor_pressure_cap_ratio: Some(1.5),
+                compressor_nominal_ratio: None,
+                ..EquipmentSpec::default()
+            },
+        });
+        // Tuyau M → T (conductance finie pour évacuer le débit du sink).
+        net.add_pipe(Pipe {
+            id: "PM".into(),
+            from: "M".into(),
+            to: "T".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 5.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.05,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
+        });
+        net
+    }
+
+    #[test]
+    #[serial]
+    fn test_hard_coupling_enforces_ratio_on_trivial_network() {
+        unsafe {
+            std::env::set_var("GAZFLOW_SCENARIO_SHORTPIPE_MERGE_BOUNDARIES", "1");
+            std::env::set_var("GAZFLOW_COMPRESSOR_DECISION_VARIABLES", "1");
+            std::env::set_var("GAZFLOW_COMPRESSOR_HARD_COUPLING", "1");
+        }
+        let network = hard_coupling_trivial_network();
+        let mut demands = HashMap::new();
+        demands.insert("T".to_string(), -5.0);
+        let result = solve_steady_state(&network, &demands, 2000, 1e-4).expect("solve");
+        unsafe {
+            std::env::remove_var("GAZFLOW_COMPRESSOR_HARD_COUPLING");
+            std::env::remove_var("GAZFLOW_COMPRESSOR_DECISION_VARIABLES");
+            std::env::remove_var("GAZFLOW_SCENARIO_SHORTPIPE_MERGE_BOUNDARIES");
+        }
+        let p_m = result.pressures.get("M").copied().expect("P_M");
+        let p_s = result.pressures.get("S").copied().expect("P_S");
+        // Couplage dur : P_M = 1.5 · P_S = 75 bar (à la tolérance du solveur).
+        let expected = 1.5 * p_s;
+        assert!(
+            (p_m - expected).abs() <= 0.5,
+            "hard coupling violated: P_M={p_m:.3}, expected r·P_S={expected:.3} (P_S={p_s:.3})"
+        );
+        assert!(
+            (p_m - 75.0).abs() <= 0.5,
+            "P_M should be ~75 bar, got {p_m:.3}"
         );
     }
 }

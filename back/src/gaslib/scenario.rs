@@ -351,6 +351,15 @@ pub fn compressor_decision_variables_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Active le couplage compresseur dur P_out = r·P_in (Phase IV, opt-in).
+/// N'effec­te que si `compressor_decision_variables_enabled()` est aussi vrai
+/// (le ratio r est alors la variable de décision fixée par l'outer-loop).
+pub fn compressor_hard_coupling_enabled() -> bool {
+    std::env::var("GAZFLOW_COMPRESSOR_HARD_COUPLING")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Pression d'ancrage des entries (bar). Défaut 70 bar (régime transport).
 pub fn entry_transport_anchor_bar() -> f64 {
     std::env::var("GAZFLOW_ENTRY_TRANSPORT_ANCHOR_BAR")

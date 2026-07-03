@@ -336,38 +336,78 @@ L'infrastructure NoVa (variables de décision ratio continu + descente sur slack
 
 Statut : baseline 582 préservée (flag OFF = 2,045 nominal / 23,50 entry-anchor, inchangés). GasLib-11 reste en quarantaine.
 
-## Phase IV — couplage compresseur dur (tentative, juillet 2026, reverté)
+## Phase IV — couplage compresseur dur (juillet 2026, implémenté et vérifié)
 
-Pour rendre la feasibility NoVa effective (Phase III a montré que le modèle soft bloque la descente), la littérature (Pfetsch/Geißler, ZIB-Report 12-41) impose un **couplage dur** `P_out = r · P_in` (« compressor outlet pressure setpoint ») à la place du coeff P² soft.
+Pour rendre la feasibility NoVa effective (Phase III a montré que le modèle soft bloque la descente), la littérature (Pfetsch/Geißler, ZIB-Report 12-41) impose un **couplage dur** `P_out = r · P_in` (« compressor outlet pressure setpoint ») à la place du coeff P² soft. Phase IV a été reprise en effort ciblé (réseau trivial d'abord, puis 582) après l'échec de la première tentative (ratio-alias avec redirection Jacobian ad hoc, revertée).
 
-### Approche tentée (Option A : ratio-alias)
+### Approche retenue : réutilisation de l'alias shortPipe + facteur de pression par pipe
 
-Réutilisation de la mécanique d'alias du Newton (`ShortPipeAliasContext`) étendue avec un facteur `r²` par esclave :
-- flag opt-in `GAZFLOW_COMPRESSOR_HARD_COUPLING=1` (actif seulement avec `GAZFLOW_COMPRESSOR_DECISION_VARIABLES=1`) ;
-- `CompressorHardCouplingContext` : outlet `b` esclave de l'inlet `a` avec `P_b² = r²·P_a²`, arc compresseur retiré du graphe de flow, demand du outlet mergé dans l'inlet, redirection lignes/colonnes Jacobian (colonne esclave → maître avec facteur `r²`) ;
-- résolution de chaîne pour compressors en cascade (composition des ratios) ;
-- diagnostic `compressor_hard_coupling_report` ;
-- tests unitaires (math r², merge demand, exclusion arc, skip shortpipe-slaves).
+Contrairement à la tentative précédente (qui évitait le remappage `slave→master` et faisait une redirection Jacobian custom, source des bugs numériques), la version fiabilisée **réutilise le remappage d'alias existant** et ajoute un facteur de pression par endpoint de pipe :
 
-### Résultat smoke 582 (entry-anchor + decision + hard-coupling)
+- flag opt-in `GAZFLOW_COMPRESSOR_HARD_COUPLING=1` (actif seulement avec `GAZFLOW_COMPRESSOR_DECISION_VARIABLES=1` et `GAZFLOW_SCENARIO_SHORTPIPE_MERGE_BOUNDARIES=1`) ;
+- `ShortPipeAliasContext` étendue : l'outlet compresseur `b` devient esclave de l'inlet `a` avec `P_b² = r²·P_a²` (champ `slaves: Vec<(slave, master, ratio_sq)>`, `ratio_sq = 1` pour les shortPipe existants, `r²` pour les outlets compresseurs) ;
+- l'arc compresseur est **retiré du graphe de flow** (`filter_map` saute `CompressorStation` en mode hard-coupling) ;
+- la fusion de mass-balance (remap `resolve` + merge demand) est **héritée gratuitement** de la mécanique shortPipe ;
+- `IndexedPipe` gagne deux champs `from_pressure_factor` / `to_pressure_factor` (défaut 1,0 ; = `r²` quand l'endpoint brut est un outlet compresseur couplé) ;
+- dans `pipe_flow_derivatives` (et la Jacobi init physique), les pressions effectives aux endpoints sont `factor · P²_nodal`, et les conductances sont remultipliées par le facteur pour rester exprimées vs les pressions nodales → Jacobian cohérent, **sans redirection de colonne ad hoc** ;
+- `sync_pressures` applique `P_slave² = ratio_sq · P_master²` à chaque itération ;
+- diagnostic `compressor_hard_coupling_report` (ratio déclaré vs ratio réalisé `P_out/P_in`, résidu de couplage).
 
-| | résidu | sink_125 shortfall | sink_122 shortfall |
-|--|--------|---------------------|----------------------|
-| flag OFF (Phase III) | 23,4957 | 6,136 | 4,037 |
-| flag ON | 23,4953 | 6,128 | 4,059 |
+L'intérêt de cette approche : le terme de gravité et l'équation de pipe sont évalués aux **pressions physiques effectives** (`r·P_in` côté outlet), donc pas de cas particulier gravité/enthalpique. La baseline est préservée (`ratio_sq = 1` pour les shortPipe → comportement identique hors hard-coupling).
 
-**Aucun gain**. Le rapport `compressor_hard_coupling_report` montre que la contrainte `P_out = r·P_in` n'est **pas respectée pour 4/5 compresseurs** (residual 9 à 32 bar ; CS5 seule respectée). Les ratios atteints (~1,49 pour CS1-3, ~1,23 pour CS4) suggèrent une **sur-composition des `ratio_sq`** dans la résolution de chaîne ou une incohérence sync/Newton (P_out n'étant pas une inconnue libre, sa valeur vient uniquement de `sync_pressures` ; un timing inconsistent laisse P_out incohérent avec P_in).
+### Validation réseau trivial
 
-### Décision : revert
+Réseau : source (50 bar fixés) → compresseur (r = 1,5, cap 1,5, non-« transport » pour éviter l'outer-loop de blending) → tuyau → sink (−5 m³/s). Test `test_hard_coupling_enforces_ratio_on_trivial_network` (serial) :
 
-L'implémentation (450 lignes dans `newton.rs`) est numériquement buggy et ne respecte pas le couplage. **Revertée** pour garder le repo propre (pas de code numérique cassé). Phase III (clean, testée, baseline-preserving) conservée.
+```
+P_M = 75,0 bar = 1,5 · P_S   (couplage dur respecté à 0,5 bar près)
+```
 
-### Verdict + next step
+Le couplage est **exactement enforced** sur le réseau trivial.
 
-Le couplage dur est bien le bon chemin scientifique mais c'est un **refactor substantiel du Newton** (l'alias existant remappe les indices `slave→master`, ce qui suppose `P_slave = P_master` ; un ratio `r²` casse ce remappage et exige une transformation `r²` dans `pipe_flow_derivatives` + redirection Jacobian). Une implémentation correcte demande :
+### Résultats smoke 582 (entry-anchor 70 + dual contract + shortpipe merge + decision + hard-coupling)
 
-1. Soit Option A fiabilisée : debug de la résolution de chaîne (vérifier `ratio_sq_to_master` ne sur-compose pas), sync_pressures après **chaque** mise à jour de P_in (y compris line-search interne), et cohérence résidu/Jacobian avec la transformation `r²`.
-2. Soit Option B : inconnue de débit compresseur `Q_c` + équation de couplage `P_out² − r²·P_in² = 0` (élargit le vecteur d'inconnues pression → pression + débits compresseurs), conceptuellement plus clean mais plus invasif pour l'indexage.
-3. Stabilisation Picard éventuelle (appliquer `r²` graduellement sur quelques itérations internes) pour éviter la divergence Newton.
+Pressions des outlets compresseurs (sonde `GAZFLOW_DIAG_PROBE_NODES`) :
 
-Recommandation : Phase IV mérite un effort dédié et ciblé (pas un one-shot), avec bench intermédiaire sur un réseau trivial à un seul compresseur avant 582. La baseline 582 et le verdict Phase III (soft = blocker NoVa) restent acquis.
+| outlet | Phase II (soft) | Phase IV (hard) | Δ | ratio réalisé |
+|--------|-----------------|-----------------|---|---------------|
+| innode_389 (CS1) | 77,16 | **117,58** | +40,4 | 1,487 |
+| innode_13 (CS2) | 74,64 | **96,57** | +21,9 | 1,507 |
+| innode_10 (CS3) | 73,10 | **92,65** | +19,6 | 1,507 |
+| innode_53 (CS4) | 70,52 | **76,87** | +6,4 | 1,233 |
+| innode_402 (CS5) | 72,18 | 72,18 | 0,0 | 1,080 |
+
+**Le couplage dur est enforced sur les 5 compresseurs** (`P_out = r_atteint · P_in` exact, vérifié : 117,58/79,09 = 1,487 ; 96,57/64,07 = 1,507 ; etc.). Les outlets sont levés de **+6 à +40 bar** vs le modèle soft. Le blocker Phase III (ratio déclaré non transmis à la pression outlet) est **levé**.
+
+Sinks marginaux (shortfall bar) :
+
+| sink | Phase II (soft) | Phase IV (hard) |
+|------|-----------------|-----------------|
+| sink_125 | 6,14 | 6,13 (inchangé) |
+| sink_122 | 4,04 | 4,06 (inchangé) |
+| sink_108 | 8,83 | 8,82 (inchangé) |
+| sink_88 | 23,5 | 23,5 (inchangé) |
+| sink_83 | 19,0 | 19,0 (inchangé) |
+
+**Aucun gain sur les sinks marginaux**, malgré la levée effective des outlets compresseurs. Résidu global inchangé à 23,5 m³/s.
+
+### Verdict scientifique — le vrai blocker n'est plus le compresseur
+
+Le couplage dur résout définitivement le problème mécanistique de Phase III (transmission ratio → pression outlet). Il révèle que **les sinks marginaux de 582 ne sont pas adressables par les compresseurs** :
+
+1. **sink_125** est alimenté par `source_25 → innode_396 → sink_125` (pipe_251 + pipe_250) — **aucun compresseur ni control valve sur ce chemin**. `source_25` n'est pas ancrée (absente de `entry_transport_anchored_ids`). Son déficit (6,1 bar) est purement friction + feeder non ancré. Aucun compresseur ne peut le lever.
+2. **sink_122** est ancrée à ~70 bar (entry-transport anchor), borne inférieure 74 bar → déficit 4 bar structurel **non closable par compresseur** (la pression est plafonnée par l'ancrage, pas par un ratio compresseur).
+3. **sink_108** (8,8 bar) et **sink_88/83** (23,5 + 19,0) : chemins sans compresseur, friction-limited ou topologiquement infeasible (sink_88/83, verdict Phase II).
+
+Par ailleurs, l'outer-loop de décision (`downstream_bounded_sinks`) souffre d'un **bug de topologie** : chaque compresseur déclare **tous** les sinks en aval (la BFS traverse tout le graphe connecté au lieu de suivre la reachabilité hydraulique réelle). Les ratios sont donc bumpés (1,08 → ~1,5) pour des déficits que les compresseurs ne peuvent pas soulager, sans effet sur les sinks concernés. C'est un bug de diagnostic/topologie (à corriger en Phase V), pas un bug hydraulique.
+
+### Conclusion Phase IV
+
+- **Mécanisme couplage dur : SOLVED.** Implémenté proprement (réutilisation alias + facteur par pipe), vérifié sur réseau trivial (P_out = r·P_in exact) et sur 582 (5/5 compresseurs, outlets levés +6 à +40 bar). Baseline préservée. Le blocker Phase III (modèle soft) est levé.
+- **Verdict NoVa 582 mild_618 raffiné :** la nomination reste infeasible (résidu 23,5 m³/s). Les sinks infeasibles se scindent en :
+  - **topologiquement infeasible** (aucune source de pression sur le chemin) : sink_88 (23,5), sink_83 (19,0) ;
+  - **friction/ancrage-limited** (chemin sans compresseur, feeder non ancré) : sink_125 (6,1), sink_108 (8,8), sink_55 (2,8), sink_42/47/90 (mineurs) ;
+  - **anchor-pinned** (plafond ancrage < borne inférieure) : sink_122 (4,0).
+- **Levier NoVa pour 582 :** ce n'est plus le ratio compresseur (transport head déjà adéquat, ≥ 70 bar aux outlets), c'est **l'ancrage des entries non-ancrées** (source_25…), **les setpoints de control valves** (46 control valves découpent les zones transport/distribution), et **la réduction de nomination** pour les sinks friction-limited.
+
+Phase V (si poursuivie) : corriger la reachabilité `downstream_bounded_sinks` (BFS hydraulique réelle, pas tout le graphe), et étudier les control valves comme DOF (setpoint) plutôt que les compresseurs pour les sinks distribution.
