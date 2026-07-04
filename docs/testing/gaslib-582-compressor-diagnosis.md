@@ -379,6 +379,8 @@ Pressions des outlets compresseurs (sonde `GAZFLOW_DIAG_PROBE_NODES`) :
 
 **Le couplage dur est enforced sur les 5 compresseurs** (`P_out = r_atteint · P_in` exact, vérifié : 117,58/79,09 = 1,487 ; 96,57/64,07 = 1,507 ; etc.). Les outlets sont levés de **+6 à +40 bar** vs le modèle soft. Le blocker Phase III (ratio déclaré non transmis à la pression outlet) est **levé**.
 
+> ⚠ **Caveat (Phase V)** : le ratio réalisé (1,487 pour CS1) est **map-driven** (`apply_map_ratios_after_continuation_step` fixe `compressor_ratio_max` à la cible carte pour le point de fonctionnement), **non capé par `pressureOutMax`** (86 bar pour CS1). 1,487·79 = 117 bar > 86 : la pression outlet couplée **viole la limite physique** du compresseur. Le couplage dur enforce bien `r·P_in`, mais le `r` utilisé n'est pas physiquement atteignable. C'est un bug de capping carte (la cible carte n'est pas plafonnée par `pressureOutMax/P_in`), à corriger en Phase VI. Le verdict NoVa pour les sinks marginaux n'en dépend pas (voir Phase V : ils ne sont pas alimentés par compresseur).
+
 Sinks marginaux (shortfall bar) :
 
 | sink | Phase II (soft) | Phase IV (hard) |
@@ -411,3 +413,34 @@ Par ailleurs, l'outer-loop de décision (`downstream_bounded_sinks`) souffre d'u
 - **Levier NoVa pour 582 :** ce n'est plus le ratio compresseur (transport head déjà adéquat, ≥ 70 bar aux outlets), c'est **l'ancrage des entries non-ancrées** (source_25…), **les setpoints de control valves** (46 control valves découpent les zones transport/distribution), et **la réduction de nomination** pour les sinks friction-limited.
 
 Phase V (si poursuivie) : corriger la reachabilité `downstream_bounded_sinks` (BFS hydraulique réelle, pas tout le graphe), et étudier les control valves comme DOF (setpoint) plutôt que les compresseurs pour les sinks distribution.
+
+## Phase V — reachabilité décision + indépendance couplage dur (juillet 2026, implémenté)
+
+### Fix 1 : reachabilité `downstream_bounded_sinks` (bug topologique Phase IV)
+
+Le BFS de `downstream_bounded_sinks` était **non orienté** (traversait les arcs `from→to` ET `to←from`) et **traversait les control valves**. Depuis n'importe quel outlet compresseur, il remontait la colonne transport et atteignait tout le graphe connecté → tout sink déclaré aval de tout compresseur (bug Phase IV). Conséquence : l'outer-loop de décision bumpait les ratios pour des déficits que les compresseurs ne pouvaient pas soulager.
+
+Corrigé :
+- BFS **directionnel** (suit `from → to`, sens de flow nominal vers les sinks) ;
+- `traversable_for_decision_reach` **exclut `ControlValve`** (un détendeur fixe la pression aval et découple les zones : un compresseur amont ne peut pas lever un sink en aval d'un CV).
+
+Tests unitaires : `downstream_bounded_sinks_blocked_by_control_valve`, `downstream_bounded_sinks_directional_not_undirected` (sinks amont non atteints), + le test existant `do_not_cross_compressor` passe toujours.
+
+### Fix 2 : indépendance du couplage dur vs `shortpipe_merge`
+
+L'alias `ShortPipeAliasContext::from_network` gated TOUT (y compris le couplage compresseur) derrière `shortpipe_merge_boundaries_enabled()`. Sans ce flag, l'alias était désactivé MAIS `hard_coupling_active` retirait quand même les arcs compresseurs du graphe de flow → outlets **déconnectés sans couplage**, pressions flottantes sans signification physique. Refactor : l'alias est construit si `shortpipe_merge OU hard_coupling` (le couplage dur fonctionne indépendamment de la fusion shortPipe).
+
+### Résultat smoke 582 (après fixes)
+
+L'outer-loop de décision trouve maintenant **déficits aval = 0 pour les 5 compresseurs** (`defs=[]`, ratios inchangés à 1,080). C'est le verdict topologique correct : **aucun sink borné n'est dans la zone de pression directionnelle (sans traverser CV) d'un compresseur 582**. La boucle de décision ne bump rien — les compresseurs ne sont pas le levier pour les sinks marginaux.
+
+Le ratio réalisé (1,487 pour CS1) reste map-driven (cf. caveat Phase IV) et viole `pressureOutMax` (86 bar) — non corrigé ici (Phase VI).
+
+### Verdict Phase V
+
+Les deux fixes confirment et précisent le verdict Phase IV :
+
+- **Aucun sink marginal 582 n'est alimenté par un compresseur** (reachabilité directionnelle + frontières CV). sink_125 est alimenté par `source_25` (non ancrée) via un chemin pipe sans compresseur ni CV. sink_122 est ancrée à ~70 bar. sink_108/88/83 sont friction-limited sans compresseur.
+- L'outer-loop de décision est maintenant **correcte et inactive** sur 582 (rien à bumper) — comportement sain.
+- Le couplage dur est **robuste** (fonctionne sans shortpipe_merge), mais le ratio map-driven n'est pas capé par `pressureOutMax` (limite physique) — **Phase VI** : caper la cible carte par `pressureOutMax / P_in` (ou ajouter une inégalité `P_out ≤ pressureOutMax` traduite en borne sup sur l'inlet maître `P_in ≤ pressureOutMax / r`).
+- **Levier NoVa 582 confirmé :** ancrage des entries non-ancrées, setpoints des 46 control valves, réduction de nomination. Pas les ratios compresseurs.

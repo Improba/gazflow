@@ -87,8 +87,11 @@ fn traversable_without_compressor_crossing(pipe: &Pipe) -> bool {
 }
 
 /// Variante pour la recherche de sinks aval en mode variables de décision.
-/// Inclut `Resistor` et `ControlValve` (quasi-transparent dans le MVP courant),
-/// gated par `hydraulically_active()` (une CV fermée reste bloquante).
+/// Inclut `Resistor` (pressure-continu) mais **exclut `ControlValve`** :
+/// un détendeur fixe la pression aval (setpoint) et découple les zones
+/// hydrauliques — un compresseur amont ne peut pas lever la pression d'un
+/// sink en aval d'un control valve. `CompressorStation` est exclu
+/// (l'arc compresseur re-fixe la pression).
 fn traversable_for_decision_reach(pipe: &Pipe) -> bool {
     pipe.hydraulically_active()
         && matches!(
@@ -97,14 +100,18 @@ fn traversable_for_decision_reach(pipe: &Pipe) -> bool {
                 | ConnectionKind::ShortPipe
                 | ConnectionKind::Valve
                 | ConnectionKind::Resistor
-                | ConnectionKind::ControlValve
         )
 }
 
-/// Sinks bornés (enveloppes scénario) atteignables à l'aval d'une sortie compresseur.
+/// Sinks bornés (enveloppes scénario) atteignables à l'aval d'une sortie
+/// compresseur, dans la **même zone de pression**.
 ///
-/// Le parcours est non orienté sur `Pipe`/`ShortPipe`/`Valve` actifs et ne traverse
-/// aucun arc compresseur actif.
+/// BFS **directionnel** (suit l'orientation `from → to` des arcs, i.e. le sens
+/// de flow nominal vers les sinks) sans traverser de compresseur ni de
+/// control valve. Un parcours non orienté remontait la colonne transport et
+/// atteignait tout le graphe connecté (bug Phase IV : tout sink déclaré aval
+/// de tout compresseur). Le sens directionnel + la fermeture aux CV délimitent
+/// la zone de pression réellement influencée par le compresseur.
 pub(crate) fn downstream_bounded_sinks(
     network: &GasNetwork,
     cs_from_node: &str,
@@ -134,17 +141,13 @@ pub(crate) fn downstream_bounded_sinks(
             sinks.push((node_data.id.clone(), lower_bar));
         }
 
+        // Sens directionnel uniquement : on descend vers les sinks (from → to).
+        // Ne traverse pas compresseur ni control valve (frontières de zone).
         for edge in network.graph.edges(node) {
             if !traversable_for_decision_reach(edge.weight()) {
                 continue;
             }
             queue.push_back(edge.target());
-        }
-        for edge in network.graph.edges_directed(node, Direction::Incoming) {
-            if !traversable_for_decision_reach(edge.weight()) {
-                continue;
-            }
-            queue.push_back(edge.source());
         }
     }
 
@@ -476,6 +479,77 @@ mod tests {
 
         let sinks = downstream_bounded_sinks(&net, "mid");
         assert_eq!(sinks, vec![("sink_local".into(), 41.0)]);
+    }
+
+    #[test]
+    fn downstream_bounded_sinks_blocked_by_control_valve() {
+        // Un compresseur ne peut pas lever la pression d'un sink en aval d'un
+        // control valve (le détendeur fixe la pression aval). La BFS doit
+        // s'arrêter à la CV.
+        let mut net = GasNetwork::new();
+        add_cs(&mut net, "CS_A", "src", "mid", 4.0);
+        add_link(&mut net, "mid", "sink_local", "v_local");
+        // mid -> CV -> cv_out -> sink_dist
+        add_node(&mut net, "cv_out");
+        add_node(&mut net, "sink_dist");
+        net.add_pipe(Pipe {
+            id: "cv".into(),
+            from: "mid".into(),
+            to: "cv_out".into(),
+            kind: ConnectionKind::ControlValve,
+            is_open: true,
+            ..Default::default()
+        });
+        add_link(&mut net, "cv_out", "sink_dist", "v_dist");
+
+        for (id, lo) in [("sink_local", 41.0), ("sink_dist", 55.0)] {
+            if let Some(node) = net.node_mut(id) {
+                node.pressure_lower_bar = Some(lo);
+            }
+            net.scenario_pressure_envelope_nodes.insert(id.into());
+        }
+
+        let sinks = downstream_bounded_sinks(&net, "mid");
+        assert_eq!(
+            sinks,
+            vec![("sink_local".into(), 41.0)],
+            "CV should block reach to sink_dist"
+        );
+    }
+
+    #[test]
+    fn downstream_bounded_sinks_directional_not_undirected() {
+        // Un sink amont (orientation from->to vers le compresseur) ne doit pas
+        // être atteint : la BFS est directionnelle (descend vers les sinks).
+        let mut net = GasNetwork::new();
+        add_node(&mut net, "sink_up");
+        add_cs(&mut net, "CS_A", "src", "mid", 4.0);
+        add_link(&mut net, "mid", "sink_down", "v_down");
+        // edge orienté sink_up -> mid (incoming à mid) : ne doit PAS être suivi.
+        add_link(&mut net, "sink_up", "mid", "v_up");
+
+        for (id, lo) in [("sink_up", 30.0), ("sink_down", 41.0)] {
+            if let Some(node) = net.node_mut(id) {
+                node.pressure_lower_bar = Some(lo);
+            }
+            net.scenario_pressure_envelope_nodes.insert(id.into());
+        }
+
+        let sinks = downstream_bounded_sinks(&net, "mid");
+        assert_eq!(
+            sinks,
+            vec![("sink_down".into(), 41.0)],
+            "directional BFS must not reach upstream sink_up"
+        );
+    }
+
+    fn add_node(net: &mut GasNetwork, id: &str) {
+        if net.node_index(id).is_none() {
+            net.add_node(Node {
+                id: id.into(),
+                ..Default::default()
+            });
+        }
     }
 
     #[test]

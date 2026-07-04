@@ -126,7 +126,14 @@ struct ShortPipeAliasContext {
 
 impl ShortPipeAliasContext {
     fn from_network(network: &GasNetwork, id_pos: &HashMap<String, usize>, n: usize) -> Self {
-        if !shortpipe_merge_boundaries_enabled() {
+        let shortpipe_merge = shortpipe_merge_boundaries_enabled();
+        let hard_coupling = compressor_hard_coupling_enabled()
+            && compressor_decision_variables_enabled();
+        // L'alias n'a rien à faire si ni la fusion shortPipe ni le couplage dur
+        // compresseur ne sont actifs. NB: le couplage dur doit fonctionner même
+        // sans shortpipe_merge (sinon les outlets compresseurs sont déconnectés
+        // sans couplage → pressions flottantes sans signification physique).
+        if !shortpipe_merge && !hard_coupling {
             return Self {
                 resolve: (0..n).collect(),
                 slaves: Vec::new(),
@@ -136,31 +143,31 @@ impl ShortPipeAliasContext {
         let mut resolve = (0..n).collect::<Vec<_>>();
         let mut slaves = Vec::new();
         let mut ratio_factor = vec![1.0_f64; n];
-        for pair in detect_shortpipe_boundary_pairs(network) {
-            let Some(&master) = id_pos.get(&pair.sink_id) else {
-                continue;
-            };
-            let Some(&slave) = id_pos.get(&pair.source_id) else {
-                continue;
-            };
-            // Garde-fou : une source ancrée (entry transport, pressure_fixed_bar)
-            // doit rester maître à pression fixée. L'aliasing en esclave écraserait
-            // sa pression transport (70 bar) par celle, basse, du sink partenaire.
-            if let Some(src_node) = network.nodes().find(|n| n.id == pair.source_id) {
-                if src_node.pressure_fixed_bar.is_some() {
+        if shortpipe_merge {
+            for pair in detect_shortpipe_boundary_pairs(network) {
+                let Some(&master) = id_pos.get(&pair.sink_id) else {
                     continue;
+                };
+                let Some(&slave) = id_pos.get(&pair.source_id) else {
+                    continue;
+                };
+                // Garde-fou : une source ancrée (entry transport, pressure_fixed_bar)
+                // doit rester maître à pression fixée. L'aliasing en esclave écraserait
+                // sa pression transport (70 bar) par celle, basse, du sink partenaire.
+                if let Some(src_node) = network.nodes().find(|n| n.id == pair.source_id) {
+                    if src_node.pressure_fixed_bar.is_some() {
+                        continue;
+                    }
                 }
+                resolve[slave] = master;
+                slaves.push((slave, master, 1.0));
             }
-            resolve[slave] = master;
-            slaves.push((slave, master, 1.0));
         }
 
         // Phase IV : couplage dur compresseur. L'outlet (to) devient esclave de
         // l'inlet (from) avec P_out² = r²·P_in². L'arc compresseur est retiré du
         // graphe de flow (cf. IndexedPipe build) ; la fusion de mass-balance
         // (remap resolve + merge demand) réutilise la mécanique shortPipe.
-        let hard_coupling = compressor_hard_coupling_enabled()
-            && compressor_decision_variables_enabled();
         if hard_coupling {
             for pipe in network.pipes() {
                 if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
