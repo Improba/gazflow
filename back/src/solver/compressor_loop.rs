@@ -345,6 +345,26 @@ fn map_inlet_pressure_bar(pipe: &Pipe, result: &SolverResult) -> f64 {
     }
 }
 
+/// Pression inlet résolue réelle (sans fallback de régime). Sert au cap
+/// dynamique `pressureOutMax / P_in` (Phase VI) : on ne cap que sur une
+/// mesure physique valide, jamais sur une hypothèse de régime.
+fn actual_inlet_pressure_bar(pipe: &Pipe, result: &SolverResult) -> f64 {
+    result.pressures.get(&pipe.from).copied().unwrap_or(0.0)
+}
+
+/// Cap dynamique de ratio imposé par la limite physique outlet
+/// `pressureOutMax` (Phase VI). Pour un couplage dur `P_out = r·P_in`, la
+/// contrainte `P_out ≤ pressureOutMax` se réécrit `r ≤ pressureOutMax / P_in`.
+/// Retourne `None` si la limite n'est pas définie ou si `p_in_bar` est
+/// invalide/non résolu (auquel cas le cap statique `.net` reste seul en jeu).
+fn dynamic_outlet_pressure_cap_ratio(pipe: &Pipe, p_in_bar: f64) -> Option<f64> {
+    let p_out_max = pipe.equipment.compressor_pressure_out_max_bar?;
+    if !p_in_bar.is_finite() || p_in_bar <= 1.0 {
+        return None;
+    }
+    Some((p_out_max / p_in_bar).clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO))
+}
+
 fn network_has_transport_compressors(network: &GasNetwork) -> bool {
     network.pipes().any(|pipe| {
         if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
@@ -505,12 +525,15 @@ pub fn apply_compressor_decision_updates(
             .or(pipe.equipment.compressor_nominal_ratio)
             .unwrap_or(1.08)
             .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
-        let cap = pipe
+        let static_cap = pipe
             .equipment
             .compressor_pressure_cap_ratio
             .unwrap_or(MAX_COMPRESSOR_RATIO)
             .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
         let p_in_bar = result.pressures.get(&pipe.from).copied().unwrap_or(0.0);
+        let dynamic_cap =
+            dynamic_outlet_pressure_cap_ratio(pipe, p_in_bar).unwrap_or(MAX_COMPRESSOR_RATIO);
+        let cap = static_cap.min(dynamic_cap);
 
         let mut deficits = Vec::new();
         let mut max_deficit = 0.0_f64;
@@ -629,11 +652,15 @@ fn apply_compressor_map_updates(
             .unwrap_or(1.08)
             .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
         let map_target = target_ratio_from_catalog(catalog, pipe, &ctx_op, mode).unwrap_or(current);
-        let pressure_cap = pipe
+        let static_cap = pipe
             .equipment
             .compressor_pressure_cap_ratio
             .unwrap_or(MAX_COMPRESSOR_RATIO)
             .clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO);
+        let p_in_actual = actual_inlet_pressure_bar(pipe, result);
+        let dynamic_cap =
+            dynamic_outlet_pressure_cap_ratio(pipe, p_in_actual).unwrap_or(MAX_COMPRESSOR_RATIO);
+        let pressure_cap = static_cap.min(dynamic_cap);
         let update_ctx = RatioUpdateContext {
             q_m3s_norm,
             residual: result.residual,
@@ -1168,5 +1195,49 @@ mod tests {
         demands.insert("sink".into(), -120.0);
         let per_station = super::estimate_station_norm_flow(active, &demands, 1.0);
         assert!((per_station - 60.0).abs() < 1e-9);
+    }
+
+    fn pipe_with_outlet_limit(p_out_max: Option<f64>) -> crate::graph::Pipe {
+        use crate::graph::{ConnectionKind, EquipmentSpec, Pipe};
+        Pipe {
+            id: "cs".into(),
+            from: "in".into(),
+            to: "out".into(),
+            kind: ConnectionKind::CompressorStation,
+            equipment: EquipmentSpec {
+                compressor_pressure_out_max_bar: p_out_max,
+                compressor_pressure_cap_ratio: Some(4.09),
+                compressor_nominal_ratio: Some(1.08),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dynamic_outlet_cap_none_without_limit() {
+        let pipe = pipe_with_outlet_limit(None);
+        assert!(super::dynamic_outlet_pressure_cap_ratio(&pipe, 79.0).is_none());
+    }
+
+    #[test]
+    fn dynamic_outlet_cap_none_for_unresolved_p_in() {
+        let pipe = pipe_with_outlet_limit(Some(86.0));
+        // P_in non résolu (≤1 bar) : on ne cap pas sur une hypothèse, le cap
+        // statique `.net` reste seul en jeu.
+        assert!(super::dynamic_outlet_pressure_cap_ratio(&pipe, 0.0).is_none());
+        assert!(super::dynamic_outlet_pressure_cap_ratio(&pipe, 1.0).is_none());
+    }
+
+    #[test]
+    fn dynamic_outlet_cap_caps_map_target_to_pressure_out_max() {
+        // CS1 GasLib-582 : pressureOutMax=86 bar, P_in résolu ≈ 79 bar.
+        // Cible carte 1,487 · 79 = 117 bar > 86 → cap dynamique = 86/79 ≈ 1,089.
+        let pipe = pipe_with_outlet_limit(Some(86.0));
+        let cap = super::dynamic_outlet_pressure_cap_ratio(&pipe, 79.0).expect("cap");
+        assert!((cap - (86.0 / 79.0)).abs() < 1e-9);
+        assert!(cap < 1.487);
+        // P_out couplé = cap · P_in ≤ pressureOutMax.
+        assert!(cap * 79.0 <= 86.0 + 1e-9);
     }
 }

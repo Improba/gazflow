@@ -382,6 +382,8 @@ pub fn load_network_raw<P: AsRef<Path>>(path: P) -> Result<RawNetwork> {
             let semantics = compressor_ratio_semantics(net_ratio, cs_ratio);
             equipment.compressor_nominal_ratio = Some(semantics.operating);
             equipment.compressor_pressure_cap_ratio = semantics.pressure_cap;
+            equipment.compressor_pressure_out_max_bar =
+                src.pressure_out_max.as_ref().map(|v| v.value);
             equipment.internal_bypass_required = Some(internal_bypass_required(src));
         }
         pipes.push(RawPipe {
@@ -869,6 +871,12 @@ mod tests {
         assert!(
             cs1.equipment.compressor_pressure_cap_ratio.unwrap_or(0.0) > 3.0,
             "pressure cap should retain .net bound"
+        );
+        // Phase VI : la limite physique outlet absolue (pressureOutMax) est
+        // reportée sur l'équipement pour le cap dynamique pressureOutMax/P_in.
+        assert!(
+            cs1.equipment.compressor_pressure_out_max_bar.is_some(),
+            "pressureOutMax should be populated from .net for the dynamic outlet cap"
         );
     }
 }

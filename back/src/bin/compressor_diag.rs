@@ -133,6 +133,17 @@ fn compressor_hard_coupling_report(
         let p_out = result.pressures.get(&pipe.to).copied().unwrap_or(0.0);
         let p_out_expected = r * p_in;
         let achieved = if p_in > 1e-6 { p_out / p_in } else { 0.0 };
+        let pressure_out_max_bar = pipe.equipment.compressor_pressure_out_max_bar;
+        let dynamic_cap_ratio = pressure_out_max_bar.and_then(|pmax| {
+            if p_in > 1.0 {
+                Some((pmax / p_in).clamp(1.0, 5.0))
+            } else {
+                None
+            }
+        });
+        let outlet_limit_excess_bar = pressure_out_max_bar
+            .map(|pmax| (p_out - pmax).max(0.0))
+            .unwrap_or(0.0);
         entries.push(CompressorHardCouplingEntry {
             cs_id: pipe.id.clone(),
             from_node: pipe.from.clone(),
@@ -143,6 +154,9 @@ fn compressor_hard_coupling_report(
             p_out_bar: p_out,
             p_out_expected_bar: p_out_expected,
             coupling_residual_bar: p_out - p_out_expected,
+            pressure_out_max_bar,
+            outlet_limit_excess_bar,
+            dynamic_cap_ratio,
         });
     }
     entries.sort_by(|a, b| a.cs_id.cmp(&b.cs_id));
@@ -305,6 +319,12 @@ struct CompressorHardCouplingEntry {
     p_out_expected_bar: f64,
     /// P_out − P_out_attendu (vs ratio déclaré).
     coupling_residual_bar: f64,
+    /// Limite physique outlet `pressureOutMax` du `.net` (bar), si définie.
+    pressure_out_max_bar: Option<f64>,
+    /// Excès de P_out au-delà de `pressureOutMax` (bar, >0 = violation).
+    outlet_limit_excess_bar: f64,
+    /// Cap dynamique effectif `pressureOutMax / P_in` (Phase VI), si défini.
+    dynamic_cap_ratio: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]

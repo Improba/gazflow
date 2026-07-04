@@ -135,6 +135,16 @@ pipes:
     length_km: 0.001
     diameter_mm: 1000
     roughness_mm: 0.012
+    equipment:
+      regulator_setpoint_bar: ~
+      regulator_delta_p_min_bar: ~
+      control_valve_cv: ~
+      control_valve_opening_pct: ~
+      delivery_min_pressure_bar: ~
+      compressor_nominal_ratio: 1.08
+      compressor_pressure_cap_ratio: 1.75
+      compressor_pressure_out_max_bar: 70
+      internal_bypass_required: false
   - id: CS02_N04_N05
     from: N04
     to: N05
@@ -143,6 +153,16 @@ pipes:
     length_km: 0.001
     diameter_mm: 1000
     roughness_mm: 0.012
+    equipment:
+      regulator_setpoint_bar: ~
+      regulator_delta_p_min_bar: ~
+      control_valve_cv: ~
+      control_valve_opening_pct: ~
+      delivery_min_pressure_bar: ~
+      compressor_nominal_ratio: 1.08
+      compressor_pressure_cap_ratio: 1.75
+      compressor_pressure_out_max_bar: 70
+      internal_bypass_required: false
   - id: V01_N01_N03
     from: N01
     to: N03

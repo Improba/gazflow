@@ -218,6 +218,7 @@ fn equipment_from_properties(props: &Value, pm: &PipeMapping) -> EquipmentSpec {
             .and_then(|f| resolve_f64(props, f)),
         compressor_nominal_ratio: None,
         compressor_pressure_cap_ratio: None,
+        compressor_pressure_out_max_bar: None,
         internal_bypass_required: None,
     }
 }

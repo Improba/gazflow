@@ -20,6 +20,9 @@ pub struct EquipmentSpec {
     pub compressor_nominal_ratio: Option<f64>,
     /// Plafond pression réseau `.net` (p_out_max / p_in_min) — contrainte, pas consigne d'exploitation.
     pub compressor_pressure_cap_ratio: Option<f64>,
+    /// Limite physique absolue de pression outlet `.net` (`pressureOutMax`, en bar).
+    /// Sert de cap dynamique au ratio : `r ≤ pressureOutMax / P_in` (NoVa, Phase VI).
+    pub compressor_pressure_out_max_bar: Option<f64>,
     /// Bypass interne GasLib autorisé si compresseur hors service.
     pub internal_bypass_required: Option<bool>,
 }
@@ -67,6 +70,7 @@ impl EquipmentSpec {
             && self.delivery_min_pressure_bar.is_none()
             && self.compressor_nominal_ratio.is_none()
             && self.compressor_pressure_cap_ratio.is_none()
+            && self.compressor_pressure_out_max_bar.is_none()
             && self.internal_bypass_required.is_none()
     }
 
@@ -92,6 +96,9 @@ impl EquipmentSpec {
         }
         if let Some(v) = patch.compressor_pressure_cap_ratio {
             self.compressor_pressure_cap_ratio = Some(v);
+        }
+        if let Some(v) = patch.compressor_pressure_out_max_bar {
+            self.compressor_pressure_out_max_bar = Some(v);
         }
         if let Some(v) = patch.internal_bypass_required {
             self.internal_bypass_required = Some(v);

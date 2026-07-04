@@ -379,7 +379,7 @@ Pressions des outlets compresseurs (sonde `GAZFLOW_DIAG_PROBE_NODES`) :
 
 **Le couplage dur est enforced sur les 5 compresseurs** (`P_out = r_atteint · P_in` exact, vérifié : 117,58/79,09 = 1,487 ; 96,57/64,07 = 1,507 ; etc.). Les outlets sont levés de **+6 à +40 bar** vs le modèle soft. Le blocker Phase III (ratio déclaré non transmis à la pression outlet) est **levé**.
 
-> ⚠ **Caveat (Phase V)** : le ratio réalisé (1,487 pour CS1) est **map-driven** (`apply_map_ratios_after_continuation_step` fixe `compressor_ratio_max` à la cible carte pour le point de fonctionnement), **non capé par `pressureOutMax`** (86 bar pour CS1). 1,487·79 = 117 bar > 86 : la pression outlet couplée **viole la limite physique** du compresseur. Le couplage dur enforce bien `r·P_in`, mais le `r` utilisé n'est pas physiquement atteignable. C'est un bug de capping carte (la cible carte n'est pas plafonnée par `pressureOutMax/P_in`), à corriger en Phase VI. Le verdict NoVa pour les sinks marginaux n'en dépend pas (voir Phase V : ils ne sont pas alimentés par compresseur).
+> ⚠ **Caveat (Phase V)** : le ratio réalisé (1,487 pour CS1) est **map-driven** (`apply_map_ratios_after_continuation_step` fixe `compressor_ratio_max` à la cible carte pour le point de fonctionnement), **non capé par `pressureOutMax`** (86 bar pour CS1). 1,487·79 = 117 bar > 86 : la pression outlet couplée **viole la limite physique** du compresseur. Le couplage dur enforce bien `r·P_in`, mais le `r` utilisé n'est pas physiquement atteignable. C'est un bug de capping carte (la cible carte n'est pas plafonnée par `pressureOutMax/P_in`), **corrigé en Phase VI** (cap dynamique `pressureOutMax/P_in`). Le verdict NoVa pour les sinks marginaux n'en dépend pas (voir Phase V : ils ne sont pas alimentés par compresseur).
 
 Sinks marginaux (shortfall bar) :
 
@@ -444,3 +444,41 @@ Les deux fixes confirment et précisent le verdict Phase IV :
 - L'outer-loop de décision est maintenant **correcte et inactive** sur 582 (rien à bumper) — comportement sain.
 - Le couplage dur est **robuste** (fonctionne sans shortpipe_merge), mais le ratio map-driven n'est pas capé par `pressureOutMax` (limite physique) — **Phase VI** : caper la cible carte par `pressureOutMax / P_in` (ou ajouter une inégalité `P_out ≤ pressureOutMax` traduite en borne sup sur l'inlet maître `P_in ≤ pressureOutMax / r`).
 - **Levier NoVa 582 confirmé :** ancrage des entries non-ancrées, setpoints des 46 control valves, réduction de nomination. Pas les ratios compresseurs.
+
+## Phase VI : cap dynamique du ratio compresseur par `pressureOutMax / P_in`
+
+### Problème
+
+Le couplage dur (Phase IV) enforce `P_out = r · P_in` exact, mais le `r` utilisé provenait de la carte `.cs` via `apply_map_ratios_after_continuation_step` **sans être plafonné par la limite physique outlet `pressureOutMax`** (`.net`). Résultat : CS1 prenait `r = 1,487` (cible carte) avec `P_in = 79 bar` → `P_out = 117,58 bar > pressureOutMax = 86 bar`. Violation physique, validée par le rapport hard-coupling (`outlet_limit_excess_bar = 31,6 bar`).
+
+### Approche retenue (option 1 du cadrage)
+
+**Cap dynamique de la cible carte** par `pressureOutMax / P_in` (littérature NoVa : ratio = variable de décision bornée par `[1, pressureOutMax/P_in]`, Mak et al. / ZIB GasLib). Pour un couplage dur `P_out = r·P_in`, la contrainte `P_out ≤ pressureOutMax` se réécrit `r ≤ pressureOutMax / P_in`. Le cap est ré-évalué à chaque palier de continuation (`apply_map_ratios_after_continuation_step` lit le `P_in` résolu du palier précédent), donc il se resserre automatiquement quand `P_in` monte.
+
+L'option 2 (inégalité `P_out ≤ pressureOutMax` traduite en borne sup `P_in ≤ pressureOutMax/r` sur l'inlet maître, via la machinerie `PressureBoundContext` du dual Q+P) est plus générale mais plus invasive (active-set sur nœud maître, circularité `r↔P_in`). Elle reste disponible si le cap à la fixation s'avère insuffisant face à la dérive de `P_in` entre paliers — non observé sur 582.
+
+### Implémentation
+
+- Nouveau champ `EquipmentSpec::compressor_pressure_out_max_bar: Option<f64>` (bar absolus), peuplé depuis `pressureOutMax` du `.net` (`back/src/gaslib/parser.rs`).
+- Helper `dynamic_outlet_pressure_cap_ratio(pipe, p_in_bar)` : retourne `pressureOutMax / P_in` clampé à `[1, 5]`, ou `None` si la limite n'est pas définie ou `P_in` non résolu (≤1 bar). On ne cap **que sur une mesure physique valide**, jamais sur une hypothèse de régime (le fallback `map_inlet_pressure_bar` 40/1,01 bar est ignoré pour le cap).
+- `apply_compressor_map_updates` et `apply_compressor_decision_updates` : `pressure_cap = min(cap_statique_.net, cap_dynamique)` appliqué à la cible carte ET au `RatioUpdateContext.pressure_cap_ratio` (donc au clamp du guard).
+- Rapport hard-coupling étendu : `pressure_out_max_bar`, `dynamic_cap_ratio`, `outlet_limit_excess_bar` (`back/src/bin/compressor_diag.rs`).
+- Tests unitaires : `dynamic_outlet_cap_none_without_limit`, `dynamic_outlet_cap_none_for_unresolved_p_in`, `dynamic_outlet_cap_caps_map_target_to_pressure_out_max` (vérifie `cap·P_in ≤ pressureOutMax`). Test parser : `compressor_pressure_out_max_bar` peuplé pour 582.
+
+### Résultat smoke 582 (`phase-iv-hard-coupling-smoke`)
+
+| CS | P_in (bar) | P_out (bar) | pressureOutMax (bar) | dyn_cap | excess (bar) |
+|----|-----------|-------------|----------------------|---------|--------------|
+| CS1 | 71,79 | 77,53 | 86,01 | 1,198 | **0,0** |
+| CS2 | 68,98 | 74,50 | 86,01 | 1,247 | **0,0** |
+| CS3 | 68,56 | 74,04 | 86,01 | 1,255 | **0,0** |
+| CS4 | 67,24 | 72,62 | 84,00 | 1,249 | **0,0** |
+| CS5 | 66,84 | 72,18 | 84,11 | 1,259 | **0,0** |
+
+**Plus aucune violation de `pressureOutMax`** (excess = 0 partout). P_out CS1 passe de 117,58 → 77,53 bar. Le ratio réalisé revient à 1,08 (nominal) : la cible carte (1,487) est désormais capée par `dyn_cap ≈ 1,20`, donc le map-update ne pousse plus le ratio dans une zone physiquement inatteignable. Residual inchangé (23,496 vs 23,495) — pas de régression.
+
+### Verdict Phase VI
+
+- Le couplage dur produit maintenant des pressions outlet **physiquement valides** (`P_out ≤ pressureOutMax` pour les 5 compresseurs).
+- Le verdict NoVa 582 est inchangé : les sinks marginaux (sink_88/83/108) restent infeasibles et **non adressables par compresseur** (Phase V). La Phase VI corrige la cohérence physique du modèle compresseur, pas la faisabilité de la nomination.
+- **Levier NoVa 582 inchangé :** ancrage entries, setpoints CV, réduction de nomination.
