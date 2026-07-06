@@ -369,6 +369,37 @@ pub fn entry_transport_anchor_bar() -> f64 {
         .unwrap_or(70.0)
 }
 
+/// Ancre aussi les entries à Q=0 (ex. `source_25` sur mild_618) au régime transport.
+/// Utile quand une entry structurelle n'a pas de nomination mais alimente une zone aval.
+pub fn entry_zero_flow_anchor_enabled() -> bool {
+    std::env::var("GAZFLOW_ENTRY_ZERO_FLOW_ANCHOR")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Traite les control valves GasLib comme détendeurs à consigne aval (Phase VII).
+pub fn control_valve_regulator_enabled() -> bool {
+    std::env::var("GAZFLOW_CONTROL_VALVE_AS_REGULATOR")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Outer-loop NoVa : ajuste les consignes aval des control valves pour réduire les déficits P.
+pub fn control_valve_decision_variables_enabled() -> bool {
+    std::env::var("GAZFLOW_CONTROL_VALVE_DECISION_VARIABLES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Fraction initiale de `pressureOutMax` pour la consigne aval des CV (défaut 0,85).
+pub fn control_valve_initial_setpoint_fraction() -> f64 {
+    std::env::var("GAZFLOW_CONTROL_VALVE_INITIAL_SETPOINT_FRACTION")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|f: &f64| f.is_finite() && *f > 0.0 && *f <= 1.0)
+        .unwrap_or(0.85)
+}
+
 /// Vrai si le nœud est une entry ancrable (source avec nomination Q > 0).
 fn is_nominated_entry(scenario: &ScenarioDemands, node_id: &str) -> bool {
     node_id.starts_with("source_")
@@ -394,6 +425,33 @@ fn apply_entry_transport_anchors(network: &mut GasNetwork, scenario: &ScenarioDe
             }
         }
     }
+    if entry_zero_flow_anchor_enabled() {
+        let zero_flow_sources: Vec<String> = network
+            .nodes()
+            .filter(|n| n.id.starts_with("source_"))
+            .filter(|n| !is_nominated_entry(scenario, &n.id))
+            .map(|n| n.id.clone())
+            .collect();
+        for id in zero_flow_sources {
+            if let Some(n) = network.node_mut(&id) {
+                if n.pressure_fixed_bar.is_none() {
+                    n.pressure_fixed_bar = Some(anchor_bar);
+                }
+            }
+        }
+    }
+}
+
+/// Initialise les consignes aval des control valves (Phase VII).
+/// Ne force pas de consigne par défaut : seules les CV mises à jour par la
+/// boucle de décision (`regulator_setpoint_bar` défini) deviennent des régulateurs.
+pub fn apply_control_valve_regulators(_network: &mut GasNetwork) {
+    if !control_valve_regulator_enabled() {
+        return;
+    }
+    // Pas d'initialisation globale : activer 23 CV régulateurs à 0,85·p_out_max
+    // sur-contraint le réseau (résidu >> 1). La boucle de décision active
+    // sélectivement les CV qui ont des sinks aval en déficit.
 }
 
 /// Entries ancrées (P fixé) dont le Q doit être libéré (retiré des demandes).
@@ -407,6 +465,30 @@ pub fn entry_transport_anchored_ids(scenario: &ScenarioDemands) -> Vec<String> {
         .filter(|(id, q)| id.starts_with("source_") && **q > 0.0)
         .map(|(id, _)| id.clone())
         .collect()
+}
+
+/// Entries ancrées (P fixé) incluant Q=0 si `GAZFLOW_ENTRY_ZERO_FLOW_ANCHOR=1`.
+pub fn entry_transport_anchored_ids_for_network(
+    network: &GasNetwork,
+    scenario: &ScenarioDemands,
+) -> Vec<String> {
+    if !entry_transport_anchor_enabled() {
+        return Vec::new();
+    }
+    let mut ids = entry_transport_anchored_ids(scenario);
+    if entry_zero_flow_anchor_enabled() {
+        for node in network.nodes() {
+            if !node.id.starts_with("source_") || ids.contains(&node.id) {
+                continue;
+            }
+            if !is_nominated_entry(scenario, &node.id) {
+                ids.push(node.id.clone());
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 fn merge_pressure_bound(
@@ -860,6 +942,7 @@ pub fn network_with_scenario_boundaries(
     if entry_transport_anchor_enabled() {
         apply_entry_transport_anchors(&mut network, scenario);
     }
+    apply_control_valve_regulators(&mut network);
     if scenario_pressure_envelopes_enabled() {
         apply_scenario_pressure_envelopes(&mut network, scenario);
     }

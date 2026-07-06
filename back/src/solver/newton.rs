@@ -1218,7 +1218,9 @@ fn collect_active_regulator_nodes(
         }
         if !matches!(
             pipe.kind,
-            ConnectionKind::PressureRegulator | ConnectionKind::DeliveryStation
+            ConnectionKind::PressureRegulator
+                | ConnectionKind::DeliveryStation
+                | ConnectionKind::ControlValve
         ) {
             continue;
         }

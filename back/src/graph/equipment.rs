@@ -14,6 +14,8 @@ pub struct EquipmentSpec {
     pub control_valve_cv: Option<f64>,
     /// Ouverture relative [%] (0 = fermée, 100 = pleine ouverture).
     pub control_valve_opening_pct: Option<f64>,
+    /// Limite physique outlet `pressureOutMax` du `.net` (bar) pour control valve.
+    pub control_valve_pressure_out_max_bar: Option<f64>,
     /// Pression contractuelle minimale aval [bar] (poste livraison).
     pub delivery_min_pressure_bar: Option<f64>,
     /// Ratio compresseur nominal d'exploitation (carte `.cs` / étages, pas les bornes pression `.net`).
@@ -67,6 +69,7 @@ impl EquipmentSpec {
             && self.regulator_delta_p_min_bar.is_none()
             && self.control_valve_cv.is_none()
             && self.control_valve_opening_pct.is_none()
+            && self.control_valve_pressure_out_max_bar.is_none()
             && self.delivery_min_pressure_bar.is_none()
             && self.compressor_nominal_ratio.is_none()
             && self.compressor_pressure_cap_ratio.is_none()
@@ -87,6 +90,9 @@ impl EquipmentSpec {
         }
         if let Some(v) = patch.control_valve_opening_pct {
             self.control_valve_opening_pct = Some(v);
+        }
+        if let Some(v) = patch.control_valve_pressure_out_max_bar {
+            self.control_valve_pressure_out_max_bar = Some(v);
         }
         if let Some(v) = patch.delivery_min_pressure_bar {
             self.delivery_min_pressure_bar = Some(v);

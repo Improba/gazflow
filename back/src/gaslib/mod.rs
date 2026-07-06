@@ -33,6 +33,9 @@ pub use scenario::{
     shortpipe_merge_boundaries_enabled, shortpipe_partner_for,
     compressor_decision_variables_enabled, compressor_hard_coupling_enabled,
     entry_transport_anchor_enabled, entry_transport_anchor_bar, entry_transport_anchored_ids,
+    entry_transport_anchored_ids_for_network, entry_zero_flow_anchor_enabled,
+    control_valve_regulator_enabled, control_valve_decision_variables_enabled,
+    control_valve_initial_setpoint_fraction, apply_control_valve_regulators,
     transport_minimal_anchors_enabled, try_add_mass_balance_anchor, try_relax_contract_boundary,
 };
 pub use solution::{ReferenceSolution, load_reference_solution};

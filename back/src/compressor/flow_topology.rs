@@ -103,20 +103,22 @@ fn traversable_for_decision_reach(pipe: &Pipe) -> bool {
         )
 }
 
-/// Sinks bornés (enveloppes scénario) atteignables à l'aval d'une sortie
-/// compresseur, dans la **même zone de pression**.
-///
-/// BFS **directionnel** (suit l'orientation `from → to` des arcs, i.e. le sens
-/// de flow nominal vers les sinks) sans traverser de compresseur ni de
-/// control valve. Un parcours non orienté remontait la colonne transport et
-/// atteignait tout le graphe connecté (bug Phase IV : tout sink déclaré aval
-/// de tout compresseur). Le sens directionnel + la fermeture aux CV délimitent
-/// la zone de pression réellement influencée par le compresseur.
+/// Sinks bornés (enveloppes scénario) atteignables à l'aval d'un nœud de départ,
+/// dans la **même zone de pression** (sans traverser compresseur ni control valve).
+pub(crate) fn downstream_bounded_sinks_from(
+    network: &GasNetwork,
+    start_node_id: &str,
+) -> Vec<(String, f64)> {
+    downstream_bounded_sinks(network, start_node_id)
+}
+
+/// Sinks bornés atteignables à l'aval d'une sortie compresseur (alias de
+/// `downstream_bounded_sinks_from` sur le nœud `to` du compresseur).
 pub(crate) fn downstream_bounded_sinks(
     network: &GasNetwork,
-    cs_from_node: &str,
+    start_node_id: &str,
 ) -> Vec<(String, f64)> {
-    let Some(start) = network.node_index(cs_from_node) else {
+    let Some(start) = network.node_index(start_node_id) else {
         return Vec::new();
     };
 

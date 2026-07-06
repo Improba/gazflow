@@ -219,6 +219,7 @@ fn equipment_from_properties(props: &Value, pm: &PipeMapping) -> EquipmentSpec {
         compressor_nominal_ratio: None,
         compressor_pressure_cap_ratio: None,
         compressor_pressure_out_max_bar: None,
+        control_valve_pressure_out_max_bar: None,
         internal_bypass_required: None,
     }
 }

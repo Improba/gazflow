@@ -24,17 +24,21 @@ use gazflow_back::gaslib::{
     scenario_pressure_envelopes_enabled, scenario_pressure_floor_anchor_enabled,
     scenario_pressure_in_newton_enabled, shortpipe_coupled_envelopes_enabled,
     shortpipe_merge_boundaries_enabled, entry_transport_anchor_enabled,
-    entry_transport_anchored_ids,
+    entry_transport_anchored_ids, entry_transport_anchored_ids_for_network,
+    entry_zero_flow_anchor_enabled, control_valve_regulator_enabled,
+    control_valve_decision_variables_enabled,
     transport_minimal_anchors_enabled, ShortPipeBoundaryPair,
 };
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
 use gazflow_back::solver::{
     ContinuationStepEvent, GasComposition, MassBalanceReport, SolverResult,
     apply_compressor_decision_updates,
+    apply_control_valve_decision_updates,
     apply_map_ratios_after_continuation_step, boundary_nomination_slips,
     compressor_accept_partial_enabled, compressor_map_mode,
     compressor_pressure_from_coeff, estimated_compressor_map_flow_m3s, mass_balance_report,
     preset_robust, scenario_pressure_slips, solve_with_mass_balance_refinement,
+    solve_with_control_valve_decision_loop, SteadyStateConfig, SolverControl,
     boundary_pressure_supply_reports, upstream_pressure_trace, BoundaryPressureSupplyReport,
     BoundaryNominationSlip, CompressorMapMode, ScenarioPressureSlip,
 };
@@ -109,6 +113,55 @@ fn compressor_decision_report(
         })
         .collect::<Vec<_>>();
     report.sort_by(|a, b| a.cs_id.cmp(&b.cs_id));
+    Some(report)
+}
+
+fn control_valve_decision_report(
+    network: &GasNetwork,
+    result: &SolverResult,
+) -> Option<Vec<ControlValveDecisionReportEntry>> {
+    if !control_valve_decision_variables_enabled() || !control_valve_regulator_enabled() {
+        return None;
+    }
+    let mut preview_network = network.clone();
+    let updates = apply_control_valve_decision_updates(
+        &mut preview_network,
+        result,
+        diag_compressor_relax(),
+    );
+    let total_slack_before = updates.total_slack_before;
+    let total_slack_after = updates.total_slack_after;
+    let mut report = updates
+        .updates
+        .into_iter()
+        .map(|entry| {
+            let p_in_bar = result.pressures.get(&entry.from_node).copied().unwrap_or(0.0);
+            let p_out_bar = result.pressures.get(&entry.to_node).copied().unwrap_or(0.0);
+            ControlValveDecisionReportEntry {
+            cv_id: entry.cv_id,
+            from_node: entry.from_node,
+            to_node: entry.to_node,
+            setpoint_before_bar: entry.setpoint_before_bar,
+            setpoint_after_bar: entry.setpoint_after_bar,
+            pressure_out_max_bar: entry.pressure_out_max_bar,
+            p_in_bar,
+            p_out_bar,
+            downstream_deficits: entry
+                .downstream_deficits
+                .into_iter()
+                .map(|d| CompressorDecisionSinkDeficit {
+                    sink_id: d.sink_id,
+                    lower_bar: d.lower_bar,
+                    p_resolved: d.p_resolved_bar,
+                    deficit_bar: d.deficit_bar,
+                })
+                .collect(),
+            total_slack_before,
+            total_slack_after,
+        }
+        })
+        .collect::<Vec<_>>();
+    report.sort_by(|a, b| a.cv_id.cmp(&b.cv_id));
     Some(report)
 }
 
@@ -205,6 +258,12 @@ struct DiagFlags {
     scenario_shortpipe_merge_boundaries: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     entry_transport_anchor: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    entry_zero_flow_anchor: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    control_valve_regulator: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    control_valve_decision_variables: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -246,6 +305,8 @@ struct DiagOutput {
     compressor_decision_report: Option<Vec<CompressorDecisionReportEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     compressor_hard_coupling_report: Option<Vec<CompressorHardCouplingEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    control_valve_decision_report: Option<Vec<ControlValveDecisionReportEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -298,6 +359,21 @@ struct CompressorDecisionReportEntry {
     ratio_before: f64,
     ratio_after: f64,
     p_in_bar: f64,
+    downstream_deficits: Vec<CompressorDecisionSinkDeficit>,
+    total_slack_before: f64,
+    total_slack_after: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct ControlValveDecisionReportEntry {
+    cv_id: String,
+    from_node: String,
+    to_node: String,
+    setpoint_before_bar: f64,
+    setpoint_after_bar: f64,
+    pressure_out_max_bar: f64,
+    p_in_bar: f64,
+    p_out_bar: f64,
     downstream_deficits: Vec<CompressorDecisionSinkDeficit>,
     total_slack_before: f64,
     total_slack_after: f64,
@@ -636,6 +712,7 @@ fn skipped_output(
         compressor_stations: Vec::new(),
         compressor_decision_report: None,
         compressor_hard_coupling_report: None,
+        control_valve_decision_report: None,
         reason: Some(reason),
         error: None,
         mass_balance: None,
@@ -697,6 +774,9 @@ fn main() -> Result<()> {
             scenario_boundary_partial_accept: scenario_boundary_partial_accept_enabled(),
             scenario_shortpipe_merge_boundaries: shortpipe_merge_boundaries_enabled(),
             entry_transport_anchor: entry_transport_anchor_enabled(),
+            entry_zero_flow_anchor: entry_zero_flow_anchor_enabled(),
+            control_valve_regulator: control_valve_regulator_enabled(),
+            control_valve_decision_variables: control_valve_decision_variables_enabled(),
         };
         emit_json(
             &skipped_output(
@@ -736,6 +816,9 @@ fn main() -> Result<()> {
             scenario_boundary_partial_accept: scenario_boundary_partial_accept_enabled(),
             scenario_shortpipe_merge_boundaries: shortpipe_merge_boundaries_enabled(),
             entry_transport_anchor: entry_transport_anchor_enabled(),
+            entry_zero_flow_anchor: entry_zero_flow_anchor_enabled(),
+            control_valve_regulator: control_valve_regulator_enabled(),
+            control_valve_decision_variables: control_valve_decision_variables_enabled(),
         };
         emit_json(
             &skipped_output(cli.dataset.clone(), network_display, None, flags, reason),
@@ -776,6 +859,9 @@ fn main() -> Result<()> {
         scenario_boundary_partial_accept: scenario_boundary_partial_accept_enabled(),
         scenario_shortpipe_merge_boundaries: shortpipe_merge_boundaries_enabled(),
         entry_transport_anchor: entry_transport_anchor_enabled(),
+        entry_zero_flow_anchor: entry_zero_flow_anchor_enabled(),
+        control_valve_regulator: control_valve_regulator_enabled(),
+        control_valve_decision_variables: control_valve_decision_variables_enabled(),
     };
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;
@@ -791,11 +877,38 @@ fn main() -> Result<()> {
         Some(|ev: ContinuationStepEvent| continuation_scales.push(ev.scale)),
     );
     let (network, solve_result, refinement_passes) = match refinement_outcome {
-        Ok(outcome) => (
-            outcome.network,
-            Ok(outcome.result),
-            outcome.refinement_passes,
-        ),
+        Ok(mut outcome) => {
+            if control_valve_decision_variables_enabled() && control_valve_regulator_enabled() {
+                let cv_demands = effective_solver_demands_for_network(
+                    &base_network,
+                    &scenario.demands,
+                    &scenario,
+                );
+                let steady_config = SteadyStateConfig {
+                    gas_composition: GasComposition::pure_ch4(),
+                    max_iter: preset.max_iter,
+                    tolerance: preset.tolerance,
+                    snapshot_every: preset.snapshot_every,
+                    enable_compressor_outer_loop: true,
+                    disable_compressor_r2_cap: false,
+                    accept_partial_solution: compressor_accept_partial_enabled(),
+                };
+                if let Ok(cv_result) = solve_with_control_valve_decision_loop(
+                    &mut outcome.network,
+                    &cv_demands,
+                    Some(&outcome.result.pressures),
+                    steady_config,
+                    &mut |_| SolverControl::Continue,
+                ) {
+                    outcome.result = cv_result;
+                }
+            }
+            (
+                outcome.network,
+                Ok(outcome.result),
+                outcome.refinement_passes,
+            )
+        }
         Err(err) => {
             let net = network_with_scenario_boundaries(&base_network, &scenario);
             (net, Err(err), 0)
@@ -876,7 +989,8 @@ fn main() -> Result<()> {
             let boundary_pressure_supply =
                 boundary_pressure_supply_reports(&network, &result, &scenario_pressure_slips, 12);
             let probe_nodes = probe_node_reports(&network, &result);
-            let entry_transport_anchored_ids = entry_transport_anchored_ids(&scenario);
+            let entry_transport_anchored_ids =
+                entry_transport_anchored_ids_for_network(&network, &scenario);
             let shortpipe_boundary_couplings = detect_shortpipe_boundary_pairs(&network);
             let worst_pressure_upstream_trace = scenario_pressure_slips
                 .first()
@@ -896,6 +1010,8 @@ fn main() -> Result<()> {
             let compressor_decision_report = compressor_decision_report(&network, &result);
             let compressor_hard_coupling_report =
                 compressor_hard_coupling_report(&network, &result);
+            let control_valve_decision_report =
+                control_valve_decision_report(&network, &result);
             DiagOutput {
                 status: if contract_violated {
                     "contract_violation"
@@ -913,6 +1029,7 @@ fn main() -> Result<()> {
                 compressor_stations: stations,
                 compressor_decision_report,
                 compressor_hard_coupling_report,
+                control_valve_decision_report,
                 reason: if contract_violated {
                     Some(format!(
                         "residual {:.4e} m³/s exceeds tolerance {:.4e} (contract Q+P)",
@@ -954,6 +1071,7 @@ fn main() -> Result<()> {
                 compressor_stations: stations,
                 compressor_decision_report: compressor_decision_report(&network, &preview),
                 compressor_hard_coupling_report: compressor_hard_coupling_report(&network, &preview),
+                control_valve_decision_report: control_valve_decision_report(&network, &preview),
                 reason: None,
                 error: Some(err_text),
                 mass_balance: None,

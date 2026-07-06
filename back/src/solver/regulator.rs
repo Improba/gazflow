@@ -62,7 +62,9 @@ fn regulator_edge_from_pipe(pipe: &Pipe) -> Option<RegulatorEdge> {
         return None;
     }
     match pipe.kind {
-        ConnectionKind::PressureRegulator | ConnectionKind::DeliveryStation => {
+        ConnectionKind::PressureRegulator
+        | ConnectionKind::DeliveryStation
+        | ConnectionKind::ControlValve => {
             Some(RegulatorEdge {
                 pipe_id: pipe.id.clone(),
                 from_id: pipe.from.clone(),

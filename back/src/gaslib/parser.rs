@@ -147,6 +147,10 @@ struct XmlConnectionRaw {
     pressure_in_min: Option<XmlValue>,
     #[serde(rename = "pressureOutMax", default)]
     pressure_out_max: Option<XmlValue>,
+    #[serde(rename = "pressureLossIn", default)]
+    pressure_loss_in: Option<XmlValue>,
+    #[serde(rename = "pressureLossOut", default)]
+    pressure_loss_out: Option<XmlValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -385,6 +389,20 @@ pub fn load_network_raw<P: AsRef<Path>>(path: P) -> Result<RawNetwork> {
             equipment.compressor_pressure_out_max_bar =
                 src.pressure_out_max.as_ref().map(|v| v.value);
             equipment.internal_bypass_required = Some(internal_bypass_required(src));
+        } else if kind == ConnectionKind::ControlValve {
+            let loss_in = src
+                .pressure_loss_in
+                .as_ref()
+                .map(|v| v.value)
+                .unwrap_or(0.0);
+            let loss_out = src
+                .pressure_loss_out
+                .as_ref()
+                .map(|v| v.value)
+                .unwrap_or(0.0);
+            equipment.control_valve_pressure_out_max_bar =
+                src.pressure_out_max.as_ref().map(|v| v.value);
+            equipment.regulator_delta_p_min_bar = Some((loss_in + loss_out).max(0.1));
         }
         pipes.push(RawPipe {
             id: src.id.clone(),
@@ -877,6 +895,31 @@ mod tests {
         assert!(
             cs1.equipment.compressor_pressure_out_max_bar.is_some(),
             "pressureOutMax should be populated from .net for the dynamic outlet cap"
+        );
+    }
+
+    #[test]
+    fn test_load_gaslib_582_control_valve_pressure_out_max() {
+        let path = Path::new("dat/GasLib-582.net");
+        if !path.exists() {
+            eprintln!("skip: GasLib-582.net not found");
+            return;
+        }
+        let net = load_network(path).expect("582");
+        let cv_count = net
+            .pipes()
+            .filter(|p| p.kind == ConnectionKind::ControlValve)
+            .count();
+        assert_eq!(cv_count, 23, "GasLib-582 has 23 control valves");
+        let cv1 = net
+            .pipes()
+            .find(|p| p.id == "controlValve_1")
+            .expect("CV1");
+        assert!(
+            cv1.equipment
+                .control_valve_pressure_out_max_bar
+                .is_some_and(|p| (p - 86.01325).abs() < 1e-3),
+            "pressureOutMax parsed for control valve"
         );
     }
 }

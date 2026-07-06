@@ -21,7 +21,7 @@ pub use map::{
     isentropic_outlet_temperature_k,
 };
 pub use flow_topology::estimated_map_flow_m3s;
-pub(crate) use flow_topology::downstream_bounded_sinks;
+pub(crate) use flow_topology::{downstream_bounded_sinks, downstream_bounded_sinks_from};
 pub use parse::load_compressor_catalog;
 pub use station::{
     BiquadraticCoeffs, CompressorConfiguration, QuadraticCurve, StationModel, TurboCompressorModel,

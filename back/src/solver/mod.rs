@@ -5,6 +5,7 @@
 
 pub mod capacity;
 pub(crate) mod compressor_loop;
+pub(crate) mod control_valve_loop;
 pub mod config;
 pub mod contingency;
 pub mod continuation;
@@ -29,6 +30,10 @@ pub use contingency::{
 pub use continuation::{
     ContinuationConfig, ContinuationStepEvent, solve_steady_state_with_continuation,
     solve_steady_state_with_preset,
+};
+pub use control_valve_loop::{
+    ControlValveDecisionUpdate, ControlValveDecisionUpdateStats, ControlValveSinkDeficit,
+    apply_control_valve_decision_updates, solve_with_control_valve_decision_loop,
 };
 pub use compressor_loop::{
     CompressorDecisionUpdate, CompressorDecisionUpdateStats, CompressorMapMode,
