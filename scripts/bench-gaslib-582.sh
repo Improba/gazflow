@@ -188,6 +188,33 @@ case "$TAG" in
     export GAZFLOW_TRANSPORT_MINIMAL_ANCHORS=0
     export GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES=0
     ;;
+  phase-vii-bis-smoke)
+    export GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES=1
+    export GAZFLOW_SCENARIO_PRESSURE_ENVELOPES=1
+    export GAZFLOW_ENTRY_TRANSPORT_ANCHOR=1
+    export GAZFLOW_ENTRY_ZERO_FLOW_ANCHOR=1
+    export GAZFLOW_ENTRY_TRANSPORT_ANCHOR_BAR="${GAZFLOW_ENTRY_TRANSPORT_ANCHOR_BAR:-70}"
+    export GAZFLOW_CONTROL_VALVE_AS_REGULATOR=1
+    export GAZFLOW_CONTROL_VALVE_DECISION_VARIABLES=1
+    export GAZFLOW_CONTROL_VALVE_SOFT_SETPOINT=1
+    export GAZFLOW_NOVA_SINK_CAPACITY_STUDY="${GAZFLOW_NOVA_SINK_CAPACITY_STUDY:-0}"
+    export GAZFLOW_TRANSPORT_MINIMAL_ANCHORS=0
+    export GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES=0
+    ;;
+  phase-vii-bis-capacity)
+    export GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES=1
+    export GAZFLOW_SCENARIO_PRESSURE_ENVELOPES=1
+    export GAZFLOW_ENTRY_TRANSPORT_ANCHOR=1
+    export GAZFLOW_ENTRY_ZERO_FLOW_ANCHOR=1
+    export GAZFLOW_ENTRY_TRANSPORT_ANCHOR_BAR="${GAZFLOW_ENTRY_TRANSPORT_ANCHOR_BAR:-70}"
+    export GAZFLOW_CONTROL_VALVE_AS_REGULATOR=1
+    export GAZFLOW_CONTROL_VALVE_DECISION_VARIABLES=1
+    export GAZFLOW_CONTROL_VALVE_SOFT_SETPOINT=1
+    export GAZFLOW_NOVA_SINK_CAPACITY_STUDY=1
+    export GAZFLOW_NOVA_CAPACITY_BISECTION_STEPS="${GAZFLOW_NOVA_CAPACITY_BISECTION_STEPS:-4}"
+    export GAZFLOW_TRANSPORT_MINIMAL_ANCHORS=0
+    export GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES=0
+    ;;
   nominal-smoke)
     export GAZFLOW_SCENARIO_PRESSURE_ENVELOPES=0
     export GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON=0
@@ -236,4 +263,13 @@ for s in supply[:5]:
     print(" ", s["node_id"], "need=", s.get("required_lower_bar"),
           "max_up=", round(s["max_upstream_pressure_bar"],2),
           "gap=", round(s["supply_gap_bar"],1))
+cap = d.get("sink_capacity_report") or []
+if cap:
+    print("sink_capacity_report:", len(cap))
+    for c in cap:
+        print(" ", c["sink_id"],
+              "frac=", round(c.get("feasible_fraction", 0), 3),
+              "max_q=", round(c.get("max_feasible_q_m3s", 0), 4),
+              "nominal=", round(c.get("nominal_q_m3s", 0), 4),
+              "shortfall=", round(c.get("pressure_shortfall_bar", 0), 2))
 PY

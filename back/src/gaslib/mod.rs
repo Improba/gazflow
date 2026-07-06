@@ -35,6 +35,8 @@ pub use scenario::{
     entry_transport_anchor_enabled, entry_transport_anchor_bar, entry_transport_anchored_ids,
     entry_transport_anchored_ids_for_network, entry_zero_flow_anchor_enabled,
     control_valve_regulator_enabled, control_valve_decision_variables_enabled,
+    control_valve_soft_setpoint_enabled, control_valve_soft_penalty_weight,
+    nova_sink_capacity_study_enabled,
     control_valve_initial_setpoint_fraction, apply_control_valve_regulators,
     transport_minimal_anchors_enabled, try_add_mass_balance_anchor, try_relax_contract_boundary,
 };

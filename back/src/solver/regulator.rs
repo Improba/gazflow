@@ -62,9 +62,16 @@ fn regulator_edge_from_pipe(pipe: &Pipe) -> Option<RegulatorEdge> {
         return None;
     }
     match pipe.kind {
-        ConnectionKind::PressureRegulator
-        | ConnectionKind::DeliveryStation
-        | ConnectionKind::ControlValve => {
+        ConnectionKind::PressureRegulator | ConnectionKind::DeliveryStation => {
+            Some(RegulatorEdge {
+                pipe_id: pipe.id.clone(),
+                from_id: pipe.from.clone(),
+                to_id: pipe.to.clone(),
+                setpoint_bar: setpoint,
+                delta_p_min_bar: delta,
+            })
+        }
+        ConnectionKind::ControlValve if !crate::gaslib::control_valve_soft_setpoint_enabled() => {
             Some(RegulatorEdge {
                 pipe_id: pipe.id.clone(),
                 from_id: pipe.from.clone(),

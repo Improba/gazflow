@@ -15,6 +15,7 @@ use crate::compressor::{
 };
 use crate::gaslib::{
     compressor_decision_variables_enabled, compressor_hard_coupling_enabled,
+    control_valve_soft_penalty_weight, control_valve_soft_setpoint_enabled,
     detect_shortpipe_boundary_pairs, scenario_boundary_active_envelopes_enabled,
     scenario_boundary_partial_accept_enabled, scenario_pressure_clamp_in_newton_enabled,
     scenario_pressure_envelopes_enabled, scenario_pressure_in_newton_enabled,
@@ -72,6 +73,47 @@ impl PressureBoundContext {
             upper_bar,
             penalty_weight: scenario_pressure_penalty_weight(),
             clamp_in_line_search: scenario_pressure_clamp_in_newton_enabled(),
+        }
+    }
+
+    fn empty_for_nodes(node_count: usize) -> Self {
+        Self {
+            lower_bar: vec![None; node_count],
+            upper_bar: vec![None; node_count],
+            penalty_weight: control_valve_soft_penalty_weight(),
+            clamp_in_line_search: false,
+        }
+    }
+
+    fn has_active_bounds(&self) -> bool {
+        self.lower_bar.iter().any(|o| o.is_some()) || self.upper_bar.iter().any(|o| o.is_some())
+    }
+
+    /// Phase VII-bis : consigne CV souple = borne inférieure P_aval ≥ setpoint (pénalité Newton).
+    fn merge_cv_soft_setpoints(&mut self, network: &GasNetwork, node_ids: &[String]) {
+        if !control_valve_soft_setpoint_enabled() {
+            return;
+        }
+        for (idx, id) in node_ids.iter().enumerate() {
+            for pipe in network.pipes() {
+                if pipe.kind != ConnectionKind::ControlValve
+                    || !pipe.hydraulically_active()
+                    || pipe.to != *id
+                {
+                    continue;
+                }
+                let Some(setpoint) = pipe.equipment.regulator_setpoint_bar else {
+                    continue;
+                };
+                let merged = self
+                    .lower_bar
+                    .get(idx)
+                    .copied()
+                    .flatten()
+                    .map(|lo| lo.max(setpoint))
+                    .unwrap_or(setpoint);
+                self.lower_bar[idx] = Some(merged);
+            }
         }
     }
 
@@ -636,10 +678,23 @@ where
     let hard_coupling_active = compressor_hard_coupling_enabled()
         && compressor_decision_variables_enabled();
 
-    let pressure_bounds = if scenario_pressure_envelopes_enabled()
-        && scenario_pressure_in_newton_enabled()
+    let pressure_bounds = if (scenario_pressure_envelopes_enabled()
+        && scenario_pressure_in_newton_enabled())
+        || control_valve_soft_setpoint_enabled()
     {
-        Some(PressureBoundContext::from_network(network, &node_ids))
+        let mut ctx = if scenario_pressure_envelopes_enabled()
+            && scenario_pressure_in_newton_enabled()
+        {
+            PressureBoundContext::from_network(network, &node_ids)
+        } else {
+            PressureBoundContext::empty_for_nodes(node_ids.len())
+        };
+        ctx.merge_cv_soft_setpoints(network, &node_ids);
+        if ctx.has_active_bounds() {
+            Some(ctx)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -1214,6 +1269,11 @@ fn collect_active_regulator_nodes(
     let mut active = Vec::new();
     for pipe in network.pipes() {
         if !pipe.hydraulically_active() {
+            continue;
+        }
+        if matches!(pipe.kind, ConnectionKind::ControlValve)
+            && control_valve_soft_setpoint_enabled()
+        {
             continue;
         }
         if !matches!(
@@ -2186,6 +2246,77 @@ mod tests {
             "P_M should be ~75 bar, got {p_m:.3}"
         );
     }
+
+    #[test]
+    #[serial]
+    fn test_cv_soft_setpoint_merges_lower_bound_on_cv_outlet() {
+        unsafe {
+            std::env::set_var("GAZFLOW_CONTROL_VALVE_SOFT_SETPOINT", "1");
+        }
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "IN".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: None,
+            lat: None,
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+        net.add_node(Node {
+            id: "OUT".into(),
+            x: 1.0,
+            y: 0.0,
+            lon: None,
+            lat: None,
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+        net.add_pipe(Pipe {
+            id: "CV1".into(),
+            from: "IN".into(),
+            to: "OUT".into(),
+            kind: ConnectionKind::ControlValve,
+            is_open: true,
+            length_km: 0.01,
+            diameter_mm: 500.0,
+            roughness_mm: 0.05,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec {
+                regulator_setpoint_bar: Some(55.0),
+                control_valve_pressure_out_max_bar: Some(60.0),
+                ..EquipmentSpec::default()
+            },
+        });
+        let node_ids: Vec<String> = net.nodes().map(|n| n.id.clone()).collect();
+        let lower = super::test_cv_soft_lower_bounds(&net, &node_ids);
+        unsafe {
+            std::env::remove_var("GAZFLOW_CONTROL_VALVE_SOFT_SETPOINT");
+        }
+        let out_idx = node_ids.iter().position(|id| id == "OUT").expect("OUT");
+        assert_eq!(lower[out_idx], Some(55.0));
+    }
+}
+
+/// Hook test Phase VII-bis : bornes inf après fusion setpoints CV souples.
+#[cfg(test)]
+pub(crate) fn test_cv_soft_lower_bounds(
+    network: &GasNetwork,
+    node_ids: &[String],
+) -> Vec<Option<f64>> {
+    let mut ctx = PressureBoundContext::empty_for_nodes(node_ids.len());
+    ctx.merge_cv_soft_setpoints(network, node_ids);
+    ctx.lower_bar
 }
 
 struct NewtonEvalContext<'a> {

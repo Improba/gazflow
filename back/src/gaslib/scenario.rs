@@ -391,6 +391,29 @@ pub fn control_valve_decision_variables_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Consigne CV via pénalité Newton (P_aval ≥ setpoint) au lieu du slack régulateur dur (Phase VII-bis).
+pub fn control_valve_soft_setpoint_enabled() -> bool {
+    std::env::var("GAZFLOW_CONTROL_VALVE_SOFT_SETPOINT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Active l'étude NoVa max Q faisable par sink marginal (Phase VII-bis, bench).
+pub fn nova_sink_capacity_study_enabled() -> bool {
+    std::env::var("GAZFLOW_NOVA_SINK_CAPACITY_STUDY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Poids pénalité setpoint CV souple dans Newton (m³/s par bar).
+pub fn control_valve_soft_penalty_weight() -> f64 {
+    std::env::var("GAZFLOW_CONTROL_VALVE_SOFT_PENALTY_WEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|w: &f64| w.is_finite() && *w > 0.0)
+        .unwrap_or_else(|| scenario_pressure_penalty_weight())
+}
+
 /// Fraction initiale de `pressureOutMax` pour la consigne aval des CV (défaut 0,85).
 pub fn control_valve_initial_setpoint_fraction() -> f64 {
     std::env::var("GAZFLOW_CONTROL_VALVE_INITIAL_SETPOINT_FRACTION")

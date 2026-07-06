@@ -525,3 +525,49 @@ Tentative initiale (23 CV régulateurs à `0,85·pressureOutMax` d'emblée) : **
 - **sink_108** : léger gain (−1,2 bar shortfall) via 3 CV — signal faible, pas de convergence NoVa.
 - **Réduction de nomination** : reste le levier ultime pour les sinks friction-limited ; pas d'automatisation nouvelle (v18 bench opt-in inchangé).
 - **Prochaine itération (Phase VII-bis, optionnel)** : setpoint CV comme **variable continue** avec pénalité souple (pas slack dur) ; étude de capacité `max feasible Q` par sink (Pfetsch / ZIB NoVa).
+
+## Phase VII-bis — setpoint CV souple + étude capacité sink (juillet 2026)
+
+### Objectif
+
+1. Remplacer le couplage régulateur **dur** sur les control valves par une **pénalité Newton** `P_aval ≥ setpoint` (même mécanisme que les enveloppes pression scénario).
+2. Quantifier le **débit maximal faisable** par sink marginal via dichotomie sur la fraction de nomination (approche Pfetsch / ZIB NoVa).
+
+### Implémentation
+
+| Composant | Détail |
+|-----------|--------|
+| Flags | `GAZFLOW_CONTROL_VALVE_SOFT_SETPOINT`, `GAZFLOW_NOVA_SINK_CAPACITY_STUDY`, `GAZFLOW_CONTROL_VALVE_SOFT_PENALTY_WEIGHT` |
+| Newton | `PressureBoundContext::merge_cv_soft_setpoints` : borne inf `P_to ≥ regulator_setpoint_bar` des CV actifs ; exclusion CV de `collect_active_regulator_nodes` et `regulator.rs` en mode souple |
+| Capacité | `nova_capacity.rs` : bisection `GAZFLOW_NOVA_CAPACITY_BISECTION_STEPS` (défaut 8) sur 5 sondes (`sink_88`, `sink_83`, `sink_108`, `sink_125`, `sink_122`) ; faisable si résidu ≤ tol×facteur ET `P_sink ≥ pressure_lower` |
+| Diagnostic | `sink_capacity_report` dans `compressor_diag` ; bench tags `phase-vii-bis-smoke` (soft setpoint seul) et `phase-vii-bis-capacity` (+ étude capacité) |
+
+### Bench
+
+```bash
+./scripts/bench-gaslib-582.sh phase-vii-bis-smoke      # soft setpoint seul (~2 min)
+./scripts/bench-gaslib-582.sh phase-vii-bis-capacity    # + étude max Q par sink (séquentiel, ~20-40 min)
+```
+
+Flags hérités Phase VII : `ENTRY_ZERO_FLOW_ANCHOR`, `CONTROL_VALVE_AS_REGULATOR`, `CONTROL_VALVE_DECISION_VARIABLES` + soft setpoint + (optionnel) capacity study.
+
+### Résultat smoke 582 (`phase-vii-bis-smoke`, soft setpoint seul)
+
+| Indicateur | Phase VII (CV decision, slack dur) | Phase VII-bis (soft setpoint) |
+|------------|-------------------------------------|-------------------------------|
+| Résidu | 23,378 | **61,892** (gonflé par la pénalité) |
+| sink_88 shortfall | 23,38 bar | **23,38** (identique) |
+| sink_83 shortfall | 19,0 | **19,0** (identique) |
+| sink_108 shortfall | 7,61 | **7,59** (identique) |
+| sink_122 shortfall | 4,01 | **4,01** (identique) |
+
+### Verdict Phase VII-bis
+
+- **Soft setpoint = neutre sur les déficits pression** : aucun sink n'est soulagé. Les consignes CV fixées par le decision loop Phase VII (`0,85·pressureOutMax` sur les 3 CV actives) sont **inatteignables** vu la pression amont disponible (sink_108 `max_up=10,09 bar` pour un setpoint ~13,6 bar), donc la pénalité souple ajoute un terme `weight × shortfall` non nul au résidu sans changer la physique.
+- **Résidu 23,4 → 61,9** : artefact du résidu pénalisé (méthode de pénalité classique). Le statut reste `contract_violation` (infeasible) dans les deux cas ; seuls les déficits physiques sont informatifs.
+- **Confirmation du verdict NoVa 582** : les déficits mild_618 sont **topologiques / friction-limited**, pas limités par le setpoint régulateur. Aucun levier CV (dur Phase VII ou souple Phase VII-bis) ne restaure la faisabilité.
+- **Étude capacité `max feasible Q`** (tag `phase-vii-bis-capacity`, séquentiel) : quantifie par dichotomie le débit max faisable par sink marginal. Résultats dans le JSON `sink_capacity_report`.
+
+### Note implémentation (parallélisme)
+
+L'étude capacité ne peut pas être parallélisée via `rayon::par_iter` ni `std::thread::scope` : le solveur Newton utilise le pool rayon **global** en interne, et lancer plusieurs solves concurrents sature le pool et **deadlock** (threads bloqués en attente du même pool, 0 % CPU). Retenu : solve **séquentiel** un à la fois. L'étude reste opt-in via le tag dédié.

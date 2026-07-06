@@ -26,7 +26,8 @@ use gazflow_back::gaslib::{
     shortpipe_merge_boundaries_enabled, entry_transport_anchor_enabled,
     entry_transport_anchored_ids, entry_transport_anchored_ids_for_network,
     entry_zero_flow_anchor_enabled, control_valve_regulator_enabled,
-    control_valve_decision_variables_enabled,
+    control_valve_decision_variables_enabled, control_valve_soft_setpoint_enabled,
+    nova_sink_capacity_study_enabled,
     transport_minimal_anchors_enabled, ShortPipeBoundaryPair,
 };
 use gazflow_back::graph::{ConnectionKind, GasNetwork};
@@ -38,7 +39,8 @@ use gazflow_back::solver::{
     compressor_accept_partial_enabled, compressor_map_mode,
     compressor_pressure_from_coeff, estimated_compressor_map_flow_m3s, mass_balance_report,
     preset_robust, scenario_pressure_slips, solve_with_mass_balance_refinement,
-    solve_with_control_valve_decision_loop, SteadyStateConfig, SolverControl,
+    solve_with_control_valve_decision_loop, study_default_marginal_sinks, SinkCapacityReport,
+    SteadyStateConfig, SolverControl,
     boundary_pressure_supply_reports, upstream_pressure_trace, BoundaryPressureSupplyReport,
     BoundaryNominationSlip, CompressorMapMode, ScenarioPressureSlip,
 };
@@ -264,6 +266,10 @@ struct DiagFlags {
     control_valve_regulator: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     control_valve_decision_variables: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    control_valve_soft_setpoint: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    nova_sink_capacity_study: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -341,6 +347,9 @@ struct DiagOutput {
     probe_nodes: Vec<ProbeNode>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     entry_transport_anchored_ids: Vec<String>,
+    /// Étude NoVa max Q faisable par sink marginal (Phase VII-bis).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sink_capacity_report: Vec<SinkCapacityReport>,
 }
 
 #[derive(Debug, Serialize)]
@@ -727,6 +736,7 @@ fn skipped_output(
         boundary_pressure_supply: Vec::new(),
         probe_nodes: Vec::new(),
         entry_transport_anchored_ids: Vec::new(),
+        sink_capacity_report: Vec::new(),
     }
 }
 
@@ -777,6 +787,8 @@ fn main() -> Result<()> {
             entry_zero_flow_anchor: entry_zero_flow_anchor_enabled(),
             control_valve_regulator: control_valve_regulator_enabled(),
             control_valve_decision_variables: control_valve_decision_variables_enabled(),
+            control_valve_soft_setpoint: control_valve_soft_setpoint_enabled(),
+            nova_sink_capacity_study: nova_sink_capacity_study_enabled(),
         };
         emit_json(
             &skipped_output(
@@ -819,6 +831,8 @@ fn main() -> Result<()> {
             entry_zero_flow_anchor: entry_zero_flow_anchor_enabled(),
             control_valve_regulator: control_valve_regulator_enabled(),
             control_valve_decision_variables: control_valve_decision_variables_enabled(),
+            control_valve_soft_setpoint: control_valve_soft_setpoint_enabled(),
+            nova_sink_capacity_study: nova_sink_capacity_study_enabled(),
         };
         emit_json(
             &skipped_output(cli.dataset.clone(), network_display, None, flags, reason),
@@ -862,6 +876,8 @@ fn main() -> Result<()> {
         entry_zero_flow_anchor: entry_zero_flow_anchor_enabled(),
         control_valve_regulator: control_valve_regulator_enabled(),
         control_valve_decision_variables: control_valve_decision_variables_enabled(),
+        control_valve_soft_setpoint: control_valve_soft_setpoint_enabled(),
+        nova_sink_capacity_study: nova_sink_capacity_study_enabled(),
     };
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;
@@ -1012,6 +1028,17 @@ fn main() -> Result<()> {
                 compressor_hard_coupling_report(&network, &result);
             let control_valve_decision_report =
                 control_valve_decision_report(&network, &result);
+            let sink_capacity_report = if nova_sink_capacity_study_enabled() {
+                study_default_marginal_sinks(
+                    &base_network,
+                    &scenario,
+                    &preset,
+                    GasComposition::pure_ch4(),
+                )
+                .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             DiagOutput {
                 status: if contract_violated {
                     "contract_violation"
@@ -1051,6 +1078,7 @@ fn main() -> Result<()> {
                 boundary_pressure_supply,
                 probe_nodes,
                 entry_transport_anchored_ids,
+                sink_capacity_report,
             }
         }
         Err(err) => {
@@ -1086,6 +1114,7 @@ fn main() -> Result<()> {
                 boundary_pressure_supply: Vec::new(),
                 probe_nodes: Vec::new(),
                 entry_transport_anchored_ids: Vec::new(),
+                sink_capacity_report: Vec::new(),
             }
         }
     };
