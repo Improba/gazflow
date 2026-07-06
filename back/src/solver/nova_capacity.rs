@@ -16,7 +16,6 @@ use super::steady_state::{SolverControl, SolverResult};
 
 const DEFAULT_BISECTION_STEPS: usize = 8;
 const DEFAULT_PRESSURE_TOL_BAR: f64 = 0.05;
-const DEFAULT_RESIDUAL_FACTOR: f64 = 10.0;
 
 /// Sinks marginaux GasLib-582 mild_618 (sondes Phase II–VII).
 pub fn default_marginal_sink_ids() -> Vec<&'static str> {
@@ -45,14 +44,6 @@ fn bisection_steps() -> usize {
         .unwrap_or(DEFAULT_BISECTION_STEPS)
 }
 
-fn residual_tolerance_factor() -> f64 {
-    std::env::var("GAZFLOW_NOVA_CAPACITY_RESIDUAL_FACTOR")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|f: &f64| f.is_finite() && *f > 0.0)
-        .unwrap_or(DEFAULT_RESIDUAL_FACTOR)
-}
-
 fn pressure_tolerance_bar() -> f64 {
     std::env::var("GAZFLOW_NOVA_CAPACITY_PRESSURE_TOL_BAR")
         .ok()
@@ -68,19 +59,45 @@ fn sink_pressure_lower_bar(network: &GasNetwork, sink_id: &str) -> Option<f64> {
         .and_then(|n| n.pressure_lower_bar)
 }
 
+/// Borne contractuelle d'un sink = enveloppe pression scénario appliquée (ex. 26,013 bar
+/// pour sink_88), PAS le plancher générique du `.net` (~2 bar). On lit donc sur le réseau
+/// après `network_with_scenario_boundaries`.
+fn sink_contractual_lower_bar(
+    base_network: &GasNetwork,
+    scenario: &ScenarioDemands,
+    sink_id: &str,
+) -> Option<f64> {
+    let boundary_net = network_with_scenario_boundaries(base_network, scenario);
+    sink_pressure_lower_bar(&boundary_net, sink_id)
+}
+
+/// Garde-fou divergence : résidu explosé (solve non convergé / divergé). Au-dessus, on
+/// considère le solve inexploitable. La pénalité soft-setpoint peut gonfler le résidu
+/// (~60 m³/s) sans divergence : on reste large.
+fn divergence_guard_m3s(preset: &SolverPreset) -> f64 {
+    std::env::var("GAZFLOW_NOVA_CAPACITY_DIVERGENCE_GUARD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|g: &f64| g.is_finite() && *g > 0.0)
+        .unwrap_or(1.0e6)
+}
+
 fn sink_delivery_feasible(
     network: &GasNetwork,
     result: &SolverResult,
     sink_id: &str,
-    residual_tol: f64,
+    divergence_guard: f64,
     pressure_tol_bar: f64,
 ) -> (bool, f64, Option<f64>) {
     let p = result.pressures.get(sink_id).copied().unwrap_or(0.0);
     let lower = sink_pressure_lower_bar(network, sink_id);
     let shortfall = lower.map(|lo| (lo - p).max(0.0)).unwrap_or(0.0);
     let pressure_ok = shortfall <= pressure_tol_bar;
-    let residual_ok = result.residual <= residual_tol;
-    (residual_ok && pressure_ok, shortfall, Some(p))
+    // Critère NoVa capacité = pression du sink sous sa borne contractuelle. Le résidu
+    // global n'est qu'un garde-fou de divergence (la nomination mild_618 reste globalement
+    // infeasible à cause des autres sinks, c'est attendu).
+    let not_diverged = result.residual.is_finite() && result.residual < divergence_guard;
+    (pressure_ok && not_diverged, shortfall, Some(p))
 }
 
 fn solve_at_sink_scale(
@@ -124,8 +141,8 @@ pub fn study_sink_max_feasible_delivery(
         .copied()
         .unwrap_or(0.0)
         .abs();
-    let pressure_lower = sink_pressure_lower_bar(base_network, sink_id);
-    let residual_tol = preset.tolerance * residual_tolerance_factor();
+    let pressure_lower = sink_contractual_lower_bar(base_network, scenario, sink_id);
+    let divergence_guard = divergence_guard_m3s(preset);
     let pressure_tol = pressure_tolerance_bar();
     let steps = bisection_steps();
 
@@ -144,13 +161,18 @@ pub fn study_sink_max_feasible_delivery(
         });
     }
 
-    let (_, result_nominal) =
+    let (boundary_nominal, result_nominal) =
         solve_at_sink_scale(base_network, scenario, sink_id, 1.0, preset, gas)?;
-    let (feasible_nominal, shortfall_nominal, p_nominal) =
-        sink_delivery_feasible(base_network, &result_nominal, sink_id, residual_tol, pressure_tol);
+    let (feasible_nominal, shortfall_nominal, p_nominal) = sink_delivery_feasible(
+        &boundary_nominal,
+        &result_nominal,
+        sink_id,
+        divergence_guard,
+        pressure_tol,
+    );
 
     let mut lo = 0.0_f64;
-    let mut hi = if feasible_nominal { 1.0 } else { 1.0_f64 };
+    let mut hi = 1.0_f64;
     let mut best_scale = if feasible_nominal { 1.0 } else { 0.0 };
     let mut best_result = result_nominal.clone();
     let mut best_shortfall = shortfall_nominal;
@@ -159,9 +181,15 @@ pub fn study_sink_max_feasible_delivery(
     if !feasible_nominal {
         for _ in 0..steps {
             let mid = (lo + hi) * 0.5;
-            let (_, result) = solve_at_sink_scale(base_network, scenario, sink_id, mid, preset, gas)?;
-            let (ok, shortfall, p) =
-                sink_delivery_feasible(base_network, &result, sink_id, residual_tol, pressure_tol);
+            let (boundary_mid, result) =
+                solve_at_sink_scale(base_network, scenario, sink_id, mid, preset, gas)?;
+            let (ok, shortfall, p) = sink_delivery_feasible(
+                &boundary_mid,
+                &result,
+                sink_id,
+                divergence_guard,
+                pressure_tol,
+            );
             if ok {
                 best_scale = mid;
                 best_result = result;

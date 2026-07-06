@@ -566,7 +566,19 @@ Flags hérités Phase VII : `ENTRY_ZERO_FLOW_ANCHOR`, `CONTROL_VALVE_AS_REGULATO
 - **Soft setpoint = neutre sur les déficits pression** : aucun sink n'est soulagé. Les consignes CV fixées par le decision loop Phase VII (`0,85·pressureOutMax` sur les 3 CV actives) sont **inatteignables** vu la pression amont disponible (sink_108 `max_up=10,09 bar` pour un setpoint ~13,6 bar), donc la pénalité souple ajoute un terme `weight × shortfall` non nul au résidu sans changer la physique.
 - **Résidu 23,4 → 61,9** : artefact du résidu pénalisé (méthode de pénalité classique). Le statut reste `contract_violation` (infeasible) dans les deux cas ; seuls les déficits physiques sont informatifs.
 - **Confirmation du verdict NoVa 582** : les déficits mild_618 sont **topologiques / friction-limited**, pas limités par le setpoint régulateur. Aucun levier CV (dur Phase VII ou souple Phase VII-bis) ne restaure la faisabilité.
-- **Étude capacité `max feasible Q`** (tag `phase-vii-bis-capacity`, séquentiel) : quantifie par dichotomie le débit max faisable par sink marginal. Résultats dans le JSON `sink_capacity_report`.
+- **Étude capacité `max feasible Q`** (tag `phase-vii-bis-capacity`, séquentiel) : quantifie par dichotomie le débit max faisable par sink marginal. Critère = pression du sink ≥ borne contractuelle scénario (lue sur le réseau après `network_with_scenario_boundaries`, pas le plancher `.net`), avec garde-fou de divergence résidu.
+
+#### Résultat `phase-vii-bis-capacity` (1 pas de dichotomie, borne contractuelle corrigée)
+
+| Sink | nominal Q (m³/s) | max feasible Q | feasible fraction | shortfall à max (bar) | Verdict |
+|------|------------------|----------------|-------------------|-----------------------|---------|
+| sink_88 | 7,18 | 0,0 | **0,00** | 23,38 | infeasible (max_up 2,64 < 26,01) |
+| sink_83 | 3,99 | 0,0 | **0,00** | 19,00 | infeasible (max_up 5,78 < 21,01) |
+| sink_108 | 5,45 | 0,0 | **0,00** | 7,61 | infeasible (max_up 10,09 < 16,01) |
+| sink_125 | 7,96 | 7,96 | **1,00** | 0,00 | **faisable** (alimenté via ancrage source_25) |
+| sink_122 | 10,43 | 0,0 | **0,00** | 4,01 | infeasible (anchor-pinned 70 < 74,01) |
+
+Lecture NoVa : **sink_125 n'est pas un sink problématique** (capacity 100% grâce à l'ancrage `source_25` Q=0 de la Phase VII). Les 4 autres sinks ont une capacité **nulle** : la pression amont reachable (max_up) est inférieure à la borne contractuelle **même à débit nul** — la faisabilité n'est donc pas une question de quantité de nomination mais de reachabilité pression, confirmation directe du verdict topologique Phase V.
 
 ### Note implémentation (parallélisme)
 
