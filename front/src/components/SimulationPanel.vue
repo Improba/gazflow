@@ -249,6 +249,21 @@
     </q-banner>
 
     <template v-if="simulateStore.result">
+      <div class="row q-mb-sm">
+        <q-btn
+          v-if="simulateStore.novaActive"
+          dense
+          outline
+          color="primary"
+          icon="assignment_turned_in"
+          label="Rapport de certification"
+          class="full-width"
+          :disable="simulateStore.loading"
+          @click="showReport = true"
+        >
+          <q-tooltip>Verdict, points déficitaires et capacité — export PDF ou JSON.</q-tooltip>
+        </q-btn>
+      </div>
       <VerdictCard @focus-deficits="focusFirstDeficit" />
       <SinkDiagnosticsList @select-node="onSelectSink" />
       <SinkCapacityTable
@@ -257,6 +272,7 @@
         @reduce-all="onReduceAll"
       />
       <SinkDiagnosticPopover @reduce="onReduceSink" @run-study="runCapacityStudy" />
+      <CertificationReportDialog v-model="showReport" />
 
       <q-banner
         v-if="partialContinuationWarning"
@@ -428,6 +444,7 @@ import ComparePanel from 'src/components/ComparePanel.vue';
 import DemandControls from 'src/components/DemandControls.vue';
 import EquipmentControls from 'src/components/EquipmentControls.vue';
 import NominationPanel from 'src/components/NominationPanel.vue';
+import CertificationReportDialog from 'src/components/CertificationReportDialog.vue';
 import ScenarioPanel from 'src/components/ScenarioPanel.vue';
 import SinkCapacityTable from 'src/components/SinkCapacityTable.vue';
 import SinkDiagnosticPopover from 'src/components/SinkDiagnosticPopover.vue';
@@ -451,6 +468,8 @@ const networkStore = useNetworkStore();
 const simulateStore = useSimulateStore();
 const editorStore = useEditorStore();
 const nominationStore = useNominationStore();
+
+const showReport = ref(false);
 const route = useRoute();
 const comparePanelOpen = computed(() => route.query.compare === '1');
 const demandOverrides = ref<Record<string, number>>({});
