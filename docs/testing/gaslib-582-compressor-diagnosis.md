@@ -13,19 +13,18 @@ Document de référence architecture et décisions. Bench chiffré : [gaslib-582
 
 Le champ JSON `boundary_nomination_slips` liste les écarts débit sur `source_*` / `sink_*` à Q≠0 (hors slack et boundaries assouplies) : utile pour quantifier la fidélité nomination au partial accept.
 
-## État actuel (juillet 2026)
+## État actuel (juillet 2026, post Phase VII-bis)
 
 | | |
 |--|--|
-| Résidu effectif (nomination intacte, v17) | **2,045 m³/s** |
-| Résidu avec abandon Q v18 (run historique) | ~2,000 m³/s |
+| Dataset | GasLib-582, `nomination_mild_618` |
+| Statut solve (nomination intacte) | `contract_violation` — infeasible, **résidu non informatif** (~23,4 m³/s sans soft setpoint, ~61,9 avec pénalité soft) |
 | Tolérance cible preset robust | 3×10⁻³ m³/s |
-| Pire nœud (nomination intacte) | `sink_24` (Q −4,96 m³/s imposé, imbalance ≈ −résidu) |
-| Statut solve | partial accept (~2 m³/s, pas convergence stricte) |
+| Sinks marginaux | sink_88, sink_83, sink_108, sink_122 (infeasibles) ; sink_125 (faisable via ancrage source_25) |
+| Verdict NoVa | **infeasibilité topologique** (reachabilité pression), pas addressable par compresseur ou CV |
+| Levier NoVa restant | **réduction de nomination** / ouverture de cheminées pression (décision métier, pas solver) |
 
-### Ce que signifie « ~2 m³/s »
-
-Le résidu Newton rapporté est le **maximum des déséquilibres massiques nodaux** sur les nœuds à pression libre. Au partial accept, une quinzaine de nœuds affichent \|imbalance\| ≈ 2 m³/s : ce n'est pas une tolérance codée en dur, mais un **plateau de non-convergence** du MVP P² + outer loop carte.
+> Le résidu Newton rapporté est le max des déséquilibres massiques nodaux. Avec les enveloppes contrat Q+P actives, mild_618 reste `contract_violation` : ce n'est pas un plateau de MVP mais une **infeasibilité physique réelle** des 4 sinks marginaux (Phase II-V, confirmée par l'étude capacité Phase VII-bis).
 
 ## Décision structurante : Option 1
 
@@ -583,3 +582,63 @@ Lecture NoVa : **sink_125 n'est pas un sink problématique** (capacity 100% grâ
 ### Note implémentation (parallélisme)
 
 L'étude capacité ne peut pas être parallélisée via `rayon::par_iter` ni `std::thread::scope` : le solveur Newton utilise le pool rayon **global** en interne, et lancer plusieurs solves concurrents sature le pool et **deadlock** (threads bloqués en attente du même pool, 0 % CPU). Retenu : solve **séquentiel** un à la fois. L'étude reste opt-in via le tag dédié.
+
+---
+
+## Synthèse (juillet 2026, post Phase VII-bis)
+
+### Arc des phases I → VII-bis
+
+| Phase | Levier exploré | Résultat sur mild_618 |
+|-------|----------------|-----------------------|
+| I-bis / I-c | Enveloppes pression scénario + contrat dual Q+P | Cadre contractuel actif ; révèle les violations P |
+| II | Fusion shortPipe + ancrage entries transport | Corrige l'alias shortPipe ; isole sink_88/83 infeasibles |
+| III | Compresseurs en variables de décision | Pas le blocker (modèle compresseur soft écarté) |
+| IV | Couplage compresseur dur `P_out = r·P_in` | Fiabilise la physique compresseur, ne restaure pas la faisabilité |
+| V | Reachabilité décision directionnelle + CV-boundary | Verdict topologique : sink_88/83 non adressables par compresseur |
+| VI | Cap dynamique ratio par `pressureOutMax / P_in` | Plus de violation outlet ; verdict NoVa inchangé |
+| VII | Entries Q=0 (source_25) + CV setpoint (decision loop) | sink_125 fixé (capacity 100%) ; sink_108 léger gain ; sink_88/83 inchangés |
+| VII-bis | CV setpoint souple (pénalité Newton) + étude capacité | Soft setpoint neutre ; capacity = 0 pour 4/5 sinks (reachabilité pression) |
+
+### Verdict NoVa 582 stable
+
+Pour `nomination_mild_618`, l'infeasibilité est **topologique / friction-limited**, pas un défaut de modèle solveur :
+
+- **sink_88** (need 26,01 bar, max_up 2,64) : aucune source de pression sur le chemin. Capacity = 0.
+- **sink_83** (need 21,01, max_up 5,78) : idem. Capacity = 0.
+- **sink_108** (need 16,01, max_up 10,09) : reachable mais insuffisant. Capacity = 0.
+- **sink_122** (need 74,01, max_up 70,0) : anchor-pinned par source_10. Capacity = 0.
+- **sink_125** (need 2,01, alimenté via source_25) : **faisable** (capacity 100%) grâce à l'ancrage Q=0 Phase VII.
+
+Pour les 4 sinks infeasibles, la pression amont reachable est inférieure à la borne contractuelle **même à débit nul** : la faisabilité n'est donc pas une question de quantité de nomination mais de **reachabilité pression**. Aucun levier solver exploré (compresseur dur/souple, CV setpoint dur/souple, ancrage entries) ne restaure la faisabilité.
+
+### Leviers NoVa épuisés côté solveur
+
+| Levier | Statut |
+|--------|--------|
+| Compresseurs (carte, décision, couplage dur, cap ratio) | Épuisé (Phases III-VI) — pas le blocker |
+| Control valves setpoint (dur decision loop) | Épuisé (Phase VII) — sink_125 fixé, autres inchangés |
+| Control valves setpoint souple (pénalité Newton) | Épuisé (Phase VII-bis) — neutre |
+| Ancrage entries (transport + zero-flow) | Épuisé (Phase II/VII) — source_25 ancré |
+| Étude capacité max Q | Faite (Phase VII-bis) — capacity = 0 pour 4/5 sinks |
+
+### Le seul levier NoVa restant
+
+**Réduction de nomination** (ou ouverture de cheminées pression côté réseau) pour les 4 sinks infeasibles. C'est une **décision métier / contractuelle**, pas un correctif solver — le solveur a établi la preuve de non-faisabilité.
+
+### A-t-on fini le plan ?
+
+**Oui.** Le plan de diagnostic NoVa GasLib-582 (Phases I → VII-bis) est clos :
+
+1. Le solveur est **fiable** sur 582 (compresseur dur capé, CV setpoint, ancrages entries) — la physique est cohérente.
+2. L'infeasibilité mild_618 est **caractérisée et prouvée** : topologique, pas un bug solver.
+3. Les sinks problématiques sont **identifiés et quantifiés** (capacity study).
+4. Aucun levier solver supplémentaire n'est attendu — la suite est opérationnelle.
+
+### Suite possible (hors plan solver, si demandé)
+
+- **Scénario de nomination réduite** : bench d'une nomination tronquée sur les 4 sinks infeasibles pour valider la restauration de faisabilité (le levier métier).
+- **Étude d'ouverture de cheminées** : analyse de sensibilité réseau (ajout de source de pression sur les chemins sink_88/83) — relève de la planification réseau, pas du solveur actuel.
+- **Transposition** : rejouer le pipeline Phases I-VII-bis sur d'autres nominations 582 ou d'autres datasets GasLib pour confirmer la généralité du verdict.
+
+Aucune de ces suites n'est du ressort du présent diagnostic solveur ; elles sont notées pour mémoire.
