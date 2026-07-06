@@ -49,6 +49,49 @@ describe('mergeConvergedMessage', () => {
     expect(merged.adjusted_demands?.N2).toBe(-8);
     expect(merged.active_bounds).toEqual(['N2']);
   });
+
+  it('merges NoVa diagnostic fields and defaults to empty arrays', () => {
+    const merged = mergeConvergedMessage({
+      type: 'converged',
+      run_id: 'run-nova',
+      seq: 3,
+      total_ms: 200,
+      result: {
+        pressures: { sink_88: 24.0 },
+        flows: {},
+        iterations: 8,
+        residual: 1e-3,
+      },
+      pressure_slips: [
+        {
+          node_id: 'sink_88',
+          solved_pressure_bar: 24.0,
+          lower_bar: 26.01325,
+          upper_bar: 80.0,
+          shortfall_bar: 2.01325,
+          excess_bar: 0.0,
+          from_scenario_envelope: true,
+        },
+      ],
+      sink_diagnostics: [
+        {
+          node_id: 'sink_88',
+          trace: [{ node_id: 'sink_88', pressure_bar: 24.0 }],
+          max_upstream_pressure_bar: 24.0,
+          required_lower_bar: 26.01325,
+          supply_gap_bar: 2.01325,
+        },
+      ],
+      nova_verdict: { feasible: false, deficit_sinks: ['sink_88'], cause: 'PressureReachability' },
+    });
+
+    expect(merged.pressure_slips).toHaveLength(1);
+    expect(merged.pressure_slips?.[0].node_id).toBe('sink_88');
+    expect(merged.sink_diagnostics).toHaveLength(1);
+    expect(merged.nova_verdict?.feasible).toBe(false);
+    expect(merged.nova_verdict?.cause).toBe('PressureReachability');
+    expect(merged.boundary_supply).toEqual([]);
+  });
 });
 
 describe('contingency websocket contracts', () => {

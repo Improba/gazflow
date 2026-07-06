@@ -24,6 +24,7 @@ use crate::solver;
 mod export;
 mod import;
 mod network_edit;
+mod nova;
 mod scenarios;
 mod ws;
 
@@ -242,6 +243,8 @@ pub fn create_router_with_runtime_limits_and_datasets(
             post(scenarios::apply_scenario),
         )
         .route("/api/simulate/compare", post(scenarios::compare_scenarios))
+        .route("/api/nova/scenarios", get(nova::list_nova_scenarios))
+        .route("/api/nova/capacity", post(nova::post_nova_capacity))
         .layer(CorsLayer::permissive())
         .with_state(shared)
 }

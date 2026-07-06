@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use quick_xml::de::from_str;
@@ -633,6 +633,37 @@ pub fn load_scenario_demands<P: AsRef<Path>>(path: P) -> Result<ScenarioDemands>
     parse_scenario_demands_from_str(&xml)
 }
 
+/// Résout le chemin d'un scénario `.scn` pour un dataset donné.
+///
+/// Recherche `{scenario_id}.scn` (ex. `nomination_mild_618`) récursivement sous `dat_dir`
+/// (cohérent avec `api::nova::collect_scenarios` qui liste récursivement), puis en fallback
+/// `{dataset}.scn` à la racine. Retourne `None` si non trouvé.
+pub fn resolve_scenario_path(dat_dir: &Path, dataset: &str, scenario_id: &str) -> Option<PathBuf> {
+    let target = format!("{scenario_id}.scn");
+    fn walk(dir: &Path, target: &str) -> Option<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return None;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.file_name().is_some_and(|n| n == target) {
+                return Some(path);
+            }
+            if path.is_dir() {
+                if let Some(found) = walk(&path, target) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+    if let Some(found) = walk(dat_dir, &target) {
+        return Some(found);
+    }
+    let fallback = dat_dir.join(format!("{dataset}.scn"));
+    fallback.is_file().then_some(fallback)
+}
+
 fn parse_scenario_demands_from_str(xml: &str) -> Result<ScenarioDemands> {
     let raw: XmlBoundaryValue =
         from_str(xml).with_context(|| "parsing XML GasLib scenario (.scn)")?;
@@ -960,13 +991,31 @@ pub fn network_with_scenario_boundaries(
     base: &GasNetwork,
     scenario: &ScenarioDemands,
 ) -> GasNetwork {
+    network_with_scenario_boundaries_impl(base, scenario, false)
+}
+
+/// Variante NoVa : applique **toujours** les enveloppes pression contractuelles (bornes
+/// `.scn`), indépendamment du flag `GAZFLOW_SCENARIO_PRESSURE_ENVELOPES`. Utilisée par
+/// l'étude capacité API pour évaluer la faisabilité sous bornes contractuelles.
+pub fn network_with_scenario_boundaries_for_nova(
+    base: &GasNetwork,
+    scenario: &ScenarioDemands,
+) -> GasNetwork {
+    network_with_scenario_boundaries_impl(base, scenario, true)
+}
+
+fn network_with_scenario_boundaries_impl(
+    base: &GasNetwork,
+    scenario: &ScenarioDemands,
+    force_envelopes: bool,
+) -> GasNetwork {
     let mut network = base.clone();
     apply_scenario_boundaries(&mut network, scenario);
     if entry_transport_anchor_enabled() {
         apply_entry_transport_anchors(&mut network, scenario);
     }
     apply_control_valve_regulators(&mut network);
-    if scenario_pressure_envelopes_enabled() {
+    if force_envelopes || scenario_pressure_envelopes_enabled() {
         apply_scenario_pressure_envelopes(&mut network, scenario);
     }
     network

@@ -78,6 +78,10 @@ struct StartOptions {
     robust_mode: bool,
     #[serde(default)]
     continuation_scales: Option<Vec<f64>>,
+    /// Identifiant de scénario NoVa (ex. `nomination_mild_618`) pour activer les diagnostics
+    /// pression (slips, alimentation amont, verdict). Absent → run hors-NoVa inchangé.
+    #[serde(default)]
+    scenario_id: Option<String>,
 }
 
 impl StartOptions {
@@ -118,6 +122,7 @@ impl Default for StartOptions {
             gas_composition: None,
             robust_mode: false,
             continuation_scales: None,
+            scenario_id: None,
         }
     }
 }
@@ -206,6 +211,14 @@ enum ServerMessage {
         outer_iterations: Option<usize>,
         #[serde(skip_serializing_if = "Option::is_none")]
         infeasibility_diagnostic: Option<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pressure_slips: Vec<solver::ScenarioPressureSlip>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        boundary_supply: Vec<solver::BoundaryPressureSupplyReport>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        sink_diagnostics: Vec<solver::SinkDiagnostic>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        nova_verdict: Option<solver::NovaVerdict>,
     },
     Cancelled {
         run_id: String,
@@ -323,6 +336,45 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                     options.gas_composition =
                                         Some(super::active_gas_composition(&state));
                                 }
+                                let scenario = match options.scenario_id.as_deref() {
+                                    Some(scenario_id) => {
+                                        match crate::gaslib::resolve_scenario_path(
+                                            &state.data_dir,
+                                            &network_id,
+                                            scenario_id,
+                                        ) {
+                                            Some(path) => {
+                                                match crate::gaslib::load_scenario_demands(&path) {
+                                                    Ok(mut sc) => {
+                                                        crate::gaslib::enrich_scenario_with_balance_hub(&network, &mut sc);
+                                                        Some(sc)
+                                                    }
+                                                    Err(err) => {
+                                                        let _ = tx.send(ServerMessage::Error {
+                                                            run_id: run_id.clone(),
+                                                            seq: 0,
+                                                            message: format!("scénario {scenario_id}: {err:#}"),
+                                                            fatal: false,
+                                                        }).await;
+                                                        None
+                                                    }
+                                                }
+                                            }
+                                            None => {
+                                                let _ = tx.send(ServerMessage::Error {
+                                                    run_id: run_id.clone(),
+                                                    seq: 0,
+                                                    message: format!(
+                                                        "scénario {scenario_id} introuvable pour le dataset {network_id}"
+                                                    ),
+                                                    fatal: false,
+                                                }).await;
+                                                None
+                                            }
+                                        }
+                                    }
+                                    None => None,
+                                };
                                 let permit = match state.simulation_slots.clone().try_acquire_owned() {
                                     Ok(permit) => permit,
                                     Err(_) => {
@@ -363,6 +415,7 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                         tx: tx_for_solver,
                                         capacity_bounds,
                                         mode,
+                                        scenario,
                                     });
                                 });
                             }
@@ -618,6 +671,7 @@ struct SolverStreamContext {
     tx: mpsc::Sender<ServerMessage>,
     capacity_bounds: Option<HashMap<String, CapacityBoundDto>>,
     mode: Option<SimulationMode>,
+    scenario: Option<crate::gaslib::ScenarioDemands>,
 }
 
 fn run_solver_stream(ctx: SolverStreamContext) {
@@ -633,6 +687,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
         tx,
         capacity_bounds,
         mode,
+        scenario,
     } = ctx;
     let steady_config = options.steady_state_config();
     let started = Instant::now();
@@ -703,6 +758,14 @@ fn run_solver_stream(ctx: SolverStreamContext) {
         });
         return;
     }
+
+    // Diagnostics NoVa : évalue le résultat contre les bornes contractuelles scénario.
+    // Renvoie None si aucun scénario n'est fourni (run hors-NoVa, comportement inchangé).
+    let compute_nova = |result: &SolverResult| -> Option<solver::NovaDiagnostics> {
+        scenario
+            .as_ref()
+            .map(|sc| solver::compute_nova_diagnostics(&network_prepared, sc, result))
+    };
 
     let outcome = match (&capacity_bounds, &mode) {
         (Some(api_bounds), Some(SimulationMode::Optimize)) => {
@@ -791,6 +854,14 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                     started.elapsed().as_millis() as u64,
                 ),
             );
+            let (pressure_slips, boundary_supply, sink_diagnostics, nova_verdict) =
+                match compute_nova(&final_result) {
+                    Some(d) => {
+                        let v = solver::nova_verdict(&d, final_result.demand_scale_achieved);
+                        (d.pressure_slips, d.boundary_supply, d.sink_diagnostics, Some(v))
+                    }
+                    None => (Vec::new(), Vec::new(), Vec::new(), None),
+                };
             let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
             let _ = tx.blocking_send(ServerMessage::Converged {
                 run_id,
@@ -803,6 +874,10 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                 objective_value: None,
                 outer_iterations: None,
                 infeasibility_diagnostic: None,
+                pressure_slips,
+                boundary_supply,
+                sink_diagnostics,
+                nova_verdict,
             });
         }
         SolveOutcome::Check {
@@ -826,6 +901,14 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                     started.elapsed().as_millis() as u64,
                 ),
             );
+            let (pressure_slips, boundary_supply, sink_diagnostics, nova_verdict) =
+                match compute_nova(&final_result) {
+                    Some(d) => {
+                        let v = solver::nova_verdict(&d, final_result.demand_scale_achieved);
+                        (d.pressure_slips, d.boundary_supply, d.sink_diagnostics, Some(v))
+                    }
+                    None => (Vec::new(), Vec::new(), Vec::new(), None),
+                };
             let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
             let _ = tx.blocking_send(ServerMessage::Converged {
                 run_id,
@@ -838,6 +921,10 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                 objective_value: None,
                 outer_iterations: None,
                 infeasibility_diagnostic: None,
+                pressure_slips,
+                boundary_supply,
+                sink_diagnostics,
+                nova_verdict,
             });
         }
         SolveOutcome::Constrained(Ok(constrained)) => {
@@ -854,6 +941,14 @@ fn run_solver_stream(ctx: SolverStreamContext) {
             let ws_obj = constrained.objective_value;
             let ws_outer = constrained.outer_iterations;
             let ws_diag = constrained.infeasibility_diagnostic.clone();
+            let (pressure_slips, boundary_supply, sink_diagnostics, nova_verdict) =
+                match compute_nova(&ws_result) {
+                    Some(d) => {
+                        let v = solver::nova_verdict(&d, ws_result.demand_scale_achieved);
+                        (d.pressure_slips, d.boundary_supply, d.sink_diagnostics, Some(v))
+                    }
+                    None => (Vec::new(), Vec::new(), Vec::new(), None),
+                };
             super::export::store_export_record(
                 &state,
                 super::export::new_constrained_export_record(
@@ -877,6 +972,10 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                 objective_value: Some(ws_obj),
                 outer_iterations: Some(ws_outer),
                 infeasibility_diagnostic: ws_diag,
+                pressure_slips,
+                boundary_supply,
+                sink_diagnostics,
+                nova_verdict,
             });
         }
         SolveOutcome::Normal(Err(err))

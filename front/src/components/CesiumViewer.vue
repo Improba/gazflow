@@ -293,7 +293,13 @@ function setupEditInteractions() {
 
   editClickHandler = new ScreenSpaceEventHandler(viewer.scene.canvas);
   editClickHandler.setInputAction((movement: { position: Cartesian2 }) => {
-    if (!editorStore.editMode) return;
+    // Camille (ingénieur, hors édition) peut cliquer un nœud déficitaire pour l'inspecter.
+    // La sélection de nœud est donc autorisée en mode visualisation ; l'édition (pipes,
+    // placement) reste gated par editMode plus bas.
+    if (!editorStore.editMode) {
+      void handleViewModeNodePick(movement.position);
+      return;
+    }
     void handleMapClick(movement.position);
   }, ScreenSpaceEventType.LEFT_CLICK);
 
@@ -317,28 +323,46 @@ function teardownEditInteractions() {
   }
 }
 
-async function handleMapClick(screenPosition: Cartesian2) {
-  if (!viewer) return;
-
+function pickEntityId(screenPosition: Cartesian2): string {
+  if (!viewer) return '';
   const picked = viewer.scene.pick(screenPosition);
   if (defined(picked) && picked.id) {
     const entity = picked.id as Entity;
-    const entityId = typeof entity.id === 'string' ? entity.id : '';
-    if (entityId.startsWith('node:')) {
-      editorStore.selectNode(entityId.slice(5));
-      updateSelectionHighlight();
-      return;
-    }
-    if (entityId.startsWith('pipe:')) {
-      editorStore.selectPipe(entityId.slice(5));
-      updateSelectionHighlight();
-      return;
-    }
-    if (entityId.startsWith('equip:')) {
-      editorStore.selectPipe(entityId.slice(6));
-      updateSelectionHighlight();
-      return;
-    }
+    return typeof entity.id === 'string' ? entity.id : '';
+  }
+  return '';
+}
+
+// Mode visualisation (Camille) : sélection de nœud uniquement, pas d'édition.
+function handleViewModeNodePick(screenPosition: Cartesian2) {
+  const entityId = pickEntityId(screenPosition);
+  if (entityId.startsWith('node:')) {
+    editorStore.selectNode(entityId.slice(5));
+    updateSelectionHighlight();
+  } else {
+    editorStore.clearSelection();
+    updateSelectionHighlight();
+  }
+}
+
+async function handleMapClick(screenPosition: Cartesian2) {
+  if (!viewer) return;
+
+  const entityId = pickEntityId(screenPosition);
+  if (entityId.startsWith('node:')) {
+    editorStore.selectNode(entityId.slice(5));
+    updateSelectionHighlight();
+    return;
+  }
+  if (entityId.startsWith('pipe:')) {
+    editorStore.selectPipe(entityId.slice(5));
+    updateSelectionHighlight();
+    return;
+  }
+  if (entityId.startsWith('equip:')) {
+    editorStore.selectPipe(entityId.slice(6));
+    updateSelectionHighlight();
+    return;
   }
 
   if (editorStore.placingNode) {
@@ -447,6 +471,14 @@ watch(
 );
 
 watch(
+  () => simulateStore.pressureSlips,
+  () => {
+    updateColors();
+  },
+  { deep: true },
+);
+
+watch(
   () => [networkStore.nodes, networkStore.pipes],
   () => {
     renderNetwork();
@@ -468,6 +500,16 @@ watch(
     updateSelectionHighlight();
     if (viewer) {
       viewer.canvas.style.cursor = editorStore.editMode && editorStore.placingNode ? 'crosshair' : '';
+    }
+    // Mode visualisation (Camille) : vole vers le nœud sélectionné pour qu'il reste
+    // visible sur les grands réseaux (ex. GasLib-582). En édition on ne perturbe pas la caméra.
+    if (viewer && !editorStore.editMode && editorStore.selectedKind === 'node' && editorStore.selectedId) {
+      const entity = nodeEntitiesById.get(editorStore.selectedId);
+      if (entity) {
+        void viewer.flyTo(entity, { duration: 0.6 }).catch(() => {
+          // flyTo peut rejeter si l'entité n'est pas rendable — on ignore silencieusement.
+        });
+      }
     }
   },
 );
@@ -643,6 +685,8 @@ function updateColors() {
     updateNodePressureColors(pressures);
   }
 
+  applyNovaDeficitHighlights();
+
   if (Object.keys(flows).length > 0) {
     updatePipeFlowColors(flows);
   }
@@ -701,6 +745,21 @@ function updateNodePressureColors(pressures: Record<string, number>) {
     const p = pressures[nodeId];
     if (p == null || !entity.point) continue;
     entity.point.color = Color.fromCssColorString(pressureToCss(p, min, max));
+  }
+}
+
+const NOVA_DEFICIT_COLOR = Color.fromCssColorString('#ff1744');
+const NOVA_DEFICIT_PIXEL_SIZE = 16;
+
+function applyNovaDeficitHighlights() {
+  const slips = simulateStore.pressureSlips;
+  if (slips.length === 0) return;
+  for (const slip of slips) {
+    if (slip.shortfall_bar <= 0) continue;
+    const entity = nodeEntitiesById.get(slip.node_id);
+    if (!entity?.point) continue;
+    entity.point.color = NOVA_DEFICIT_COLOR;
+    entity.point.pixelSize = NOVA_DEFICIT_PIXEL_SIZE;
   }
 }
 

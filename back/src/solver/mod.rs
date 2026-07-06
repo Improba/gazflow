@@ -7,6 +7,7 @@ pub mod capacity;
 pub(crate) mod compressor_loop;
 pub(crate) mod control_valve_loop;
 pub mod nova_capacity;
+pub mod nova_diagnostics;
 pub mod config;
 pub mod contingency;
 pub mod continuation;
@@ -21,7 +22,11 @@ mod steady_state;
 pub mod timeseries;
 pub mod transient;
 
-pub use nova_capacity::{SinkCapacityReport, study_default_marginal_sinks};
+pub use nova_capacity::{SinkCapacityReport, study_default_marginal_sinks, study_sinks_capacity};
+pub use nova_diagnostics::{
+    NovaCause, NovaDiagnostics, NovaVerdict, SinkDiagnostic, UpstreamHop, compute_nova_diagnostics,
+    nova_verdict,
+};
 pub use capacity::{CapacityBounds, CapacityViolation, ConstrainedSolverResult};
 pub use config::SteadyStateConfig;
 pub use contingency::{

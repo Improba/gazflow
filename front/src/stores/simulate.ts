@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
-import { api, type SimulationResult, type CapacityViolation, type EquipmentState, type PipeEquipmentDto } from 'src/services/api';
+import { ref, computed } from 'vue';
+import { api, type SimulationResult, type CapacityViolation, type EquipmentState, type PipeEquipmentDto, type ScenarioPressureSlip, type BoundaryPressureSupplyReport, type SinkDiagnostic, type NovaVerdict, type SinkCapacityReport } from 'src/services/api';
 import {
   SimulationWsClient,
   mergeConvergedMessage,
@@ -50,6 +50,23 @@ export const useSimulateStore = defineStore('simulate', () => {
   const runScenarioSummary = ref<RunScenarioSummary | null>(null);
   const robustMode = ref(false);
   const continuationLabel = ref<string | null>(null);
+
+  // NoVa : diagnostics pression (présents si un scenario_id a été fourni au démarrage).
+  const pressureSlips = ref<ScenarioPressureSlip[]>([]);
+  const boundarySupply = ref<BoundaryPressureSupplyReport[]>([]);
+  const sinkDiagnostics = ref<SinkDiagnostic[]>([]);
+  const novaVerdict = ref<NovaVerdict | null>(null);
+  const activeScenarioId = ref<string | null>(null);
+
+  // NoVa actif si un scénario a été fourni et que le backend a renvoyé un verdict.
+  const novaActive = computed(
+    () => novaVerdict.value !== null || pressureSlips.value.length > 0,
+  );
+
+  // Étude capacité par sink (endpoint dédié /api/nova/capacity — coûteuse, opt-in).
+  const sinkCapacity = ref<SinkCapacityReport[]>([]);
+  const capacityLoading = ref(false);
+  const capacityError = ref<string | null>(null);
 
   let wsClient: SimulationWsClient | null = null;
   let lastSnapshotAt = 0;
@@ -121,6 +138,7 @@ export const useSimulateStore = defineStore('simulate', () => {
       resetRuntimeState();
       currentRunId.value = `run-${Date.now()}`;
       status.value = 'running';
+      activeScenarioId.value = options?.scenario_id ?? null;
 
       const { capacity_bounds, mode, ...solverOpts } = options ?? {};
       const mergedEquipment = equipmentOverrides;
@@ -177,6 +195,28 @@ export const useSimulateStore = defineStore('simulate', () => {
     runScenarioSummary.value = summary;
   }
 
+  async function runSinkCapacity(sinkIds?: string[]) {
+    const scenarioId = activeScenarioId.value;
+    if (!scenarioId) {
+      capacityError.value = "Aucun scénario NoVa actif — sélectionnez une nomination.";
+      return;
+    }
+    capacityLoading.value = true;
+    capacityError.value = null;
+    try {
+      const ids = sinkIds && sinkIds.length > 0 ? sinkIds : undefined;
+      sinkCapacity.value = await api.runNovaCapacity({
+        scenario_id: scenarioId,
+        sink_ids: ids,
+      });
+    } catch (err) {
+      capacityError.value = err instanceof Error ? err.message : 'étude capacité échouée';
+      sinkCapacity.value = [];
+    } finally {
+      capacityLoading.value = false;
+    }
+  }
+
   function cancelSimulation() {
     if (!wsClient || !currentRunId.value || !loading.value) {
       return;
@@ -224,6 +264,10 @@ export const useSimulateStore = defineStore('simulate', () => {
           activeBounds.value = merged.active_bounds ?? [];
           equipmentStates.value = merged.equipment_states ?? [];
           warnings.value = merged.warnings ?? [];
+          pressureSlips.value = merged.pressure_slips ?? [];
+          boundarySupply.value = merged.boundary_supply ?? [];
+          sinkDiagnostics.value = merged.sink_diagnostics ?? [];
+          novaVerdict.value = merged.nova_verdict ?? null;
           const scaleAchieved = merged.demand_scale_achieved;
           if (scaleAchieved !== undefined && scaleAchieved < 1) {
             addLog(
@@ -292,6 +336,12 @@ export const useSimulateStore = defineStore('simulate', () => {
     activeBounds.value = [];
     equipmentStates.value = [];
     warnings.value = [];
+    pressureSlips.value = [];
+    boundarySupply.value = [];
+    sinkDiagnostics.value = [];
+    novaVerdict.value = null;
+    sinkCapacity.value = [];
+    capacityError.value = null;
     continuationLabel.value = null;
   }
 
@@ -381,6 +431,16 @@ export const useSimulateStore = defineStore('simulate', () => {
     runScenarioSummary,
     robustMode,
     continuationLabel,
+    pressureSlips,
+    boundarySupply,
+    sinkDiagnostics,
+    novaVerdict,
+    activeScenarioId,
+    novaActive,
+    sinkCapacity,
+    capacityLoading,
+    capacityError,
+    runSinkCapacity,
     runSimulation,
     rerunLastSimulation,
     rerunWithRobustMode,

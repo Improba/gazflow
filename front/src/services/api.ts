@@ -90,6 +90,75 @@ export interface EquipmentState {
   mode: 'active' | 'bypass';
 }
 
+// --- NoVa : diagnostics pression issus du scénario (Phase VII-bis → interface Natran) ---
+
+export interface ScenarioPressureSlip {
+  node_id: string;
+  solved_pressure_bar: number;
+  lower_bar: number | null;
+  upper_bar: number | null;
+  shortfall_bar: number;
+  excess_bar: number;
+  from_scenario_envelope: boolean;
+}
+
+export interface BoundaryPressureSupplyReport {
+  node_id: string;
+  required_lower_bar: number | null;
+  solved_pressure_bar: number;
+  max_upstream_pressure_bar: number;
+  upstream_hops: number;
+  supply_gap_bar: number;
+}
+
+export interface UpstreamHop {
+  node_id: string;
+  pressure_bar: number;
+}
+
+export interface SinkDiagnostic {
+  node_id: string;
+  trace: UpstreamHop[];
+  max_upstream_pressure_bar: number;
+  required_lower_bar: number | null;
+  supply_gap_bar: number;
+}
+
+export type NovaCause = 'Feasible' | 'PressureDeficit' | 'PressureReachability';
+
+export interface NovaVerdict {
+  feasible: boolean;
+  deficit_sinks: string[];
+  cause: NovaCause;
+}
+
+export interface NovaScenarioSummary {
+  id: string;
+  filename: string;
+  relative_path: string;
+}
+
+export interface SinkCapacityReport {
+  sink_id: string;
+  nominal_q_m3s: number;
+  max_feasible_q_m3s: number;
+  feasible_fraction: number;
+  pressure_lower_bar: number | null;
+  pressure_at_max_bar: number | null;
+  pressure_shortfall_bar: number;
+  residual_at_max_m3s: number;
+  bisection_steps: number;
+  feasible_at_nominal: boolean;
+}
+
+export interface NovaCapacityRequest {
+  scenario_id: string;
+  sink_ids?: string[];
+  bisection_steps?: number;
+  robust_mode?: boolean;
+  max_iter?: number;
+}
+
 import type {
   DemandProfileDto,
   TimeseriesResultDto,
@@ -112,6 +181,11 @@ export interface SimulationResult {
   equipment_states?: EquipmentState[];
   warnings?: string[];
   demand_scale_achieved?: number;
+  // NoVa (présents si un scenario_id a été fourni au démarrage de la simulation)
+  pressure_slips?: ScenarioPressureSlip[];
+  boundary_supply?: BoundaryPressureSupplyReport[];
+  sink_diagnostics?: SinkDiagnostic[];
+  nova_verdict?: NovaVerdict;
 }
 
 export interface TimeseriesRequest {
@@ -565,6 +639,16 @@ export const api = {
     const { data } = await client.delete<NetworkMutationResponse>(
       `/network/pipes/${encodeURIComponent(id)}`,
     );
+    return data;
+  },
+
+  async listNovaScenarios(): Promise<NovaScenarioSummary[]> {
+    const { data } = await client.get<NovaScenarioSummary[]>('/nova/scenarios');
+    return data;
+  },
+
+  async runNovaCapacity(payload: NovaCapacityRequest): Promise<SinkCapacityReport[]> {
+    const { data } = await client.post<SinkCapacityReport[]>('/nova/capacity', payload);
     return data;
   },
 };

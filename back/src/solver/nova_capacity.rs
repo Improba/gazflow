@@ -4,8 +4,8 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::gaslib::{
-    ScenarioDemands, effective_solver_demands_for_network, network_with_scenario_boundaries,
-    nova_sink_capacity_study_enabled,
+    ScenarioDemands, effective_solver_demands_for_network,
+    network_with_scenario_boundaries_for_nova, nova_sink_capacity_study_enabled,
 };
 use crate::graph::GasNetwork;
 
@@ -67,7 +67,7 @@ fn sink_contractual_lower_bar(
     scenario: &ScenarioDemands,
     sink_id: &str,
 ) -> Option<f64> {
-    let boundary_net = network_with_scenario_boundaries(base_network, scenario);
+    let boundary_net = network_with_scenario_boundaries_for_nova(base_network, scenario);
     sink_pressure_lower_bar(&boundary_net, sink_id)
 }
 
@@ -113,7 +113,7 @@ fn solve_at_sink_scale(
         let nominal = scenario.demands.get(sink_id).copied().unwrap_or(*q);
         *q = nominal * scale.clamp(0.0, 1.0);
     }
-    let network = network_with_scenario_boundaries(base_network, &scenario_scaled);
+    let network = network_with_scenario_boundaries_for_nova(base_network, &scenario_scaled);
     let demands = effective_solver_demands_for_network(base_network, &scenario_scaled.demands, &scenario_scaled);
     let result = solve_steady_state_with_preset(
         &network,
@@ -128,12 +128,14 @@ fn solve_at_sink_scale(
 }
 
 /// Recherche dichotomique du débit max faisable pour un sink (fraction de la nomination).
+/// `bisection_steps` est explicite (l'API le passe ; le bench lit l'env via `bisection_steps()`).
 pub fn study_sink_max_feasible_delivery(
     base_network: &GasNetwork,
     scenario: &ScenarioDemands,
     sink_id: &str,
     preset: &SolverPreset,
     gas: GasComposition,
+    bisection_steps: usize,
 ) -> Result<SinkCapacityReport> {
     let nominal_q = scenario
         .demands
@@ -144,7 +146,7 @@ pub fn study_sink_max_feasible_delivery(
     let pressure_lower = sink_contractual_lower_bar(base_network, scenario, sink_id);
     let divergence_guard = divergence_guard_m3s(preset);
     let pressure_tol = pressure_tolerance_bar();
-    let steps = bisection_steps();
+    let steps = bisection_steps;
 
     if nominal_q <= 1e-12 {
         return Ok(SinkCapacityReport {
@@ -216,6 +218,35 @@ pub fn study_sink_max_feasible_delivery(
     })
 }
 
+/// Étude capacité pour des sinks explicites (pas de gate env — pour l'API `/api/nova/capacity`).
+pub fn study_sinks_capacity(
+    base_network: &GasNetwork,
+    scenario: &ScenarioDemands,
+    sink_ids: &[String],
+    preset: &SolverPreset,
+    gas: GasComposition,
+    bisection_steps: usize,
+) -> Result<Vec<SinkCapacityReport>> {
+    // Séquentiel : le solveur Newton utilise le pool rayon global en interne.
+    // Lancer plusieurs solves en parallèle (par_iter ou thread::scope) sature le pool
+    // et deadlock. On garde donc un solve à la fois.
+    let mut reports = Vec::with_capacity(sink_ids.len());
+    for sink_id in sink_ids {
+        if !scenario.demands.contains_key(sink_id) {
+            continue;
+        }
+        reports.push(study_sink_max_feasible_delivery(
+            base_network,
+            scenario,
+            sink_id,
+            preset,
+            gas,
+            bisection_steps,
+        )?);
+    }
+    Ok(reports)
+}
+
 /// Étude capacité pour les sinks marginaux par défaut (opt-in via flag env).
 pub fn study_default_marginal_sinks(
     base_network: &GasNetwork,
@@ -226,32 +257,127 @@ pub fn study_default_marginal_sinks(
     if !nova_sink_capacity_study_enabled() {
         return Ok(Vec::new());
     }
-    let sink_ids: Vec<&'static str> = default_marginal_sink_ids()
+    let sink_ids: Vec<String> = default_marginal_sink_ids()
         .into_iter()
         .filter(|s| scenario.demands.contains_key(*s))
+        .map(|s| s.to_string())
         .collect();
-    // Séquentiel : le solveur Newton utilise le pool rayon global en interne.
-    // Lancer plusieurs solves en parallèle (par_iter ou thread::scope) sature le pool
-    // et deadlock. On garde donc un solve à la fois ; l'étude reste opt-in (bench dédié).
-    let mut reports = Vec::new();
-    for sink_id in sink_ids {
-        reports.push(study_sink_max_feasible_delivery(
-            base_network,
-            scenario,
-            sink_id,
-            preset,
-            gas,
-        )?);
-    }
-    Ok(reports)
+    study_sinks_capacity(
+        base_network,
+        scenario,
+        &sink_ids,
+        preset,
+        gas,
+        bisection_steps(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gaslib::ScenarioPressureEnvelope;
+    use crate::graph::{ConnectionKind, EquipmentSpec, GasNetwork, Node, Pipe};
+    use crate::solver::{GasComposition, preset_for_node_count};
+    use std::collections::HashMap;
 
     #[test]
     fn default_marginal_sink_ids_includes_five_probes() {
         assert_eq!(default_marginal_sink_ids().len(), 5);
+    }
+
+    fn tiny_network() -> GasNetwork {
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "source".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: None,
+            lat: None,
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+        net.add_node(Node {
+            id: "sink".into(),
+            x: 1.0,
+            y: 0.0,
+            lon: None,
+            lat: None,
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+        net.add_pipe(Pipe {
+            id: "p".into(),
+            from: "source".into(),
+            to: "sink".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 10.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
+        });
+        net
+    }
+
+    fn scenario_with_high_bound() -> ScenarioDemands {
+        ScenarioDemands {
+            scenario_id: None,
+            demands: HashMap::from([("sink".to_string(), -5.0)]),
+            pressure_slack: None,
+            balance_hubs: Vec::new(),
+            junction_anchors: Vec::new(),
+            boundary_spine_anchors: Vec::new(),
+            mass_balance_anchors: Vec::new(),
+            zero_flow_boundary_anchors: Vec::new(),
+            contract_flow_relaxed: Vec::new(),
+            contract_pressure_anchors: Vec::new(),
+            pressure_envelopes: vec![ScenarioPressureEnvelope {
+                node_id: "sink".to_string(),
+                lower_bar: Some(80.0),
+                upper_bar: Some(120.0),
+            }],
+        }
+    }
+
+    #[test]
+    fn study_sinks_capacity_reports_zero_when_bound_unreachable() {
+        // Source fixé à 70 bar, borne contractuelle sink = 80 bar → irréalisable même à
+        // débit nul (P_sink = 70 < 80). La dichotomie doit converger vers fraction = 0.
+        let net = tiny_network();
+        let scenario = scenario_with_high_bound();
+        let preset = preset_for_node_count(net.node_count());
+        let sink_ids = vec!["sink".to_string()];
+
+        let reports = study_sinks_capacity(
+            &net,
+            &scenario,
+            &sink_ids,
+            &preset,
+            GasComposition::pure_ch4(),
+            6,
+        )
+        .expect("capacity study should succeed");
+
+        assert_eq!(reports.len(), 1);
+        let r = &reports[0];
+        assert_eq!(r.sink_id, "sink");
+        assert_eq!(r.pressure_lower_bar, Some(80.0));
+        assert!(!r.feasible_at_nominal, "nominal should be infeasible");
+        assert!(
+            r.feasible_fraction <= 1e-6,
+            "fraction should be ~0 (unreachable bound), got {}",
+            r.feasible_fraction
+        );
     }
 }

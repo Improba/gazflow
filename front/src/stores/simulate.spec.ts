@@ -9,6 +9,20 @@ const wsSpies = vi.hoisted(() => ({
 
 const apiSpies = vi.hoisted(() => ({
   exportSimulation: vi.fn(async () => new Blob(['{}'], { type: 'application/json' })),
+  runNovaCapacity: vi.fn(async () => [
+    {
+      sink_id: 'sink_88',
+      nominal_q_m3s: 12.5,
+      max_feasible_q_m3s: 7.8,
+      feasible_fraction: 0.624,
+      pressure_lower_bar: 26.01325,
+      pressure_at_max_bar: 26.0,
+      pressure_shortfall_bar: 0.0,
+      residual_at_max_m3s: 1.2,
+      bisection_steps: 6,
+      feasible_at_nominal: false,
+    },
+  ]),
 }));
 
 const networkStoreMock = vi.hoisted(() => ({
@@ -26,6 +40,7 @@ vi.mock('src/services/ws', () => ({
 vi.mock('src/services/api', () => ({
   api: {
     exportSimulation: apiSpies.exportSimulation,
+    runNovaCapacity: apiSpies.runNovaCapacity,
   },
 }));
 
@@ -43,6 +58,7 @@ describe('useSimulateStore', () => {
     wsSpies.startSimulation.mockClear();
     wsSpies.cancelSimulation.mockClear();
     apiSpies.exportSimulation.mockClear();
+    apiSpies.runNovaCapacity.mockClear();
   });
 
   it('passes warm-start pressures from previous result', async () => {
@@ -159,5 +175,38 @@ describe('useSimulateStore', () => {
     const payload = wsSpies.startSimulation.mock.calls[0]?.[0];
     expect(payload.demands).toEqual({ A: -3 });
     expect(payload.mode).toBe('check');
+  });
+
+  it('runSinkCapacity populates sinkCapacity from the API with deficit sink ids', async () => {
+    const store = useSimulateStore();
+    store.activeScenarioId = 'nomination_mild_618';
+    store.novaVerdict = { feasible: false, deficit_sinks: ['sink_88'], cause: 'PressureReachability' };
+    store.sinkDiagnostics = [
+      {
+        node_id: 'sink_88',
+        trace: [],
+        max_upstream_pressure_bar: 24.0,
+        required_lower_bar: 26.01325,
+        supply_gap_bar: 2.01325,
+      },
+    ];
+
+    await store.runSinkCapacity(['sink_88']);
+
+    expect(apiSpies.runNovaCapacity).toHaveBeenCalledTimes(1);
+    const arg = apiSpies.runNovaCapacity.mock.calls[0]?.[0];
+    expect(arg.scenario_id).toBe('nomination_mild_618');
+    expect(arg.sink_ids).toEqual(['sink_88']);
+    expect(store.sinkCapacity).toHaveLength(1);
+    expect(store.sinkCapacity[0].sink_id).toBe('sink_88');
+    expect(store.capacityLoading).toBe(false);
+  });
+
+  it('runSinkCapacity sets capacityError when no scenario is active', async () => {
+    const store = useSimulateStore();
+    store.activeScenarioId = null;
+    await store.runSinkCapacity();
+    expect(apiSpies.runNovaCapacity).not.toHaveBeenCalled();
+    expect(store.capacityError).not.toBeNull();
   });
 });

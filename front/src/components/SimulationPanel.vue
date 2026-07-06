@@ -56,6 +56,8 @@
       </div>
     </div>
 
+    <NominationPanel :disabled="simulateStore.loading" />
+
     <q-expansion-item
       dense
       dark
@@ -134,7 +136,7 @@
     <EquipmentControls v-model="equipmentOverrides" />
 
     <q-banner
-      v-if="demandsDirty || equipmentDirty"
+      v-if="demandsDirty || equipmentDirty || scenarioDirty"
       dense
       rounded
       class="bg-amber-10 text-amber-2 q-mb-sm"
@@ -142,7 +144,8 @@
       <template #avatar>
         <q-icon name="info" />
       </template>
-      Demandes ou organes modifiés — relancez la simulation pour voir l'effet.
+      <span v-if="scenarioDirty">Nomination modifiée — relancez pour re-valider la tenue pression.</span>
+      <span v-else>Demandes ou organes modifiés — relancez la simulation pour voir l'effet.</span>
     </q-banner>
 
     <div class="row items-center q-mb-xs">
@@ -158,9 +161,9 @@
     <q-btn-toggle
       v-model="simulationMode"
       :options="[
-        { label: 'Libre', value: 'free' },
+        { label: 'Standard', value: 'free' },
         { label: 'Vérifier', value: 'check' },
-        { label: 'Optimiser', value: 'optimize' },
+        { label: 'Optimiser capacités', value: 'optimize' },
       ]"
       dense
       no-caps
@@ -170,7 +173,7 @@
 
     <q-toggle
       v-model="simulateStore.robustMode"
-      label="Mode robuste (continuation)"
+      label="Convergence renforcée"
       color="secondary"
       dark
       class="q-mb-sm"
@@ -194,7 +197,7 @@
     <div class="row q-col-gutter-sm q-mb-md">
       <div class="col">
         <q-btn
-          label="Lancer"
+          :label="launchLabel"
           color="primary"
           icon="play_arrow"
           class="full-width"
@@ -246,6 +249,15 @@
     </q-banner>
 
     <template v-if="simulateStore.result">
+      <VerdictCard @focus-deficits="focusFirstDeficit" />
+      <SinkDiagnosticsList @select-node="onSelectSink" />
+      <SinkCapacityTable
+        @run-study="runCapacityStudy"
+        @reduce="onReduceSink"
+        @reduce-all="onReduceAll"
+      />
+      <SinkDiagnosticPopover @reduce="onReduceSink" @run-study="runCapacityStudy" />
+
       <q-banner
         v-if="partialContinuationWarning"
         dense
@@ -415,12 +427,19 @@ import { Notify } from 'quasar';
 import ComparePanel from 'src/components/ComparePanel.vue';
 import DemandControls from 'src/components/DemandControls.vue';
 import EquipmentControls from 'src/components/EquipmentControls.vue';
+import NominationPanel from 'src/components/NominationPanel.vue';
 import ScenarioPanel from 'src/components/ScenarioPanel.vue';
+import SinkCapacityTable from 'src/components/SinkCapacityTable.vue';
+import SinkDiagnosticPopover from 'src/components/SinkDiagnosticPopover.vue';
+import SinkDiagnosticsList from 'src/components/SinkDiagnosticsList.vue';
+import VerdictCard from 'src/components/VerdictCard.vue';
 import LogPanel from 'src/components/LogPanel.vue';
 import ProgressBar from 'src/components/ProgressBar.vue';
 import ResultValueList from 'src/components/ResultValueList.vue';
 import { useNetworkStore } from 'src/stores/network';
+import { useNominationStore } from 'src/stores/nomination';
 import { useSimulateStore } from 'src/stores/simulate';
+import { useEditorStore } from 'src/stores/editor';
 import type { WsStartOptions } from 'src/services/ws';
 import { G20_NOMINAL, PURE_CH4, type GasCompositionDto, type PipeEquipmentDto } from 'src/services/api';
 import { SIMULATION_MODE_HELP } from 'src/utils/simulationStatus';
@@ -430,10 +449,13 @@ import { formatApiError } from 'src/utils/importError';
 
 const networkStore = useNetworkStore();
 const simulateStore = useSimulateStore();
+const editorStore = useEditorStore();
+const nominationStore = useNominationStore();
 const route = useRoute();
 const comparePanelOpen = computed(() => route.query.compare === '1');
 const demandOverrides = ref<Record<string, number>>({});
 const equipmentOverrides = ref<Record<string, PipeEquipmentDto>>({});
+const novaScenarioId = computed(() => nominationStore.activeId);
 const selectedNetwork = ref<string | null>(null);
 const simulationMode = ref<'free' | 'check' | 'optimize'>('free');
 const gasDraft = ref<GasCompositionDto>({ ...G20_NOMINAL });
@@ -505,6 +527,20 @@ const equipmentDirty = computed(() => {
   return equipmentKey(equipmentOverrides.value) !== lastRunEquipmentKey.value;
 });
 
+// Nomination (scénario NoVa) modifiée depuis le dernier run → les diagnostics affichés
+// sont potentiellement stale ; on pousse Camille à re-valider.
+const lastRunScenarioId = ref<string | null>(null);
+const scenarioDirty = computed(() => {
+  if (simulateStore.status !== 'converged' && simulateStore.status !== 'idle') {
+    return false;
+  }
+  return novaScenarioId.value !== lastRunScenarioId.value;
+});
+
+const launchLabel = computed(() =>
+  novaScenarioId.value ? 'Valider la nomination' : 'Lancer',
+);
+
 const demandsDirty = computed(() => {
   if (simulateStore.status !== 'converged' && simulateStore.status !== 'idle') {
     return false;
@@ -569,6 +605,43 @@ function onScenarioDemands(demands: Record<string, number>) {
   demandOverrides.value = { ...demands };
 }
 
+function onSelectSink(nodeId: string) {
+  editorStore.selectNode(nodeId);
+}
+
+function focusFirstDeficit() {
+  const first = simulateStore.sinkDiagnostics[0];
+  if (first) {
+    editorStore.selectNode(first.node_id);
+  }
+}
+
+function deficitSinkIds(): string[] {
+  const fromDiagnostics = simulateStore.sinkDiagnostics.map((d) => d.node_id);
+  if (fromDiagnostics.length > 0) return fromDiagnostics;
+  return simulateStore.novaVerdict?.deficit_sinks ?? [];
+}
+
+function runCapacityStudy() {
+  void simulateStore.runSinkCapacity(deficitSinkIds());
+}
+
+function onReduceSink(sinkId: string, maxFeasibleQ: number) {
+  demandOverrides.value = { ...demandOverrides.value, [sinkId]: -Math.abs(maxFeasibleQ) };
+  startSimulation();
+}
+
+function onReduceAll() {
+  const next = { ...demandOverrides.value };
+  for (const r of simulateStore.sinkCapacity) {
+    if (r.feasible_fraction < 1) {
+      next[r.sink_id] = -Math.abs(r.max_feasible_q_m3s);
+    }
+  }
+  demandOverrides.value = next;
+  startSimulation();
+}
+
 function startSimulation() {
   const demands = Object.keys(demandOverrides.value).length > 0
     ? demandOverrides.value
@@ -576,6 +649,7 @@ function startSimulation() {
 
   lastRunDemandKey.value = demandKey(demandOverrides.value);
   lastRunEquipmentKey.value = equipmentKey(equipmentOverrides.value);
+  lastRunScenarioId.value = novaScenarioId.value;
 
   simulateStore.setRunScenarioSummary(
     demands
@@ -586,6 +660,9 @@ function startSimulation() {
   const opts: WsStartOptions = {
     gas_composition: { ...networkStore.gas.composition },
   };
+  if (novaScenarioId.value) {
+    opts.scenario_id = novaScenarioId.value;
+  }
   if (simulationMode.value !== 'free') {
     opts.mode = simulationMode.value;
     const bounds: Record<string, { min: number; max: number }> = {};

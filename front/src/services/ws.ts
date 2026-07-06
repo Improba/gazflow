@@ -7,6 +7,10 @@ import type {
   ContingencyReport,
   ContingencyResult,
   ContingencyScope,
+  ScenarioPressureSlip,
+  BoundaryPressureSupplyReport,
+  SinkDiagnostic,
+  NovaVerdict,
 } from 'src/services/api';
 import type {
   DemandProfileDto,
@@ -25,6 +29,8 @@ export interface WsStartOptions {
   gas_composition?: GasCompositionDto;
   robust_mode?: boolean;
   continuation_scales?: number[];
+  /** Identifiant de scénario NoVa (ex. `nomination_mild_618`) → active les diagnostics pression. */
+  scenario_id?: string;
 }
 
 export interface WsCapacityOptions {
@@ -114,6 +120,11 @@ export type WsServerMessage =
       objective_value?: number;
       outer_iterations?: number;
       infeasibility_diagnostic?: string | null;
+      /** Diagnostics NoVa (présents si options.scenario_id a été fourni). */
+      pressure_slips?: ScenarioPressureSlip[];
+      boundary_supply?: BoundaryPressureSupplyReport[];
+      sink_diagnostics?: SinkDiagnostic[];
+      nova_verdict?: NovaVerdict;
     }
   | {
       type: 'cancelled';
@@ -318,6 +329,10 @@ export function mergeConvergedMessage(
     outer_iterations: msg.outer_iterations ?? base.outer_iterations,
     infeasibility_diagnostic:
       msg.infeasibility_diagnostic ?? base.infeasibility_diagnostic ?? null,
+    pressure_slips: msg.pressure_slips ?? base.pressure_slips ?? [],
+    boundary_supply: msg.boundary_supply ?? base.boundary_supply ?? [],
+    sink_diagnostics: msg.sink_diagnostics ?? base.sink_diagnostics ?? [],
+    nova_verdict: msg.nova_verdict ?? base.nova_verdict,
   };
 }
 
