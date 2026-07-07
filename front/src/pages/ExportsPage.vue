@@ -1,5 +1,6 @@
 <template>
   <q-page class="q-pa-md">
+    <ScenarioContextBanner show-map-action />
     <q-card flat bordered class="bg-dark text-white">
       <q-card-section>
         <div class="text-h6">Historique des exports</div>
@@ -78,6 +79,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { Notify } from 'quasar';
+import ScenarioContextBanner from 'src/components/ScenarioContextBanner.vue';
 import { api, type ExportKind, type ExportSummary } from 'src/services/api';
 import { formatApiError } from 'src/utils/importError';
 

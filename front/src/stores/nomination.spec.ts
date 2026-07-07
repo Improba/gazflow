@@ -9,7 +9,7 @@ const apiSpies = vi.hoisted(() => ({
 }));
 
 const networkStoreMock = vi.hoisted(() => ({
-  activeNetwork: null as { id: string } | null,
+  activeNetwork: null as string | null,
 }));
 
 vi.mock('src/services/api', () => ({
@@ -27,7 +27,7 @@ import { useNominationStore } from './nomination';
 describe('useNominationStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    networkStoreMock.activeNetwork = { id: 'GasLib-582' };
+    networkStoreMock.activeNetwork = 'GasLib-582';
     apiSpies.listNovaScenarios.mockClear();
   });
 
@@ -61,6 +61,24 @@ describe('useNominationStore', () => {
     ]);
     await store.load(true);
     expect(store.activeId).toBeNull();
+  });
+
+  it('load refetches when the active network changes', async () => {
+    const store = useNominationStore();
+    await store.load();
+    expect(apiSpies.listNovaScenarios).toHaveBeenCalledTimes(1);
+
+    // Same network: cache hit, no refetch.
+    await store.load();
+    expect(apiSpies.listNovaScenarios).toHaveBeenCalledTimes(1);
+
+    // Network switch: cache invalidated, refetch.
+    networkStoreMock.activeNetwork = 'GasLib-135';
+    apiSpies.listNovaScenarios.mockResolvedValueOnce([
+      { id: 'GasLib-135', filename: 'GasLib-135.scn', relative_path: 'GasLib-135.scn' },
+    ]);
+    await store.load();
+    expect(apiSpies.listNovaScenarios).toHaveBeenCalledTimes(2);
   });
 
   it('activeId is null when nothing is selected', () => {

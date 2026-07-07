@@ -51,6 +51,10 @@ export const useSimulateStore = defineStore('simulate', () => {
   const robustMode = ref(false);
   const continuationLabel = ref<string | null>(null);
 
+  // Aperçu temporel transitoire : pressures/flows d'un pas sélectionné, prioritaire sur
+  // la carte pour synchroniser CesiumViewer avec le lecteur transitoire.
+  const previewStep = ref<{ pressures: Record<string, number>; flows: Record<string, number> } | null>(null);
+
   // NoVa : diagnostics pression (présents si un scenario_id a été fourni au démarrage).
   const pressureSlips = ref<ScenarioPressureSlip[]>([]);
   const boundarySupply = ref<BoundaryPressureSupplyReport[]>([]);
@@ -175,6 +179,8 @@ export const useSimulateStore = defineStore('simulate', () => {
     await rerunLastSimulation();
   }
 
+  const hasLastRun = computed(() => lastRunParams !== null);
+
   async function rerunLastSimulation() {
     if (!lastRunParams) {
       await runSimulation();
@@ -193,6 +199,10 @@ export const useSimulateStore = defineStore('simulate', () => {
 
   function setRunScenarioSummary(summary: RunScenarioSummary | null) {
     runScenarioSummary.value = summary;
+  }
+
+  function setPreviewStep(step: { pressures: Record<string, number>; flows: Record<string, number> } | null) {
+    previewStep.value = step;
   }
 
   async function runSinkCapacity(sinkIds?: string[]) {
@@ -343,6 +353,7 @@ export const useSimulateStore = defineStore('simulate', () => {
     sinkCapacity.value = [];
     capacityError.value = null;
     continuationLabel.value = null;
+    previewStep.value = null;
   }
 
   function queueSnapshot(msg: Extract<WsServerMessage, { type: 'snapshot' }>) {
@@ -431,6 +442,7 @@ export const useSimulateStore = defineStore('simulate', () => {
     runScenarioSummary,
     robustMode,
     continuationLabel,
+    previewStep,
     pressureSlips,
     boundarySupply,
     sinkDiagnostics,
@@ -444,8 +456,10 @@ export const useSimulateStore = defineStore('simulate', () => {
     runSimulation,
     rerunLastSimulation,
     rerunWithRobustMode,
+    hasLastRun,
     lastInputDemands,
     setRunScenarioSummary,
+    setPreviewStep,
     cancelSimulation,
     resetSimulation,
     exportResult,

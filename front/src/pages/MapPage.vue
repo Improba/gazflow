@@ -9,12 +9,28 @@
     <EditorToolbar class="editor-toolbar-slot" />
     <div class="canvas-wrapper">
       <CesiumViewer :contingency-violation-node-ids="contingencyStore.selectedCaseViolationNodeIds" />
-      <div v-if="showEmptyState" class="empty-state">
+      <div v-if="networkStore.error" class="state-overlay state-overlay--error">
+        <q-icon name="error_outline" size="40px" color="negative" class="q-mb-sm" />
+        <div class="text-subtitle1 q-mb-xs">Échec du chargement du réseau</div>
+        <p class="text-body2 text-grey-4 state-overlay__hint">{{ networkStore.error }}</p>
+        <q-btn
+          flat
+          color="primary"
+          label="Réessayer"
+          :loading="networkStore.loading"
+          @click="networkStore.fetchNetwork()"
+        />
+      </div>
+      <div v-else-if="networkStore.loading && networkStore.nodes.length === 0" class="state-overlay">
+        <q-spinner-dots size="40px" color="primary" class="q-mb-md" />
+        <div class="text-body2 text-grey-4">Chargement du réseau…</div>
+      </div>
+      <div v-else-if="showEmptyState" class="state-overlay">
         <q-icon name="hub" size="48px" color="primary" class="q-mb-md" />
         <div class="text-h6 q-mb-sm">Aucun réseau chargé</div>
-        <p class="text-body2 text-grey-4 q-mb-lg empty-state__hint">
+        <p class="text-body2 text-grey-4 q-mb-lg state-overlay__hint">
           Importez une topologie (GeoJSON, CSV ou Shapefile) ou sélectionnez un jeu de
-          données dans le panneau de gauche.
+          données dans le sélecteur de réseau du panneau de simulation.
         </p>
         <div class="row q-gutter-sm justify-center">
           <q-btn
@@ -76,7 +92,7 @@ const showEmptyState = computed(
   overflow: hidden;
 }
 
-.empty-state {
+.state-overlay {
   position: absolute;
   inset: 0;
   z-index: 50;
@@ -91,7 +107,11 @@ const showEmptyState = computed(
   pointer-events: auto;
 }
 
-.empty-state__hint {
+.state-overlay--error {
+  background: rgba(40, 12, 12, 0.78);
+}
+
+.state-overlay__hint {
   max-width: 420px;
   margin: 0;
 }

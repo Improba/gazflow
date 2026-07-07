@@ -28,11 +28,29 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useSimulateStore } from 'src/stores/simulate';
+import { useTimeseriesStore } from 'src/stores/timeseries';
 
 const simulateStore = useSimulateStore();
+const timeseriesStore = useTimeseriesStore();
 
-const flowValues = computed(() => Object.values(simulateStore.liveFlows));
-const pressureValues = computed(() => Object.values(simulateStore.livePressures));
+// Même priorité d'affichage que CesiumViewer.updateColors() : pas horaire sélectionné,
+// puis données live, puis dernier résultat convergé.
+const pressures = computed<Record<string, number>>(() => {
+  const step = timeseriesStore.selectedStep;
+  if (step?.pressures) return step.pressures;
+  if (Object.keys(simulateStore.livePressures).length > 0) return simulateStore.livePressures;
+  return simulateStore.result?.pressures ?? {};
+});
+
+const flows = computed<Record<string, number>>(() => {
+  const step = timeseriesStore.selectedStep;
+  if (step?.flows) return step.flows;
+  if (Object.keys(simulateStore.liveFlows).length > 0) return simulateStore.liveFlows;
+  return simulateStore.result?.flows ?? {};
+});
+
+const flowValues = computed(() => Object.values(flows.value));
+const pressureValues = computed(() => Object.values(pressures.value));
 
 const hasSimulationData = computed(
   () => flowValues.value.length > 0 || pressureValues.value.length > 0,

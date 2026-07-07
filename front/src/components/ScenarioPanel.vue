@@ -3,10 +3,15 @@
     dense
     dense-toggle
     icon="schedule"
-    label="Scénario temporel"
+    label="Scénario temporel (profils de demande)"
     class="q-mb-sm"
   >
     <q-card flat bordered class="q-pa-sm bg-grey-10">
+      <div class="text-caption text-grey-5 q-mb-sm">
+        Profiles de demande horaires sur les points de livraison. Ces régimes sont
+        indépendants de la nomination NoVa sélectionnée plus bas : ils servent à
+        explorer la dynamique journalière (linepack, pics), pas à valider une nomination.
+      </div>
       <div class="row q-col-gutter-sm q-mb-sm">
         <div class="col-6">
           <q-input

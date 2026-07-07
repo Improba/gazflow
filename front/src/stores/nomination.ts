@@ -22,7 +22,7 @@ export const useNominationStore = defineStore('nomination', () => {
 
   async function load(force = false) {
     const networkStore = useNetworkStore();
-    const networkId = networkStore.activeNetwork?.id ?? null;
+    const networkId = networkStore.activeNetwork ?? null;
     if (!force && loadedForNetwork === networkId && list.value.length >= 0) {
       // déjà chargé pour ce réseau (même vide) : on évite le refetch intempestif.
       if (loadedForNetwork === networkId) return;

@@ -161,7 +161,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { Notify } from 'quasar';
 import ScenarioContextBanner from 'src/components/ScenarioContextBanner.vue';
 import {
@@ -216,7 +216,7 @@ const caseColumns = [
     align: 'right' as const,
     sortable: true,
   },
-  { name: 'deficit_sinks', label: 'Sinks en déficit', field: 'deficit_sinks', align: 'left' as const },
+  { name: 'deficit_sinks', label: 'Points de livraison en déficit', field: 'deficit_sinks', align: 'left' as const },
   { name: 'iterations', label: 'Itérations', field: 'iterations', align: 'right' as const },
 ];
 
@@ -310,4 +310,18 @@ onMounted(async () => {
     refreshHistory(),
   ]);
 });
+
+// Changement de réseau : les nominations et scénarios topologiques dépendent du
+// réseau actif. On invalide la sélection et le résultat courant, puis on recharge.
+watch(
+  () => networkStore.activeNetwork,
+  () => {
+    baseNominationId.value = null;
+    topologyScenarioIds.value = [];
+    currentResult.value = null;
+    void nominationStore.load(true);
+    void scenariosStore.fetchScenarios();
+    void refreshHistory();
+  },
+);
 </script>

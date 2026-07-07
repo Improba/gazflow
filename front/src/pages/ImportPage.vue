@@ -1,5 +1,26 @@
 <template>
   <q-page class="q-pa-md import-page">
+    <ScenarioContextBanner show-map-action />
+    <q-banner
+      v-if="networkStore.error"
+      dense
+      rounded
+      class="bg-negative text-white q-mb-md"
+    >
+      <template #avatar>
+        <q-icon name="error_outline" />
+      </template>
+      {{ networkStore.error }}
+      <template #action>
+        <q-btn
+          flat
+          color="white"
+          label="Réessayer"
+          :loading="networkStore.loading"
+          @click="networkStore.fetchNetwork()"
+        />
+      </template>
+    </q-banner>
     <div class="row q-col-gutter-md">
       <div class="col-12 col-md-6">
         <q-card flat bordered class="bg-dark text-white">
@@ -215,6 +236,7 @@
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import ImportPreview from 'src/components/ImportPreview.vue';
+import ScenarioContextBanner from 'src/components/ScenarioContextBanner.vue';
 import type { ImportNetworkRequest, ImportNetworkResponse } from 'src/services/api';
 import { useNetworkStore } from 'src/stores/network';
 import { useSimulateStore } from 'src/stores/simulate';

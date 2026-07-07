@@ -1,5 +1,6 @@
 <template>
   <q-page class="q-pa-md">
+    <ScenarioContextBanner show-map-action />
     <q-card flat bordered class="bg-dark text-white">
       <q-card-section>
         <div class="text-h6">Simulation transitoire</div>
@@ -120,14 +121,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onBeforeUnmount } from 'vue';
 import { Notify } from 'quasar';
+import ScenarioContextBanner from 'src/components/ScenarioContextBanner.vue';
 import TransientPlayer from 'src/components/TransientPlayer.vue';
 import { api, type TransientMode, type TransientResultDto, type TransientStepDto } from 'src/services/api';
 import { useNetworkStore } from 'src/stores/network';
+import { useSimulateStore } from 'src/stores/simulate';
 import { formatApiError } from 'src/utils/importError';
 
 const networkStore = useNetworkStore();
+const simulateStore = useSimulateStore();
 
 const durationS = ref(3600);
 const dtS = ref(300);
@@ -149,9 +153,17 @@ const columns = [
   { name: 'iterations', label: 'Iter.', field: 'iterations', align: 'right' as const },
 ];
 
-function onStepChange(_step: TransientStepDto) {
-  // Hook for future map overlay sync.
+function onStepChange(step: TransientStepDto) {
+  // Synchronise la carte : le pas transitoire devient la source d'affichage prioritaire.
+  simulateStore.setPreviewStep({
+    pressures: step.pressures ?? {},
+    flows: step.flows ?? {},
+  });
 }
+
+onBeforeUnmount(() => {
+  simulateStore.setPreviewStep(null);
+});
 
 async function run() {
   if (networkStore.nodes.length === 0) {
@@ -160,6 +172,7 @@ async function run() {
   }
   loading.value = true;
   result.value = null;
+  simulateStore.setPreviewStep(null);
   try {
     result.value = await api.simulateTransient({
       duration_s: durationS.value,

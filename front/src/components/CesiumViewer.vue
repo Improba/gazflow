@@ -479,6 +479,14 @@ watch(
 );
 
 watch(
+  () => simulateStore.previewStep,
+  () => {
+    updateColors();
+  },
+  { deep: true },
+);
+
+watch(
   () => [networkStore.nodes, networkStore.pipes],
   () => {
     renderNetwork();
@@ -670,12 +678,15 @@ function updateColors() {
   const startedAt = performance.now();
 
   const step = timeseriesStore.selectedStep;
+  const preview = simulateStore.previewStep;
   const pressures =
+    preview?.pressures ??
     step?.pressures ??
     (Object.keys(simulateStore.livePressures).length > 0
       ? simulateStore.livePressures
       : (simulateStore.result?.pressures ?? {}));
   const flows =
+    preview?.flows ??
     step?.flows ??
     (Object.keys(simulateStore.liveFlows).length > 0
       ? simulateStore.liveFlows

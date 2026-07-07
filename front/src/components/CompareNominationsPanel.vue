@@ -12,6 +12,18 @@
         pression et écarts ΔP / ΔQ. Outil d'étude comparative pré-SIMONE.
       </div>
 
+      <q-banner
+        v-if="networkStore.nodes.length === 0 && !networkStore.loading"
+        dense
+        rounded
+        class="bg-orange-10 text-orange-2 q-mb-sm"
+      >
+        Aucun réseau chargé — la comparaison s'appuie sur le réseau actif.
+        <template #action>
+          <q-btn flat color="white" label="Ouvrir la carte" :to="{ name: 'map' }" />
+        </template>
+      </q-banner>
+
       <div class="row q-col-gutter-sm q-mb-sm">
         <div class="col-12 col-md-6">
           <q-select
@@ -148,7 +160,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { Notify } from 'quasar';
 import { api, type CompareNominationsResponse } from 'src/services/api';
 import { useNetworkStore } from 'src/stores/network';
@@ -171,7 +183,11 @@ const nominationOptions = computed(() =>
 );
 
 const canCompare = computed(
-  () => nominationAId.value != null && nominationBId.value != null && networkStore.nodes.length > 0,
+  () =>
+    nominationAId.value != null &&
+    nominationBId.value != null &&
+    nominationAId.value !== nominationBId.value &&
+    networkStore.nodes.length > 0,
 );
 
 interface Row {
@@ -295,6 +311,16 @@ async function runCompare() {
 onMounted(() => {
   void nominationStore.load();
 });
+
+// Changement de réseau : on invalide la comparaison (pressions/écarts ne sont plus
+// comparables) et on recharge les nominations liées au nouveau réseau.
+watch(
+  () => networkStore.activeNetwork,
+  () => {
+    result.value = null;
+    void nominationStore.load(true);
+  },
+);
 </script>
 
 <style scoped>

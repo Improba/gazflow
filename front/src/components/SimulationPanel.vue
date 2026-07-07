@@ -129,7 +129,10 @@
 
     <DemandControls v-model="demandOverrides" />
 
-    <ScenarioPanel @demands-resolved="onScenarioDemands" />
+    <ScenarioPanel
+      @demands-resolved="onScenarioDemands"
+      @timeseries-finished="onTimeseriesFinished"
+    />
 
     <ComparePanel :default-opened="comparePanelOpen" />
 
@@ -236,7 +239,7 @@
           dense
           color="white"
           label="Mode robuste"
-          :disable="simulateStore.loading || networkStore.nodes.length === 0"
+          :disable="simulateStore.loading || !simulateStore.hasLastRun || networkStore.nodes.length === 0"
           @click="simulateStore.rerunWithRobustMode()"
         />
         <q-btn
@@ -268,6 +271,7 @@
       </div>
       <VerdictCard @focus-deficits="focusFirstDeficit" />
       <SinkDiagnosticsList @select-node="onSelectSink" />
+      <BoundarySupplyList @select-node="onSelectSink" />
       <SinkCapacityTable
         @run-study="runCapacityStudy"
         @reduce="onReduceSink"
@@ -452,6 +456,7 @@ import ScenarioPanel from 'src/components/ScenarioPanel.vue';
 import SinkCapacityTable from 'src/components/SinkCapacityTable.vue';
 import SinkDiagnosticPopover from 'src/components/SinkDiagnosticPopover.vue';
 import SinkDiagnosticsList from 'src/components/SinkDiagnosticsList.vue';
+import BoundarySupplyList from 'src/components/BoundarySupplyList.vue';
 import VerdictCard from 'src/components/VerdictCard.vue';
 import LogPanel from 'src/components/LogPanel.vue';
 import ProgressBar from 'src/components/ProgressBar.vue';
@@ -460,6 +465,7 @@ import { useNetworkStore } from 'src/stores/network';
 import { useNominationStore } from 'src/stores/nomination';
 import { useSimulateStore } from 'src/stores/simulate';
 import { useEditorStore } from 'src/stores/editor';
+import { useTimeseriesStore } from 'src/stores/timeseries';
 import type { WsStartOptions } from 'src/services/ws';
 import { G20_NOMINAL, PURE_CH4, type GasCompositionDto, type PipeEquipmentDto } from 'src/services/api';
 import { SIMULATION_MODE_HELP } from 'src/utils/simulationStatus';
@@ -470,6 +476,7 @@ import { formatApiError } from 'src/utils/importError';
 const networkStore = useNetworkStore();
 const simulateStore = useSimulateStore();
 const editorStore = useEditorStore();
+const timeseriesStore = useTimeseriesStore();
 const nominationStore = useNominationStore();
 
 const showReport = ref(false);
@@ -596,6 +603,15 @@ watch(
   },
 );
 
+// Changer de nomination NoVa réinitialise les surcharges de demande locales :
+// elles correspondent à l'ancien jeu de points de livraison et n'ont plus de sens.
+watch(
+  () => nominationStore.activeId,
+  () => {
+    demandOverrides.value = {};
+  },
+);
+
 watch(
   () => networkStore.gas.composition,
   (composition) => {
@@ -625,6 +641,14 @@ async function applyGasComposition() {
 
 function onScenarioDemands(demands: Record<string, number>) {
   demandOverrides.value = { ...demands };
+}
+
+function onTimeseriesFinished() {
+  // À la fin d'une série 24 h, on aligne la carte sur le dernier pas pour montrer
+  // l'état final du réseau (le lecteur reste libre de naviguer ensuite).
+  if (timeseriesStore.hasResult) {
+    timeseriesStore.setSelectedStepIndex(Number.POSITIVE_INFINITY);
+  }
 }
 
 function onSelectSink(nodeId: string) {
