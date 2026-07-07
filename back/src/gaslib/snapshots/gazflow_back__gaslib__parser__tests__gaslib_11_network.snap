@@ -1,5 +1,6 @@
 ---
 source: src/gaslib/parser.rs
+assertion_line: 847
 expression: snapshot
 ---
 node_count: 11
@@ -140,6 +141,7 @@ pipes:
       regulator_delta_p_min_bar: ~
       control_valve_cv: ~
       control_valve_opening_pct: ~
+      control_valve_pressure_out_max_bar: ~
       delivery_min_pressure_bar: ~
       compressor_nominal_ratio: 1.08
       compressor_pressure_cap_ratio: 1.75
@@ -158,6 +160,7 @@ pipes:
       regulator_delta_p_min_bar: ~
       control_valve_cv: ~
       control_valve_opening_pct: ~
+      control_valve_pressure_out_max_bar: ~
       delivery_min_pressure_bar: ~
       compressor_nominal_ratio: 1.08
       compressor_pressure_cap_ratio: 1.75

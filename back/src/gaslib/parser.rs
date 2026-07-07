@@ -243,8 +243,19 @@ fn convert_flow_to_m3s(value: &XmlValue) -> f64 {
     }
 }
 
-fn valve_is_open(_kind: ConnectionKind, _raw: &XmlConnectionRaw) -> bool {
+fn valve_is_open(kind: ConnectionKind, raw: &XmlConnectionRaw) -> bool {
     // Transport GasLib : ouvert par défaut ; le `.cdf` et le scénario ferment explicitement.
+    // Cas particulier : une valve avec `flowMin = flowMax = 0` bloque tout débit -> fermée.
+    if matches!(
+        kind,
+        ConnectionKind::Valve | ConnectionKind::ControlValve
+    ) {
+        if let (Some(fmin), Some(fmax)) = (raw.flow_min.as_ref(), raw.flow_max.as_ref()) {
+            if fmin.value == 0.0 && fmax.value == 0.0 {
+                return false;
+            }
+        }
+    }
     true
 }
 

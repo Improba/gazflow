@@ -1866,6 +1866,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_mild_618_balance_hub_is_sink_2() {
         unsafe { std::env::remove_var("GAZFLOW_TRANSPORT_MINIMAL_ANCHORS") };
         let net_path = Path::new("dat/GasLib-582.net");

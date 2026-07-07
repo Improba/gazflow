@@ -815,6 +815,27 @@ where
             continue;
         }
 
+        // Composante flottante (aucun nœud à pression fixée). Si elle porte une demande
+        // nette non nulle, le bilan massique est insatisfiable (aucun flux ne traverse la
+        // frontière de la composante) : on refuse plutôt que d'ancrer silencieusement et
+        // de masquer une infeasibilité (ex. vanne fermée isolant un puits).
+        let mut component_demand_sum = 0.0_f64;
+        let mut component_gross_demand = 0.0_f64;
+        for &idx in &component {
+            let d = demands_vec[idx];
+            component_demand_sum += d;
+            component_gross_demand += d.abs();
+        }
+        let demand_tol = (1e-3 * component_gross_demand).max(1e-6);
+        if component_demand_sum.abs() > demand_tol {
+            bail!(
+                "Newton-hybrid solver did not converge: floating component ({} node(s)) has \
+                 unsatisfiable net demand {:.3e} m³/s (no pressure reference / disconnected)",
+                component.len(),
+                component_demand_sum,
+            );
+        }
+
         // Stabilisation numérique uniquement : une pression de référence par composante
         // flottante (pas une condition aux limites GasLib ; pressureMin/Max ne sont pas utilisés).
         let anchor = component
