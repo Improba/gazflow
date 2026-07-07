@@ -133,6 +133,8 @@
 
     <ComparePanel :default-opened="comparePanelOpen" />
 
+    <CompareNominationsPanel />
+
     <EquipmentControls v-model="equipmentOverrides" />
 
     <q-banner
@@ -441,6 +443,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { Notify } from 'quasar';
 import ComparePanel from 'src/components/ComparePanel.vue';
+import CompareNominationsPanel from 'src/components/CompareNominationsPanel.vue';
 import DemandControls from 'src/components/DemandControls.vue';
 import EquipmentControls from 'src/components/EquipmentControls.vue';
 import NominationPanel from 'src/components/NominationPanel.vue';

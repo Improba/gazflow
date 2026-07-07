@@ -15,7 +15,7 @@ pub struct NetworkSnapshot {
 }
 
 /// Modifications par entité (ajouts, mises à jour, suppressions par id).
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EntityDiff<T> {
     #[serde(default)]
     pub added: Vec<T>,
@@ -36,7 +36,7 @@ impl<T> Default for EntityDiff<T> {
 }
 
 /// Diff topologique minimal entre un réseau de référence et une variante.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NetworkDiff {
     #[serde(default)]
     pub nodes: EntityDiff<Node>,

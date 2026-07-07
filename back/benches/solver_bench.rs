@@ -19,6 +19,7 @@ fn build_chain_network(pipe_count: usize) -> GasNetwork {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: if i == 0 { Some(70.0) } else { None },
+            ..Default::default()
         });
     }
     for i in 0..pipe_count {
@@ -32,6 +33,7 @@ fn build_chain_network(pipe_count: usize) -> GasNetwork {
             diameter_mm: 500.0,
             flow_max_m3s: None,
             equipment: gazflow_back::graph::EquipmentSpec::default(),
+            ..Default::default()
         });
     }
     net

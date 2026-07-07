@@ -20,9 +20,11 @@ use crate::calibration;
 use crate::gaslib;
 use crate::graph::{ConnectionKind, EquipmentSpec, GasNetwork};
 use crate::solver;
+use crate::store::ScenarioRepo;
 
 mod export;
 mod import;
+mod batch;
 mod network_edit;
 mod nova;
 mod scenarios;
@@ -69,7 +71,8 @@ pub(crate) struct AppState {
     simulation_capacity: usize,
     rayon_pool: Arc<ThreadPool>,
     exports: Arc<RwLock<HashMap<String, export::ExportRecord>>>,
-    scenario_stores: scenarios::ScenarioStores,
+    scenario_repo: ScenarioRepo,
+    scenario_baselines: scenarios::ScenarioBaselines,
 }
 
 type SharedState = Arc<AppState>;
@@ -153,7 +156,9 @@ pub fn create_router_with_runtime_limits(
     )
 }
 
-pub fn create_router_with_runtime_limits_and_datasets(
+/// Construit le routeur avec un dépôt SQLite déjà ouvert (production : fichier disque ;
+/// tests : en mémoire). Tous les builders ci-dessus délèuent ici avec un repo en mémoire.
+pub fn create_router_with_repo_and_datasets(
     network: GasNetwork,
     default_demands: HashMap<String, f64>,
     active_dataset: String,
@@ -161,6 +166,7 @@ pub fn create_router_with_runtime_limits_and_datasets(
     data_dir: PathBuf,
     max_concurrent_simulations: usize,
     rayon_threads: usize,
+    scenario_repo: ScenarioRepo,
 ) -> Router {
     let simulation_capacity = max_concurrent_simulations.max(1);
     let rayon_threads = rayon_threads.max(1);
@@ -188,7 +194,8 @@ pub fn create_router_with_runtime_limits_and_datasets(
         simulation_capacity,
         rayon_pool: Arc::new(rayon_pool),
         exports: Arc::new(RwLock::new(HashMap::new())),
-        scenario_stores: Arc::new(RwLock::new(HashMap::new())),
+        scenario_repo,
+        scenario_baselines: Arc::new(RwLock::new(HashMap::new())),
     });
 
     let initial_network = shared
@@ -245,11 +252,52 @@ pub fn create_router_with_runtime_limits_and_datasets(
         .route("/api/simulate/compare", post(scenarios::compare_scenarios))
         .route("/api/nova/scenarios", get(nova::list_nova_scenarios))
         .route("/api/nova/capacity", post(nova::post_nova_capacity))
+        .route("/api/nova/compare", post(nova::post_compare_nominations))
+        .route(
+            "/api/batch/runs",
+            get(batch::list_batch_runs).post(batch::post_batch_run),
+        )
+        .route(
+            "/api/batch/runs/{id}",
+            get(batch::get_batch_run).delete(batch::delete_batch_run),
+        )
+        .route(
+            "/api/nova/nominations",
+            post(nova::post_import_nomination),
+        )
+        .route(
+            "/api/nova/nominations/{id}",
+            axum::routing::delete(nova::delete_import_nomination),
+        )
         .layer(CorsLayer::permissive())
         .with_state(shared)
 }
 
-fn max_concurrent_simulations_from_env() -> usize {
+/// Convenience wrapper ouvrant un dépôt SQLite en mémoire (tests / builders sans DB
+/// explicite). La production doit passer par `create_router_with_repo_and_datasets`.
+pub fn create_router_with_runtime_limits_and_datasets(
+    network: GasNetwork,
+    default_demands: HashMap<String, f64>,
+    active_dataset: String,
+    available_datasets: Vec<String>,
+    data_dir: PathBuf,
+    max_concurrent_simulations: usize,
+    rayon_threads: usize,
+) -> Router {
+    let repo = ScenarioRepo::open(None).expect("open in-memory scenario repo");
+    create_router_with_repo_and_datasets(
+        network,
+        default_demands,
+        active_dataset,
+        available_datasets,
+        data_dir,
+        max_concurrent_simulations,
+        rayon_threads,
+        repo,
+    )
+}
+
+pub fn max_concurrent_simulations_from_env() -> usize {
     std::env::var("GAZFLOW_MAX_CONCURRENT_SIMULATIONS")
         .ok()
         .or_else(|| std::env::var("GAZSIM_MAX_CONCURRENT_SIMULATIONS").ok())
@@ -258,7 +306,7 @@ fn max_concurrent_simulations_from_env() -> usize {
         .unwrap_or(2)
 }
 
-fn rayon_threads_from_env(max_concurrent_simulations: usize) -> usize {
+pub fn rayon_threads_from_env(max_concurrent_simulations: usize) -> usize {
     if let Some(value) = std::env::var("GAZFLOW_RAYON_THREADS")
         .ok()
         .or_else(|| std::env::var("GAZSIM_RAYON_THREADS").ok())
@@ -841,12 +889,7 @@ fn clone_network(network: &GasNetwork) -> GasNetwork {
 }
 
 fn init_dataset_baseline(state: &SharedState, dataset_id: &str, network: &GasNetwork) {
-    let mut stores = state
-        .scenario_stores
-        .write()
-        .expect("scenario stores lock should not be poisoned");
-    let store = stores.entry(dataset_id.to_string()).or_default();
-    scenarios::ensure_baseline(store, network);
+    scenarios::ensure_baseline(&state.scenario_baselines, dataset_id, network);
 }
 
 fn api_bounds_to_solver(
@@ -1382,6 +1425,31 @@ fn active_dataset_id(state: &SharedState) -> String {
         .read()
         .expect("active dataset lock should not be poisoned")
         .clone()
+}
+
+/// Résolution unifiée d'un scénario `.scn` par id : d'abord les nominations importées
+/// (SQLite), puis le filesystem bundlé (`resolve_scenario_path`). Retourne le XML brut.
+pub(crate) fn resolve_scenario_xml(
+    state: &SharedState,
+    dataset_id: &str,
+    scenario_id: &str,
+) -> Option<String> {
+    if let Ok(Some(rec)) = state.scenario_repo.find_imported_nomination(scenario_id) {
+        return Some(rec.xml);
+    }
+    gaslib::resolve_scenario_path(&state.data_dir, dataset_id, scenario_id)
+        .and_then(|path| std::fs::read_to_string(&path).ok())
+}
+
+/// Charge et parse un scénario `.scn` par id (résolution unifiée importée + filesystem).
+pub(crate) fn load_scenario_demands_by_id(
+    state: &SharedState,
+    dataset_id: &str,
+    scenario_id: &str,
+) -> Result<gaslib::ScenarioDemands, String> {
+    let xml = resolve_scenario_xml(state, dataset_id, scenario_id)
+        .ok_or_else(|| format!("scénario {scenario_id} introuvable pour le dataset {dataset_id}"))?;
+    gaslib::parse_scenario_demands_from_str(&xml).map_err(|err| format!("{err:#}"))
 }
 
 fn load_dataset_from_disk(

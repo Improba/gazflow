@@ -27,6 +27,11 @@ const routes = [
         name: 'exports',
         component: () => import('src/pages/ExportsPage.vue'),
       },
+      {
+        path: 'batch',
+        name: 'batch',
+        component: () => import('src/pages/BatchPage.vue'),
+      },
     ],
   },
 ];

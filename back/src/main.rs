@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow};
 use gazflow_back::{api, gaslib};
@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let network_path = data_dir.join(format!("{active_dataset}.net"));
-    let mut network = gaslib::load_network(&network_path)
+    let network = gaslib::load_network(&network_path)
         .with_context(|| format!("chargement réseau {:?}", network_path))?;
     tracing::info!(
         "Réseau actif {} chargé : {} nœuds, {} arêtes",
@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let scenario_path = data_dir.join(format!("{active_dataset}.scn"));
-    let (default_demands, mut network) = if scenario_path.exists() {
+    let (default_demands, network) = if scenario_path.exists() {
         match gaslib::load_scenario_demands(&scenario_path) {
             Ok(mut scenario) => {
                 let network =
@@ -89,12 +89,21 @@ async fn main() -> anyhow::Result<()> {
         (HashMap::new(), network)
     };
 
-    let app = api::create_router_with_datasets(
+    let db_path = std::env::var("GAZFLOW_DB_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| data_dir.join("scenarios.db"));
+    let scenario_repo = gazflow_back::store::ScenarioRepo::open(Some(&db_path))?;
+    tracing::info!("Persistance scénarios : {:?}", db_path);
+
+    let app = api::create_router_with_repo_and_datasets(
         network,
         default_demands,
         active_dataset,
         available_datasets,
         data_dir.to_path_buf(),
+        api::max_concurrent_simulations_from_env(),
+        api::rayon_threads_from_env(api::max_concurrent_simulations_from_env()),
+        scenario_repo,
     );
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await?;

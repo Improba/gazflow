@@ -46,6 +46,27 @@ export const useNominationStore = defineStore('nomination', () => {
     }
   }
 
+  async function importFile(file: File) {
+    if (!file.name.endsWith('.scn')) {
+      Notify.create({ type: 'negative', message: 'Le fichier doit avoir l\'extension .scn' });
+      throw new Error('invalid extension');
+    }
+    const xml = await file.text();
+    const summary = await api.importNovaNomination({ filename: file.name, xml });
+    await load(true);
+    selectById(summary.id);
+    Notify.create({ type: 'positive', message: `Nomination ${file.name} importée` });
+    return summary;
+  }
+
+  async function removeImported(id: string) {
+    await api.deleteNovaNomination(id);
+    if (selected.value?.id === id) {
+      selected.value = null;
+    }
+    await load(true);
+  }
+
   function selectById(id: string | null) {
     if (id == null) {
       selected.value = null;
@@ -71,6 +92,8 @@ export const useNominationStore = defineStore('nomination', () => {
     activeId,
     activeFilename,
     load,
+    importFile,
+    removeImported,
     selectById,
     clear,
     reset,

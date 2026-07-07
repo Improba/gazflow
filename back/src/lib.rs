@@ -5,3 +5,4 @@ pub mod gaslib;
 pub mod graph;
 pub mod import;
 pub mod solver;
+pub mod store;

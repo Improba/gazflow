@@ -664,7 +664,7 @@ pub fn resolve_scenario_path(dat_dir: &Path, dataset: &str, scenario_id: &str) -
     fallback.is_file().then_some(fallback)
 }
 
-fn parse_scenario_demands_from_str(xml: &str) -> Result<ScenarioDemands> {
+pub fn parse_scenario_demands_from_str(xml: &str) -> Result<ScenarioDemands> {
     let raw: XmlBoundaryValue =
         from_str(xml).with_context(|| "parsing XML GasLib scenario (.scn)")?;
 

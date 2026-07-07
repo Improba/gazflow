@@ -16,6 +16,7 @@ fn build_chain_network(node_count: usize) -> GasNetwork {
             pressure_lower_bar: None,
             pressure_upper_bar: None,
             pressure_fixed_bar: if i == 0 { Some(70.0) } else { None },
+            ..Default::default()
         });
     }
     for i in 0..(node_count.saturating_sub(1)) {

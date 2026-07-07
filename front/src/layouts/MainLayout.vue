@@ -44,6 +44,12 @@
         />
         <q-btn
           flat
+          label="Batch"
+          :to="{ name: 'batch' }"
+          active-class="nav-active"
+        />
+        <q-btn
+          flat
           round
           icon="refresh"
           aria-label="Relancer la simulation"

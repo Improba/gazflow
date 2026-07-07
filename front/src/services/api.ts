@@ -136,6 +136,8 @@ export interface NovaScenarioSummary {
   id: string;
   filename: string;
   relative_path: string;
+  /** Origine : "bundled" (fichier .scn livré) ou "imported" (uploadée en base). */
+  source?: 'bundled' | 'imported';
 }
 
 export interface SinkCapacityReport {
@@ -157,6 +159,83 @@ export interface NovaCapacityRequest {
   bisection_steps?: number;
   robust_mode?: boolean;
   max_iter?: number;
+}
+
+export interface NominationSolveOutcome {
+  scenario_id: string;
+  feasible: boolean;
+  cause: 'Feasible' | 'PressureDeficit' | 'PressureReachability' | string;
+  deficit_sinks: string[];
+  pressures: Record<string, number>;
+  flows: Record<string, number>;
+  pressure_slips: ScenarioPressureSlip[];
+  iterations: number;
+  residual: number;
+}
+
+export interface CompareNominationsRequest {
+  scenario_a_id: string;
+  scenario_b_id: string;
+  robust_mode?: boolean;
+  max_iter?: number;
+  tolerance?: number;
+}
+
+export interface CompareNominationsResponse {
+  scenario_a_id: string;
+  scenario_b_id: string;
+  outcome_a: NominationSolveOutcome;
+  outcome_b: NominationSolveOutcome;
+  delta_pressures: Record<string, number>;
+  delta_flows: Record<string, number>;
+  shared_deficit_sinks: string[];
+  max_abs_delta_p_bar: number;
+  max_abs_delta_q_m3s: number;
+  nodes_compared: number;
+  pipes_compared: number;
+}
+
+// --- Batch paramétrique ---
+
+export interface CreateBatchRequest {
+  name?: string;
+  base_scenario_id: string;
+  demand_scales?: number[];
+  topology_scenario_ids?: (string | null)[];
+  max_iter?: number;
+  tolerance?: number;
+}
+
+export interface BatchCaseOutcome {
+  label: string;
+  demand_scale: number;
+  topology_scenario_id: string | null;
+  feasible: boolean;
+  cause: string;
+  deficit_sinks: string[];
+  max_shortfall_bar: number;
+  iterations: number;
+  residual: number;
+  error: string | null;
+}
+
+export interface BatchRunSummary {
+  id: string;
+  name: string;
+  created_at_ms: number;
+  status: string;
+  case_count: number;
+  feasible_count: number;
+}
+
+export interface BatchRunDetail {
+  id: string;
+  dataset_id: string;
+  name: string;
+  created_at_ms: number;
+  status: string;
+  base_scenario_id: string;
+  cases: BatchCaseOutcome[];
 }
 
 import type {
@@ -650,5 +729,44 @@ export const api = {
   async runNovaCapacity(payload: NovaCapacityRequest): Promise<SinkCapacityReport[]> {
     const { data } = await client.post<SinkCapacityReport[]>('/nova/capacity', payload);
     return data;
+  },
+
+  async importNovaNomination(payload: {
+    filename: string;
+    xml: string;
+    dataset_id?: string;
+  }): Promise<NovaScenarioSummary> {
+    const { data } = await client.post<NovaScenarioSummary>('/nova/nominations', payload);
+    return data;
+  },
+
+  async deleteNovaNomination(id: string): Promise<void> {
+    await client.delete(`/nova/nominations/${encodeURIComponent(id)}`);
+  },
+
+  async compareNovaNominations(
+    payload: CompareNominationsRequest,
+  ): Promise<CompareNominationsResponse> {
+    const { data } = await client.post<CompareNominationsResponse>('/nova/compare', payload);
+    return data;
+  },
+
+  async createBatchRun(payload: CreateBatchRequest): Promise<BatchRunDetail> {
+    const { data } = await client.post<BatchRunDetail>('/batch/runs', payload);
+    return data;
+  },
+
+  async listBatchRuns(): Promise<BatchRunSummary[]> {
+    const { data } = await client.get<BatchRunSummary[]>('/batch/runs');
+    return data;
+  },
+
+  async getBatchRun(id: string): Promise<BatchRunDetail> {
+    const { data } = await client.get<BatchRunDetail>(`/batch/runs/${encodeURIComponent(id)}`);
+    return data;
+  },
+
+  async deleteBatchRun(id: string): Promise<void> {
+    await client.delete(`/batch/runs/${encodeURIComponent(id)}`);
   },
 };

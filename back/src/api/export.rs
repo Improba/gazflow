@@ -1190,7 +1190,8 @@ mod tests {
             ),
             exports: Arc::new(RwLock::new(HashMap::new())),
             gas_composition: Arc::new(RwLock::new(super::super::solver::GasComposition::default())),
-            scenario_stores: Arc::new(RwLock::new(HashMap::new())),
+            scenario_repo: crate::store::ScenarioRepo::open(None).expect("in-memory repo"),
+            scenario_baselines: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 

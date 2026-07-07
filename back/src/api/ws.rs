@@ -338,35 +338,20 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                 }
                                 let scenario = match options.scenario_id.as_deref() {
                                     Some(scenario_id) => {
-                                        match crate::gaslib::resolve_scenario_path(
-                                            &state.data_dir,
+                                        match super::load_scenario_demands_by_id(
+                                            &state,
                                             &network_id,
                                             scenario_id,
                                         ) {
-                                            Some(path) => {
-                                                match crate::gaslib::load_scenario_demands(&path) {
-                                                    Ok(mut sc) => {
-                                                        crate::gaslib::enrich_scenario_with_balance_hub(&network, &mut sc);
-                                                        Some(sc)
-                                                    }
-                                                    Err(err) => {
-                                                        let _ = tx.send(ServerMessage::Error {
-                                                            run_id: run_id.clone(),
-                                                            seq: 0,
-                                                            message: format!("scénario {scenario_id}: {err:#}"),
-                                                            fatal: false,
-                                                        }).await;
-                                                        None
-                                                    }
-                                                }
+                                            Ok(mut sc) => {
+                                                crate::gaslib::enrich_scenario_with_balance_hub(&network, &mut sc);
+                                                Some(sc)
                                             }
-                                            None => {
+                                            Err(err) => {
                                                 let _ = tx.send(ServerMessage::Error {
                                                     run_id: run_id.clone(),
                                                     seq: 0,
-                                                    message: format!(
-                                                        "scénario {scenario_id} introuvable pour le dataset {network_id}"
-                                                    ),
+                                                    message: err,
                                                     fatal: false,
                                                 }).await;
                                                 None

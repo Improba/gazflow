@@ -1,8 +1,11 @@
 //! CRUD scénarios topologiques par jeu de données (P12).
+//!
+//! Persistance SQLite via `ScenarioRepo`. La baseline (snapshot du réseau de base du
+//! dataset) reste en RAM, recalculée à la volée depuis le dataset actif — elle n'a pas
+//! vocation à être persistée (un dataset rechargé retrouve sa baseline naturellement).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     Json,
@@ -15,11 +18,15 @@ use crate::graph::GasNetwork;
 use crate::graph::scenarios::{
     NetworkDiff, NetworkSnapshot, apply_diff, compute_snapshot_diff, validate_diff,
 };
+use crate::store::ScenarioRepo;
 
 use super::{
     ApiError, NodeDto, PipeDto, SharedState, active_dataset_id, active_default_demands,
     active_gas_composition, active_network, clone_network,
 };
+
+/// Cache en RAM des baselines par dataset (snapshot du réseau de base non modifié).
+pub(crate) type ScenarioBaselines = Arc<RwLock<HashMap<String, NetworkSnapshot>>>;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ScenarioSummary {
@@ -37,21 +44,6 @@ pub(crate) struct ScenarioDetail {
     pub created_at_ms: u64,
     pub diff: NetworkDiff,
 }
-
-#[derive(Debug, Clone)]
-pub(crate) struct ScenarioRecord {
-    pub name: String,
-    pub created_at_ms: u64,
-    pub diff: NetworkDiff,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct DatasetScenarioStore {
-    pub baseline: Option<NetworkSnapshot>,
-    pub scenarios: HashMap<String, ScenarioRecord>,
-}
-
-pub(crate) type ScenarioStores = Arc<RwLock<HashMap<String, DatasetScenarioStore>>>;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct CreateScenarioRequest {
@@ -77,8 +69,8 @@ fn api_error(status: StatusCode, message: impl Into<String>) -> (StatusCode, Jso
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
@@ -123,17 +115,28 @@ fn network_to_dtos(network: &GasNetwork) -> (Vec<NodeDto>, Vec<PipeDto>) {
     (nodes, pipes)
 }
 
-pub(crate) fn ensure_baseline(store: &mut DatasetScenarioStore, network: &GasNetwork) {
-    if store.baseline.is_none() {
-        store.baseline = Some(NetworkSnapshot::from_network(network));
-    }
+pub(crate) fn ensure_baseline(
+    baselines: &ScenarioBaselines,
+    dataset_id: &str,
+    network: &GasNetwork,
+) {
+    let mut guard = baselines
+        .write()
+        .expect("scenario baselines lock should not be poisoned");
+    guard
+        .entry(dataset_id.to_string())
+        .or_insert_with(|| NetworkSnapshot::from_network(network));
 }
 
-pub(crate) fn baseline_network(
-    store: &DatasetScenarioStore,
+fn baseline_network(
+    baselines: &ScenarioBaselines,
+    dataset_id: &str,
     fallback: &GasNetwork,
 ) -> Result<GasNetwork, (StatusCode, Json<ApiError>)> {
-    match &store.baseline {
+    let guard = baselines
+        .read()
+        .expect("scenario baselines lock should not be poisoned");
+    match guard.get(dataset_id) {
         Some(snapshot) => snapshot
             .clone()
             .to_network()
@@ -146,28 +149,24 @@ pub(super) async fn list_scenarios(
     State(state): State<SharedState>,
 ) -> Json<Vec<ScenarioSummary>> {
     let dataset_id = active_dataset_id(&state);
-    let stores = state
-        .scenario_stores
-        .read()
-        .expect("scenario stores lock should not be poisoned");
-    let store = stores.get(&dataset_id);
-    let summaries = store
-        .map(|s| {
-            s.scenarios
-                .iter()
-                .map(|(id, record)| {
-                    let (node_delta, pipe_delta) = diff_entity_count(&record.diff);
-                    ScenarioSummary {
-                        id: id.clone(),
-                        name: record.name.clone(),
-                        created_at_ms: record.created_at_ms,
-                        node_delta,
-                        pipe_delta,
-                    }
-                })
-                .collect()
-        })
+    let records = state
+        .scenario_repo
+        .list_topological_scenarios(&dataset_id)
         .unwrap_or_default();
+    let summaries = records
+        .into_iter()
+        .filter_map(|rec| {
+            let diff: NetworkDiff = serde_json::from_str(&rec.diff_json).ok()?;
+            let (node_delta, pipe_delta) = diff_entity_count(&diff);
+            Some(ScenarioSummary {
+                id: rec.id,
+                name: rec.name,
+                created_at_ms: rec.created_at_ms,
+                node_delta,
+                pipe_delta,
+            })
+        })
+        .collect();
     Json(summaries)
 }
 
@@ -187,24 +186,36 @@ pub(super) async fn create_scenario(
     let current = active_network(&state);
     let current_snapshot = NetworkSnapshot::from_network(&current);
 
-    let mut stores = state
-        .scenario_stores
-        .write()
-        .expect("scenario stores lock should not be poisoned");
-    let store = stores.entry(dataset_id).or_default();
-    ensure_baseline(store, &current);
-    let baseline = store.baseline.as_ref().expect("baseline just set");
-    let diff = compute_snapshot_diff(baseline, &current_snapshot);
+    ensure_baseline(&state.scenario_baselines, &dataset_id, &current);
+    let baseline = {
+        let guard = state
+            .scenario_baselines
+            .read()
+            .expect("scenario baselines lock should not be poisoned");
+        guard
+            .get(&dataset_id)
+            .cloned()
+            .expect("baseline just ensured")
+    };
+    let diff = compute_snapshot_diff(&baseline, &current_snapshot);
     validate_diff(&diff).map_err(|err| api_error(StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let id = format!("scn-{}", now_ms());
     let created_at_ms = now_ms();
-    let record = ScenarioRecord {
+    let diff_json = serde_json::to_string(&diff)
+        .map_err(|err| api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+    let record = crate::store::TopologicalScenarioRecord {
+        id: id.clone(),
+        dataset_id: dataset_id.clone(),
         name: name.to_string(),
         created_at_ms,
-        diff: diff.clone(),
+        diff_json,
     };
-    store.scenarios.insert(id.clone(), record);
+    state
+        .scenario_repo
+        .insert_topological_scenario(&record)
+        .map_err(|err| api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
     Ok(Json(ScenarioDetail {
         id,
@@ -218,29 +229,19 @@ pub(super) async fn get_scenario(
     State(state): State<SharedState>,
     Path(scenario_id): Path<String>,
 ) -> Result<Json<ScenarioDetail>, (StatusCode, Json<ApiError>)> {
-    let dataset_id = active_dataset_id(&state);
-    let stores = state
-        .scenario_stores
-        .read()
-        .expect("scenario stores lock should not be poisoned");
-    let store = stores.get(&dataset_id).ok_or_else(|| {
-        api_error(
-            StatusCode::NOT_FOUND,
-            format!("no scenarios for dataset {dataset_id}"),
-        )
-    })?;
-    let record = store.scenarios.get(&scenario_id).ok_or_else(|| {
-        api_error(
-            StatusCode::NOT_FOUND,
-            format!("scenario not found: {scenario_id}"),
-        )
-    })?;
+    let record = state
+        .scenario_repo
+        .get_topological_scenario(&scenario_id)
+        .map_err(|err| api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, format!("scenario not found: {scenario_id}")))?;
+    let diff: NetworkDiff = serde_json::from_str(&record.diff_json)
+        .map_err(|err| api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
     Ok(Json(ScenarioDetail {
-        id: scenario_id,
-        name: record.name.clone(),
+        id: record.id,
+        name: record.name,
         created_at_ms: record.created_at_ms,
-        diff: record.diff.clone(),
+        diff,
     }))
 }
 
@@ -248,18 +249,11 @@ pub(super) async fn delete_scenario(
     State(state): State<SharedState>,
     Path(scenario_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    let dataset_id = active_dataset_id(&state);
-    let mut stores = state
-        .scenario_stores
-        .write()
-        .expect("scenario stores lock should not be poisoned");
-    let store = stores.get_mut(&dataset_id).ok_or_else(|| {
-        api_error(
-            StatusCode::NOT_FOUND,
-            format!("no scenarios for dataset {dataset_id}"),
-        )
-    })?;
-    if store.scenarios.remove(&scenario_id).is_none() {
+    let removed = state
+        .scenario_repo
+        .delete_topological_scenario(&scenario_id)
+        .map_err(|err| api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    if !removed {
         return Err(api_error(
             StatusCode::NOT_FOUND,
             format!("scenario not found: {scenario_id}"),
@@ -274,34 +268,15 @@ pub(super) async fn apply_scenario(
 ) -> Result<Json<ApplyScenarioResponse>, (StatusCode, Json<ApiError>)> {
     let dataset_id = active_dataset_id(&state);
     let active = active_network(&state);
-    let stores = state
-        .scenario_stores
-        .read()
-        .expect("scenario stores lock should not be poisoned");
-    let store = stores.get(&dataset_id).ok_or_else(|| {
-        api_error(
-            StatusCode::NOT_FOUND,
-            format!("no scenarios for dataset {dataset_id}"),
-        )
-    })?;
-    let record = store.scenarios.get(&scenario_id).ok_or_else(|| {
-        api_error(
-            StatusCode::NOT_FOUND,
-            format!("scenario not found: {scenario_id}"),
-        )
-    })?;
-    let diff = record.diff.clone();
-    drop(stores);
+    let record = state
+        .scenario_repo
+        .get_topological_scenario(&scenario_id)
+        .map_err(|err| api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, format!("scenario not found: {scenario_id}")))?;
+    let diff: NetworkDiff = serde_json::from_str(&record.diff_json)
+        .map_err(|err| api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
-    let base = {
-        let stores = state
-            .scenario_stores
-            .read()
-            .expect("scenario stores lock should not be poisoned");
-        let store = stores.get(&dataset_id).expect("store exists");
-        baseline_network(store, &active)?
-    };
-
+    let base = baseline_network(&state.scenario_baselines, &dataset_id, &active)?;
     let network = apply_diff(&base, &diff)
         .map_err(|err| api_error(StatusCode::UNPROCESSABLE_ENTITY, err.to_string()))?;
     let (nodes, pipes) = network_to_dtos(&network);
@@ -324,21 +299,16 @@ pub(crate) fn resolve_scenario_network(
         Some(id) => {
             let dataset_id = active_dataset_id(state);
             let active = active_network(state);
-            let stores = state
-                .scenario_stores
-                .read()
-                .expect("scenario stores lock should not be poisoned");
-            let store = stores.get(&dataset_id).ok_or_else(|| {
-                api_error(
-                    StatusCode::NOT_FOUND,
-                    format!("no scenarios for dataset {dataset_id}"),
-                )
-            })?;
-            let record = store.scenarios.get(id).ok_or_else(|| {
-                api_error(StatusCode::NOT_FOUND, format!("scenario not found: {id}"))
-            })?;
-            let diff = record.diff.clone();
-            let base = baseline_network(store, &active)?;
+            let record = state
+                .scenario_repo
+                .get_topological_scenario(id)
+                .map_err(|err| api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+                .ok_or_else(|| {
+                    api_error(StatusCode::NOT_FOUND, format!("scenario not found: {id}"))
+                })?;
+            let diff: NetworkDiff = serde_json::from_str(&record.diff_json)
+                .map_err(|err| api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+            let base = baseline_network(&state.scenario_baselines, &dataset_id, &active)?;
             apply_diff(&base, &diff)
                 .map_err(|err| api_error(StatusCode::UNPROCESSABLE_ENTITY, err.to_string()))
         }
