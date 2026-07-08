@@ -1,0 +1,295 @@
+/* GazFlow - Thème Clair & Moderne */
+
+/* Variables de thème */
+:root {
+  /* Couleurs principales (inspirées du README et des captures) */
+  --primary: #2196F3;       /* Bleu GazFlow (comme dans les captures) */
+  --primary-dark: #1976D2;  /* Bleu foncé */
+  --primary-light: #90CAF9; /* Bleu clair */
+  --secondary: #4CAF50;     /* Vert (pour les succès) */
+  --accent: #FFC107;        /* Jaune/Orange (pour les alertes) */
+  --negative: #F44336;      /* Rouge (pour les erreurs) */
+  
+  /* Couleurs de fond */
+  --light: #F5F5F5;        /* Fond principal (gris très clair) */
+  --white: #FFFFFF;         /* Blanc pur */
+  --panel: #FFFFFF;         /* Fond des panels */
+  
+  /* Texte */
+  --text-primary: #212121;  /* Texte principal (noir foncé) */
+  --text-secondary: #757575; /* Texte secondaire (gris) */
+  --text-disabled: #B0B0B0; /* Texte désactivé */
+  
+  /* Bordures */
+  --border-color: #E0E0E0;  /* Bordure légère */
+  --border-radius: 8px;     /* Rayon des bordures */
+  
+  /* Ombres */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.15);
+  --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.2);
+  
+  /* Transitions */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.3s ease;
+}
+
+/* Reset de base */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--light);
+  color: var(--text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  line-height: 1.5;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Typographie */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0 0 0.5rem 0;
+  color: var(--text-primary);
+}
+
+h1 { font-size: 2rem; }
+h2 { font-size: 1.5rem; }
+h3 { font-size: 1.25rem; }
+
+/* Liens */
+a {
+  color: var(--primary);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+a:hover {
+  color: var(--primary-dark);
+}
+
+/* Boutons */
+.btn {
+  border-radius: var(--border-radius);
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  transition: all var(--transition-normal);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-primary {
+  background-color: var(--primary);
+  color: white;
+}
+
+.btn-primary:hover {
+  background-color: var(--primary-dark);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background-color: var(--white);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+
+.btn-secondary:hover {
+  background-color: var(--light);
+  border-color: var(--primary);
+}
+
+/* Cartes (Panels) */
+.card {
+  background-color: var(--panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  padding: 1.5rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+/* Barre de progression */
+.progress-bar {
+  background-color: var(--light);
+  border-radius: var(--border-radius);
+  height: 4px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  background-color: var(--primary);
+  height: 100%;
+  transition: width var(--transition-normal);
+}
+
+/* Tooltips */
+.tooltip {
+  background-color: var(--panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  color: var(--text-primary);
+  padding: 0.75rem;
+  font-size: 0.875rem;
+  box-shadow: var(--shadow-lg);
+  z-index: 1000;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn var(--transition-normal);
+}
+
+.slide-up {
+  animation: slideUp var(--transition-normal);
+}
+
+/* Scrollbar personnalisée */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--light);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* Utilitaires */
+.text-primary { color: var(--text-primary); }
+.text-secondary { color: var(--text-secondary); }
+.text-disabled { color: var(--text-disabled); }
+
+.bg-light { background-color: var(--light); }
+.bg-panel { background-color: var(--panel); }
+.bg-white { background-color: var(--white); }
+
+/* QuasarJS Overrides */
+.q-btn {
+  border-radius: var(--border-radius) !important;
+  box-shadow: var(--shadow-sm) !important;
+  transition: all var(--transition-normal) !important;
+  font-weight: 500 !important;
+}
+
+.q-btn:hover {
+  box-shadow: var(--shadow-md) !important;
+  transform: translateY(-1px) !important;
+}
+
+.q-btn--primary {
+  background-color: var(--primary) !important;
+  color: white !important;
+}
+
+.q-btn--primary:hover {
+  background-color: var(--primary-dark) !important;
+}
+
+.q-btn--secondary {
+  background-color: var(--white) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-color) !important;
+}
+
+.q-btn--secondary:hover {
+  background-color: var(--light) !important;
+  border-color: var(--primary) !important;
+}
+
+.q-card {
+  background-color: var(--panel) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: var(--border-radius) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.q-input, .q-select {
+  background-color: var(--white) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: var(--border-radius) !important;
+}
+
+.q-input:focus-within, .q-select:focus-within {
+  border-color: var(--primary) !important;
+}
+
+.q-table {
+  background-color: var(--panel) !important;
+  border: 1px solid var(--border-color) !important;
+}
+
+.q-table th {
+  background-color: var(--light) !important;
+  color: var(--text-primary) !important;
+}
+
+.q-table td {
+  border-bottom: 1px solid var(--border-color) !important;
+}
+
+.q-table tr:nth-child(even) td {
+  background-color: rgba(0, 0, 0, 0.02) !important;
+}
+
+.q-table tr:hover td {
+  background-color: rgba(33, 150, 243, 0.1) !important;
+}
+
+/* CesiumJS Container */
+#cesium-container {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--border-radius);
+  overflow: hidden;
+  background: var(--white);
+}
+
+/* Dark mode (optionnel) */
+.dark-mode {
+  --light: #1E1E1E;
+  --white: #2D2D2D;
+  --panel: #1E1E1E;
+  --text-primary: #E0E0E0;
+  --text-secondary: #A0A0A0;
+  --border-color: #333333;
+}

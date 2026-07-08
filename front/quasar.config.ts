@@ -3,9 +3,9 @@ import { viteStaticCopy } from 'vite-plugin-static-copy';
 
 export default configure(() => {
   return {
-    boot: ['pinia', 'cesium'],
+    boot: ['pinia', 'cesium', 'quasar'],
 
-    css: ['app.scss'],
+    css: ['app.css'],
 
     extras: ['roboto-font', 'material-icons'],
 
