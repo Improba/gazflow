@@ -6,22 +6,40 @@ Natural gas network flow simulator, inspired by SIMONE.
 
 <table>
   <tr>
-    <td align="center" width="33%">
-      <img src="docs/assets/overview-3d-network.png" alt="3D view of the transport network in GazFlow" />
+    <td align="center" width="50%">
+      <img src="docs/assets/dashboard-overview.png" alt="GazFlow operational dashboard (overview-first landing)" />
     </td>
-    <td align="center" width="33%">
-      <img src="docs/assets/scenario-control-panel.png" alt="GazFlow simulation control panel" />
-    </td>
-    <td align="center" width="33%">
-      <img src="docs/assets/simulation-results-convergence.png" alt="Hydraulic results and convergence in GazFlow" />
+    <td align="center" width="50%">
+      <img src="docs/assets/workspace-schematic.png" alt="GazFlow analysis workspace: 2D nodal schematic with load colours" />
     </td>
   </tr>
   <tr>
-    <td align="center"><em>3D network map</em></td>
-    <td align="center"><em>Scenario control</em></td>
-    <td align="center"><em>Reading results</em></td>
+    <td align="center"><em>Operational dashboard</em></td>
+    <td align="center"><em>Workspace: 2D schematic</em></td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/assets/workspace-pressure-profile.png" alt="GazFlow analysis workspace: pressure profile along a path" />
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/assets/map-3d-results.png" alt="GazFlow 3D map with simulation results overlay" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><em>Workspace: pressure profile</em></td>
+    <td align="center"><em>3D map with results</em></td>
   </tr>
 </table>
+
+## Interface: overview-first
+
+The UI is organised around an **operational overview before deep analysis**:
+
+- **Tableau de bord** (`/`) — landing page. Aggregates operational KPIs (min pressure, capacity margin, demand served, N-1 compliance), an alert center (capacity violations, sink diagnostics, solver warnings, N-1 alerts), recent networks, and contextual CTAs.
+- **Espace d'analyse** (`/workspace`) — multi-view analytical workspace with a segmented switcher between a **2D nodal schematic** (pipe load colours, node pressures), a **pressure profile** along a path, and a **results table** (nodes + pipes), side-by-side with a **results rail** (verdict, sink diagnostics, boundary supply, capacity study, exports).
+- **Carte** (`/map`) — Cesium 3D geospatial view with the simulation panel, property panel, and legend. When no network is loaded it redirects to the dashboard.
+- **Global status bar** — a persistent bar (network, run status, nomination, N-1 compliance) shared across all pages.
+- **Task-oriented navigation** — primary entries (Dashboard, Workspace, Map) plus a "Tâches" menu grouping Import, N-1, Calage SCADA, Transitoire, Exports, Batch.
 
 ## What GazFlow does (business vision)
 
@@ -60,7 +78,7 @@ For the algorithm and limitations in depth, see [Capacity constraints plan](docs
 ## Architecture
 
 - **back/** — Rust backend: computation engine (Darcy-Weisbach, Newton-Raphson) + REST API (Axum)
-- **front/** — Vue 3 / QuasarJS / CesiumJS frontend: 3D geospatial visualisation
+- **front/** — Vue 3 / QuasarJS / CesiumJS frontend: overview-first dashboard, multi-view analysis workspace, and 3D geospatial visualisation
 - **docker/** — Dockerfiles for back and front services
 - **docs/** — Documentation (architecture, science, plans)
 
@@ -118,11 +136,11 @@ The `Cargo.toml` and `package.json` files are on the shared volume: changes are 
 
 ```bash
 ./scripts/back-test.sh     # Rust tests (~270 lib tests)
-./scripts/front-test.sh    # Frontend tests (64 tests)
+./scripts/front-test.sh    # Frontend tests (116 tests)
 ./scripts/ci.sh            # Full CI (+ corpus verification step)
 ```
 
-Current baseline (2026-06-30): `cargo test --lib` ~270 tests, `npm test` 64/64.
+Current baseline (2026-07-10): `cargo test --lib` ~270 tests, `npm test` 116/116.
 
 Large transport networks (GasLib-582, GasLib-4197): optional smoke tests and env knobs are documented in [Testing](docs/testing/README.md). Model limits (compressor MVP, `.cdf` routing, convergence) are in [Limitations](docs/science/limitations.md).
 
