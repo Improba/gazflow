@@ -28,3 +28,7 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+
+# Python bytecode (scripts/nova etc.)
+__pycache__/
+*.pyc
