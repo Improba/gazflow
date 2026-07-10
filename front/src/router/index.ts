@@ -5,8 +5,18 @@ const routes = [
     path: '/',
     component: () => import('src/layouts/MainLayout.vue'),
     children: [
-      { path: '', name: 'map', component: () => import('src/pages/MapPage.vue') },
+      {
+        path: '',
+        name: 'dashboard',
+        component: () => import('src/pages/DashboardPage.vue'),
+      },
+      { path: 'map', name: 'map', component: () => import('src/pages/MapPage.vue') },
       { path: 'import', name: 'import', component: () => import('src/pages/ImportPage.vue') },
+      {
+        path: 'workspace',
+        name: 'workspace',
+        component: () => import('src/pages/WorkspacePage.vue'),
+      },
       {
         path: 'contingency',
         name: 'contingency',
