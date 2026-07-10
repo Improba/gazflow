@@ -3,7 +3,8 @@ name = "gazflow-back"
 version = "0.1.0"
 edition = "2024"
 description = "GazFlow — Simulateur d'écoulement de gaz en réseau"
-license = "MIT"
+license = "LicenseRef-GazFlow-Public-1.0"
+license-file = "../LICENSE"
 
 [dependencies]
 # Web framework

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "GazFlow — Visualisation CesiumJS du réseau gazier",
+  "license": "LicenseRef-GazFlow-Public-1.0",
   "type": "module",
   "scripts": {
     "dev": "quasar dev",

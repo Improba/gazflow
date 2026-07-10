@@ -1,21 +1,127 @@
-MIT License
+GazFlow Public License v1.0
+Copyright (c) 2026 Improba (https://improba.fr)
 
-Copyright (c) 2026 GazFlow contributors
+1. Definitions
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+   "Software" means GazFlow, including source code, documentation, and
+   associated materials published by Improba under this license.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+   "Licensor" means Improba.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+   "You" means the individual or legal entity exercising permissions under
+   this license.
+
+   "Individual" means a natural person acting in a personal capacity, not
+   on behalf of an Enterprise.
+
+   "Enterprise" means any legal entity other than an Individual, including
+   without limitation: companies, public bodies, local authorities,
+   utilities, associations, foundations, and any organization with legal
+   personality or that employs staff in the course of its activities.
+
+   "Academic Institution" means an accredited university, research laboratory,
+   or public research organization using the Software exclusively for
+   non-commercial teaching or research.
+
+   "Commercial License" means a separate written agreement between Improba
+   and an Enterprise, as described in COMMERCIAL-LICENSE.md.
+
+2. Scope
+
+   The source code of the Software is published for transparency and to
+   allow free use under the conditions below. This license is not an OSI
+   open source license.
+
+3. Free use (no fee)
+
+   Improba grants You a royalty-free, non-exclusive, non-transferable license
+   to use, copy, modify, and run the Software if You are:
+
+   (a) an Individual, for personal, educational, or non-commercial purposes;
+       or
+   (b) an Academic Institution, for non-commercial teaching and research;
+       or
+   (c) an Individual contributing to an Academic Institution under (b).
+
+   Under this free license, You may also distribute unmodified copies of the
+   Software, and distribute Your modifications, provided that:
+
+   - You retain all copyright notices and this license text;
+   - recipients receive the same rights and obligations under this license;
+   - You do not remove or alter licensing notices.
+
+4. Enterprise use (Commercial License required)
+
+   If You are an Enterprise, or if You use the Software on behalf of an
+   Enterprise (including as an employee, contractor, or service provider),
+   You may not use, copy, modify, deploy, or distribute the Software unless
+   You hold a valid Commercial License from Improba.
+
+   This restriction applies to all Enterprise uses, including internal
+   studies, production deployments, client services, SaaS offerings, and
+   integration into commercial products.
+
+   Evaluation: an Enterprise may evaluate the Software internally for up to
+   thirty (30) consecutive days without a Commercial License, after which
+   use must cease or a Commercial License must be obtained.
+
+5. Prohibited uses (all users)
+
+   You may not:
+
+   (a) use the Software in a manner that violates applicable law;
+   (b) remove or obscure copyright or license notices;
+   (c) represent that Improba certifies or endorses Your results or
+       deployments without written authorization;
+   (d) sublicense Enterprise rights under this license (Enterprises must
+       obtain a Commercial License).
+
+6. Third-party components
+
+   The Software includes third-party libraries under their own licenses
+   (see Cargo.lock and package-lock.json). Those licenses apply to the
+   respective components.
+
+7. Disclaimer of warranty
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+   GazFlow is a comparative study tool. It is not certified for real-time
+   network operation or safety-critical decisions.
+
+8. Limitation of liability
+
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, IMPROBA SHALL NOT BE LIABLE FOR
+   ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES,
+   OR ANY LOSS OF DATA, PROFITS, OR BUSINESS OPPORTUNITY, ARISING FROM USE
+   OF THE SOFTWARE.
+
+9. Commercial License
+
+   Enterprises must contact Improba to obtain a Commercial License:
+
+   licensing@improba.fr
+
+   Terms are outlined in COMMERCIAL-LICENSE.md. The signed contract prevails
+   over that document.
+
+10. Termination
+
+    Your rights under this license terminate automatically if You breach
+    Section 4 or Section 5. Upon termination, You must cease use and destroy
+    copies in Your possession, except that Academic Institutions and
+    Individuals may retain copies solely to the extent required by
+    applicable law.
+
+11. Governing law
+
+    This license is governed by French law. Courts at Improba's registered
+    office shall have jurisdiction, subject to mandatory provisions.
+
+12. Changes
+
+    Improba may publish new versions of this license for future releases.
+    Use of a specific release remains governed by the license version
+    shipped with that release.

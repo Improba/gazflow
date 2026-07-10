@@ -128,6 +128,15 @@ Large transport networks (GasLib-582, GasLib-4197): optional smoke tests and env
 
 **GasLib-582 transport (Phase I, juin–juillet 2026)** : bench `nomination_mild_618.scn` via `compressor_diag`. Résidu **2,045 m³/s** avec nomination intacte (partial accept, cible 3×10⁻³). v18 (abandon Q sur boundaries) abaisse le résidu effectif à ~2,0 m³/s mais **viole la nomination** — voir `nomination_mass_balance` et `boundary_nomination_slips` dans le JSON diag. Détails : [bench 582](docs/testing/gaslib-582-compressor-bench.md), [diagnosis 582](docs/testing/gaslib-582-compressor-diagnosis.md).
 
+## Licensing
+
+GazFlow source code is published under the [GazFlow Public License v1.0](LICENSE):
+
+- **Free** for individuals and academic non-commercial use
+- **Commercial license required** for any enterprise or organization (companies, utilities, public bodies, contractors acting on their behalf)
+
+See [LICENSING.md](LICENSING.md) and [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). Contact: `licensing@improba.fr`.
+
 ## Documentation
 
 - [Quickstart](docs/quickstart.md)

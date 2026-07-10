@@ -82,8 +82,8 @@
           </p>
           <p class="text-subtitle2 text-grey-8 q-mb-xs q-mt-md">Licence</p>
           <p class="q-ma-none text-caption text-grey-8">
-            Open source sous AGPL-3.0. Usage commercial en production sans obligations copyleft :
-            licence commerciale Improba (voir LICENSING.md).
+            Gratuit pour particuliers et recherche académique. Toute entreprise ou
+            organisme doit souscrire une licence commerciale Improba (voir LICENSING.md).
           </p>
           <p class="text-subtitle2 text-grey-8 q-mb-xs q-mt-md">Périmètre et limites</p>
           <ul class="about-limits q-ma-none q-pl-md">
