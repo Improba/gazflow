@@ -7,63 +7,6 @@
       </div>
     </header>
 
-    <section class="global-status-row q-mb-lg">
-      <div class="row q-col-gutter-sm">
-        <div class="col-auto">
-          <q-chip
-            dense
-            square
-            icon="hub"
-            class="status-chip"
-            :color="toneToQuasarColor('neutral')"
-            text-color="white"
-          >
-            <span class="status-chip__label">Réseau actif</span>
-            <span class="status-chip__value">{{ activeNetworkLabel }}</span>
-          </q-chip>
-        </div>
-        <div class="col-auto">
-          <q-chip
-            dense
-            square
-            icon="play_circle"
-            class="status-chip"
-            :color="toneToQuasarColor(runStatus.tone)"
-            text-color="white"
-          >
-            <span class="status-chip__label">Statut run</span>
-            <span class="status-chip__value">{{ runStatus.label }}</span>
-          </q-chip>
-        </div>
-        <div class="col-auto">
-          <q-chip
-            dense
-            square
-            icon="description"
-            class="status-chip"
-            :color="toneToQuasarColor('neutral')"
-            text-color="white"
-          >
-            <span class="status-chip__label">Nomination</span>
-            <span class="status-chip__value">{{ nomination.label }}</span>
-          </q-chip>
-        </div>
-        <div class="col-auto">
-          <q-chip
-            dense
-            square
-            icon="security"
-            class="status-chip"
-            :color="toneToQuasarColor(n1Status.tone)"
-            text-color="white"
-          >
-            <span class="status-chip__label">Statut N-1</span>
-            <span class="status-chip__value">{{ n1Status.label }}</span>
-          </q-chip>
-        </div>
-      </div>
-    </section>
-
     <section class="q-mb-lg">
       <div class="row q-col-gutter-md">
         <div class="col-xs-12 col-sm-6 col-md-3">
@@ -165,23 +108,24 @@
       <div class="col-12 col-lg-5">
         <q-card flat bordered class="section-card">
           <q-card-section class="q-pb-sm">
-            <div class="text-h6">Scénarios récents</div>
+            <div class="text-h6">Réseaux récents</div>
           </q-card-section>
           <q-separator dark />
           <q-card-section class="q-pa-none">
             <q-list separator dark>
               <q-item
-                v-for="name in recent"
-                :key="name"
+                v-for="network in recentNetworks"
+                :key="network"
                 clickable
                 v-ripple
-                @click="openScenario(name)"
+                :disable="networkStore.switching"
+                @click="openNetwork(network)"
               >
                 <q-item-section avatar>
-                  <q-icon name="history" color="primary" />
+                  <q-icon name="folder" color="primary" />
                 </q-item-section>
                 <q-item-section>
-                  <q-item-label>{{ name }}</q-item-label>
+                  <q-item-label>{{ network }}</q-item-label>
                 </q-item-section>
                 <q-item-section side>
                   <q-btn
@@ -190,7 +134,7 @@
                     round
                     icon="close"
                     color="grey-5"
-                    @click.stop="removeRecent(name)"
+                    @click.stop="removeRecentNetwork(network)"
                   />
                 </q-item-section>
               </q-item>
@@ -256,14 +200,14 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRouter } from 'vue-router';
-import { useGlobalStatus, type StatusTone } from 'src/composables/useGlobalStatus';
+import { type StatusTone } from 'src/composables/useGlobalStatus';
 import {
   useOperationalKpis,
   type N1Compliance,
   type N1ComplianceStatus,
 } from 'src/composables/useOperationalKpis';
 import { useAlertCenter, type AlertTone } from 'src/composables/useAlertCenter';
-import { useRecentScenarios } from 'src/composables/useRecentScenarios';
+import { useRecentNetworks } from 'src/composables/useRecentNetworks';
 import { useDemo } from 'src/composables/useDemo';
 import { useNetworkStore } from 'src/stores/network';
 import { useSimulateStore } from 'src/stores/simulate';
@@ -272,7 +216,6 @@ const router = useRouter();
 const networkStore = useNetworkStore();
 const simulateStore = useSimulateStore();
 
-const { network, nomination, runStatus, n1Status } = useGlobalStatus();
 const {
   minPressureBar,
   minPressureNodeId,
@@ -282,7 +225,7 @@ const {
   activeAlertsCount,
 } = useOperationalKpis();
 const { alerts } = useAlertCenter();
-const { recent, addRecent, removeRecent } = useRecentScenarios();
+const { recentNetworks, addRecent: addRecentNetwork, removeRecent: removeRecentNetwork } = useRecentNetworks();
 const { isLoadingDemo, demoError, launchDemo } = useDemo();
 
 function formatNumber(value: number | null | undefined, digits = 2): string {
@@ -369,8 +312,6 @@ function alertIcon(tone: AlertTone): string {
   }
 }
 
-const activeNetworkLabel = computed(() => network.value ?? 'Aucun réseau');
-
 const showStartCta = computed(() => networkStore.nodes.length === 0);
 const showWorkspaceCta = computed(
   () => networkStore.nodes.length > 0 && simulateStore.result !== null,
@@ -433,9 +374,18 @@ const n1ComplianceTone = computed(() =>
   toneToQuasarColor(n1StatusToTone(n1Compliance.value.status)),
 );
 
-function openScenario(name: string): void {
-  addRecent(name);
-  void router.push({ name: 'workspace' });
+async function openNetwork(networkId: string): Promise<void> {
+  if (networkStore.switching || networkId === networkStore.activeNetwork) {
+    void router.push({ name: 'map' });
+    return;
+  }
+  addRecentNetwork(networkId);
+  try {
+    await networkStore.selectNetwork(networkId);
+    void router.push({ name: 'map' });
+  } catch {
+    // Erreur de chargement propagée au store (networkStore.error) ; on reste sur le dashboard.
+  }
 }
 </script>
 
@@ -449,20 +399,6 @@ function openScenario(name: string): void {
 .dashboard-header {
   border-bottom: 1px solid var(--scada-border);
   padding-bottom: 12px;
-}
-
-.status-chip {
-  background: var(--scada-panel);
-  border: 1px solid var(--scada-border);
-}
-
-.status-chip__label {
-  opacity: 0.75;
-  margin-right: 6px;
-}
-
-.status-chip__value {
-  font-weight: 600;
 }
 
 .kpi-card,

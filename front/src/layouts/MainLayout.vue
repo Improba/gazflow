@@ -71,7 +71,7 @@
         <q-card-section>
           <div class="text-h6 text-grey-10">GazFlow</div>
           <div class="text-caption text-grey-7 q-mt-xs">
-            Outil d'étude comparative — non certifié pour l'exploitation temps réel
+            Outil d'étude comparative - non certifié pour l'exploitation temps réel
           </div>
         </q-card-section>
         <q-card-section class="text-body2 text-grey-9 q-gutter-sm">
@@ -89,7 +89,7 @@
           <ul class="about-limits q-ma-none q-pl-md">
             <li>Régime permanent et quasi-stationnaire horaire ; transitoire PDE partiel (réseaux ramifiés en repli quasi-stationnaire).</li>
             <li>Hypothèse isotherme ; EOS Papay ou PR-78 selon composition ; modèle d'organes simplifié.</li>
-            <li>Calage indicatif sur mesures importées — ne remplace pas une validation terrain certifiée.</li>
+            <li>Calage indicatif sur mesures importées - ne remplace pas une validation terrain certifiée.</li>
             <li>Décisions sécurité, contractuelles ou conduite en temps réel : vérification complémentaire obligatoire.</li>
           </ul>
         </q-card-section>

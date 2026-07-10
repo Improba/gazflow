@@ -46,8 +46,13 @@ export function useRecentNetworks() {
     recentNetworks.value = next.slice(0, MAX_RECENT);
   }
 
+  function removeRecent(networkId: string): void {
+    recentNetworks.value = recentNetworks.value.filter((n) => n !== networkId);
+  }
+
   return {
     recentNetworks,
     addRecent,
+    removeRecent,
   };
 }
