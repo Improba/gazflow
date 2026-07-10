@@ -408,9 +408,26 @@ The active-element decisions are adjusted by the existing outer loops between Ne
 "not solved to feasibility locally", **not** "infeasible". A definitive infeasibility verdict
 requires a global solver (SCIP/Couenne/BARON).
 
+**External verification (Phase VIII-bis, July 2026):** the same bounded NoVa NLP was rebuilt
+**independently** in Pyomo directly from the GasLib `.net`/`.scn`
+(`scripts/nova/nova_pyomo.py`) using the P² model of §1.2b (smooth reformulation
+$P_u^2 - P_v^2 = K\,Q\sqrt{Q^2+\varepsilon^2}$, compressor $P_{\text{out}} = r\,P_{\text{in}}$
+with $P_{\text{out}} \le \text{pressureOutMax}$, CV as bounded reducer, gauge fixed at the
+scenario slack), and solved with **IPOPT** (COIN-OR interior-point NLP) in a Docker image
+(`scripts/nova/Dockerfile`). On `nomination_mild_618`, IPOPT **exhibits a feasible point**
+under the full nomination (mass violation $\le 2.6\!\times\!10^{-12}$, 0 bound violations,
+all marginal sinks in contract bounds). This is a constructive proof of feasibility, so no
+global solver is needed for `mild_618`. The NLP is non-convex: multithreaded IPOPT reaches
+the feasible point only ~20% of runs from a naive start (others stop at non-feasible local
+minima of the Phase-1 slack objective); pinning `OMP_NUM_THREADS=1` makes it reliable (5/5).
+The in-repo bounded local solver reports `NotSolvedLocal` on `mild_618` — a local-solver
+weakness on a non-convex NLP, not evidence against feasibility.
+
 **Implementation:** `solver/newton.rs` (`PressureBoundContext::from_network_nova`),
 `gaslib/scenario.rs` (`nova_feasibility_enabled`, entry-anchor bypass),
 `solver/nova_diagnostics.rs` (`nova_feasibility_report`). Bench: `phase-viii-nova` tag.
+External model: `scripts/nova/{nova_pyomo.py,Dockerfile}`, log
+`scripts/nova/results/mild_618_ipopt_FEASIBLE.log`.
 
 ---
 

@@ -760,6 +760,42 @@ Un **solveur NoVa borné local** (`GAZFLOW_NOVA_FEASIBILITY=1`) a été impléme
 et consignes CV en variables de décision, bornes pression en pénalité Newton, verdict
 `Feasible` / `BoundViolation` / `NotSolvedLocal` (jamais « infeasible »). Sur `mild_618` il
 renvoie `NotSolvedLocal` (le Newton de base ne converge pas sur ce NLP non-convexe dur) — la
-réponse honnête. Pour un verdict définitif (faisable **ou** infeasible prouvé), un **solveur
-global** (SCIP/Couenne/BARON) reste nécessaire ; brancher un tel solveur externe sur la
-formulation bornée est la suite naturelle.
+réponse honnête.
+
+## Phase VIII-bis — preuve externe de faisabilité par IPOPT (juillet 2026)
+
+La « suite naturelle » (solveur global) a été partiellement complétée : un modèle NoVa NLP
+**indépendant** a été construit en Pyomo directement depuis les fichiers GasLib
+(`scripts/nova/nova_pyomo.py`), avec le même modèle P² isotherme documenté
+(`equations.md` §1.2b), et résolu avec **IPOPT** (COIN-OR, solveur NLP local par
+points intérieurs) dans une image Docker dédiée (`scripts/nova/Dockerfile`).
+
+**Résultat : IPOPT exhibe un point faisable** sous la nomination complète (255,6 Nm³/s via
+sink_109) — violation des contraintes `≤ 2,6e-12`, slack massique max `3,4e-7 Nm³/s`,
+**0 violation de bornes**, tous les sinks marginaux dans leurs enveloppes contrat :
+sink_88 = 40,99 bar [26, 51], sink_83 = 41,01 [21, 71], sink_108 = 40,99 [16, 51],
+sink_122 = 74,01 [74,01, 81,01], sink_125 = 63,47 [41, 84]. Log :
+`scripts/nova/results/mild_618_ipopt_FEASIBLE.log`.
+
+Ceci **prouve constructivement que `nomination_mild_618` est faisable** (un point faisable
+existe et est exhibé par un solveur externe indépendant). L'exhibition d'un point faisable
+dispense de solveur global : Couenne/BARON ne seraient requis que pour prouver une
+**infeasibilité**, ici caduque.
+
+**Caveat de reproductibilité (important).** Le NLP NoVa est **non-convexe** : depuis un
+départ uniforme 70 bar, IPOPT multithreadé n'atteint le point faisable que ~20% des runs ;
+les autres s'arrêtent sur des minima locaux non-faisables de l'objectif Phase-1 (slacks
+75-3691 Nm³/s). En forçant `OMP_NUM_THREADS=1` (le solveur linéaire OpenMP d'IPOPT est
+non-déterministe), IPOPT atteint le point faisable **de façon fiable (5/5)**. C'est
+exactement le phénomène rapporté par ZIB (solveurs locaux ratent les points faisables sur
+les NoVa durs même quand ils existent) et la cause pour laquelle le Newton-pénalité plus
+faible de GazFlow renvoie systématiquement `NotSolvedLocal`. La faisabilité, elle, n'est
+plus en doute.
+
+**Conclusion scientifique définitive (Phase VIII-bis).** `nomination_mild_618` est
+**faisable**. Les verdicts d'infeasibilité des Phases II-VII-bis étaient des artefacts du
+solveur (ancres multiples en conflit + Newton-pénalité sur un NLP non-convexe), confirmés
+indépendamment par IPOPT. Le travail d'ingénierie restant est d'améliorer la convergence
+non-convexe du solveur in-repo (multistart, continuation, ou backend SQP/IPOPT) pour que le
+verdict local rejoigne le verdict externe.
+

@@ -43,7 +43,7 @@ This document describes the known limits of the solver in its current state. It 
 
 - GasLib-11 pressure validation: max relative error < 5 % (`test_gaslib_11_vs_reference_solution`).
 - GasLib-135 (135 nodes): recommended transport demo with continuation preset; steady-state smoke test passes (faer LU stable with component anchoring on fragmented subgraphs).
-- GasLib-582 (582 nodes): `nomination_mild_618` is **not proven infeasible**. See Phase VIII correction below and [diagnosis](../testing/gaslib-582-compressor-diagnosis.md). Earlier phases concluded "topological infeasibility" for sink_88/83/108; a zero-demand reachability probe (single anchor source_14 at 86 bar) shows these sinks reach ~86 bar at zero flow, far above their contractual floors (26/21/16 bar). The earlier "capacity = 0 even at zero flow" was an artifact of multiple conflicting pressure anchors (slack 51 bar + sources 70-121 bar + non-convergence), not a real topological infeasibility. Convergence under the **full** nomination flow (≈256 m³/s to the slack sink_109) is a genuine capacity/NoVa question requiring a global solver to decide (per Pfetsch et al., ZIB-Report 12-41: a local solver non-convergence is **not** a proof of infeasibility). Not recommended as a demo until the NoVa feasibility is properly characterised.
+- GasLib-582 (582 nodes): `nomination_mild_618` is **feasible** (proven constructively in Phase VIII-bis by an independent external IPOPT NLP solve — see §3.1 below and [diagnosis](../testing/gaslib-582-compressor-diagnosis.md)). Earlier phases concluded "topological infeasibility" for sink_88/83/108; a zero-demand reachability probe (single anchor source_14 at 86 bar) shows these sinks reach ~86 bar at zero flow, far above their contractual floors (26/21/16 bar). The earlier "capacity = 0 even at zero flow" was an artifact of multiple conflicting pressure anchors (slack 51 bar + sources 70-121 bar + non-convergence), not a real topological infeasibility. The in-repo local Newton solver still reports `NotSolvedLocal` under the full nomination flow because the NoVa NLP is non-convex and the penalty-Newton is weaker than IPOPT (which finds the feasible point reliably when single-threaded); this is a local-solver weakness, not evidence against feasibility.
 - Flow comparison against external `.sol` references: not yet systematic.
 - PDE transient: monotonicity tests on single pipe; full wave validation pending.
 
@@ -59,7 +59,23 @@ Evidence (`scripts/trace_sink_reachability.py` + `compressor_diag --reachability
 
 **Root cause of the earlier false verdict:** the capacity study anchored multiple pressure nodes simultaneously at conflicting values (slack sink_109 at 51 bar + all sources at 70 bar + scenario hubs) and ran at non-convergence; the resulting low-pressure iterates were misread as a reachability limit. With a single consistent anchor, pressure propagates correctly through the passive CVs.
 
-**Correct scientific status:** `nomination_mild_618` feasibility under the **full** nomination is an open NoVa question. At zero flow it is clearly feasible (all sinks reach their floors with large margin). Under full flow (≈256 m³/s to sink_109), friction plus the active-element setting (compressors, CV setpoints) determine feasibility — this requires a proper NoVa solve treating entry pressures, compressor ratios and CV setpoints as bounded decision variables, and per ZIB methodology only a **global** solver (SCIP/Couenne/BARON) can prove infeasibility. GazFlow being a local Newton solver, its non-convergence under full flow is **not** evidence of infeasibility.
+**Correct scientific status:** `nomination_mild_618` is **feasible** — proven constructively in
+Phase VIII-bis by an independent external NLP solver. At zero flow it is feasible with large
+margins (all sinks reach their floors). Under the **full** nomination flow (≈256 m³/s to
+sink_109), a bounded NoVa feasibility NLP built independently in Pyomo from the GasLib
+`.net`/`.scn` (`scripts/nova/nova_pyomo.py`) and solved with IPOPT (COIN-OR interior-point)
+**exhibits a feasible point**: mass-conservation violation `≤ 2.6e-12`, max nodal slack
+`3.4e-7 Nm³/s`, 0 bound violations, all marginal sinks in contract bounds (sink_88 40.99 bar
+[26,51], sink_83 41.01 [21,71], sink_108 40.99 [16,51], sink_122 74.01 [74,81], sink_125
+63.47 [41,84]). Log: `scripts/nova/results/mild_618_ipopt_FEASIBLE.log`.
+
+The NoVa NLP is genuinely **non-convex**: from a naive uniform start, multithreaded IPOPT
+reaches the feasible point only ~20% of runs (others stop at non-feasible local minima of the
+Phase-1 slack objective); pinning `OMP_NUM_THREADS=1` makes IPOPT reach it reliably (5/5).
+This is the phenomenon ZIB reports for local solvers on hard NoVa instances and the reason
+GazFlow's weaker penalty-Newton reports `NotSolvedLocal`. The feasibility itself is settled;
+the remaining engineering work is to make the in-repo local solver's non-convex convergence
+match the external one (multistart, continuation, or SQP/IPOPT backend).
 
 ## 4. Impact on usage
 
@@ -76,4 +92,12 @@ Evidence (`scripts/trace_sink_reachability.py` + `compressor_diag --reachability
 - Outer-loop Re–Q in Newton Jacobian for sub-1 % accuracy.
 - Systematic external reference validation (pressure and flow).
 - Export edited network as GeoJSON/CSV from UI.
-- **NoVa feasibility solver** (Phase VIII): implemented as a bounded local feasibility search (`GAZFLOW_NOVA_FEASIBILITY=1`, see `equations.md` §4.8). Entry pressures float within `.net` bounds, compressor ratios and CV setpoints are decision variables, pressure bounds enforced as a soft penalty in Newton, verdict `Feasible` / `BoundViolation` / `NotSolvedLocal` (never "infeasible" — a local solver cannot prove infeasibility per Pfetsch et al., ZIB-12-41). On `mild_618` it reports `NotSolvedLocal` (the base Newton does not converge on this hard non-convex NLP) — the honest answer. To obtain a definitive feasible/infeasible verdict on `mild_618`, a **global** solver (SCIP/Couenne/BARON) is still required.
+- **NoVa feasibility** (Phase VIII + VIII-bis): the bounded local feasibility search
+  (`GAZFLOW_NOVA_FEASIBILITY=1`, `equations.md` §4.8) reports `NotSolvedLocal` on `mild_618`.
+  Feasibility of `mild_618` is nonetheless **proven** by an independent external IPOPT NLP
+  solve (`scripts/nova/nova_pyomo.py` + `scripts/nova/Dockerfile`), which exhibits a feasible
+  point under the full nomination. The NoVa NLP is non-convex; remaining work is to bring the
+  in-repo local solver's non-convex convergence to the external one (multistart, continuation,
+  or an SQP/IPOPT backend) so the local verdict matches. A global solver (Couenne/BARON) is
+  no longer needed for `mild_618` (feasibility is settled) but remains the tool to prove
+  infeasibility of other nominations.

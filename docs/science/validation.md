@@ -211,13 +211,42 @@ Root cause of the earlier false verdict: the capacity study fixed multiple press
 ### Corrected Go/No-Go (GasLib-582 `nomination_mild_618`)
 
 - **Feasible at zero flow**: yes (all marginal sinks reach their floors with large margin).
-- **Feasible under full nomination flow**: **open (local solver)**. A bounded local NoVa
-  feasibility solver has been implemented (`GAZFLOW_NOVA_FEASIBILITY=1`, `equations.md` §4.8):
-  entry pressures float within `.net` bounds, compressor ratios and CV setpoints are decision
-  variables, pressure bounds enforced as a Newton soft penalty, verdict `Feasible` /
-  `BoundViolation` / `NotSolvedLocal`. On `mild_618` it reports `NotSolvedLocal` (residual 73.9
-  m³/s, base Newton non-convergence on this hard non-convex NLP). This is the honest answer per
-  Pfetsch et al. — a local solver cannot prove infeasibility. A definitive verdict requires a
-  global solver (SCIP/Couenne/BARON) on the bounded formulation.
+- **Feasible under full nomination flow: YES — proven by an independent external NLP solver
+  (Phase VIII-bis, July 2026).** A bounded NoVa feasibility NLP was built independently in
+  Pyomo directly from the GasLib `.net`/`.scn` (`scripts/nova/nova_pyomo.py`), using the same
+  isothermal P² model documented in `equations.md` §1.2b (smooth reformulation
+  `P_u²−P_v² = K·Q·sqrt(Q²+ε²)` to allow reverse flow, compressor `P_out = r·P_in` with
+  `r ∈ [1, pressureOutMax/pressureInMin]` and `P_out ≤ pressureOutMax`, control valve as a
+  bounded reducer `P_out ≤ P_in`, `P_out ≤ pressureOutMax`, flow continuity, gauge fixed at
+  sink_109 = 51.01325 bar, entries floating within `.net` bounds). Solved with IPOPT
+  (COIN-OR interior-point NLP) in a Docker image (`scripts/nova/Dockerfile`).
+
+  **Result: IPOPT finds a feasible point.** Constraint violation (mass conservation)
+  `≤ 2.6e-12`, max nodal mass slack `3.4e-7 Nm³/s`, **0 bound violations**, all marginal
+  sinks in contract bounds: sink_88 = 40.99 bar [26, 51], sink_83 = 41.01 [21, 71],
+  sink_108 = 40.99 [16, 51], sink_122 = 74.01 [74.01, 81.01], sink_125 = 63.47 [41, 84],
+  sink_109 = 51.013. Log: `scripts/nova/results/mild_618_ipopt_FEASIBLE.log`.
+
+  **Reproducibility caveat (important).** The NoVa NLP is genuinely **non-convex**: from a
+  naive uniform-70-bar start, multithreaded IPOPT (OpenMP linear solver) reaches the
+  feasible point only ~20% of the time; the other runs stop at non-feasible local minima of
+  the Phase-1 slack objective (mass slacks 75-3691 Nm³/s). Pinning `OMP_NUM_THREADS=1`
+  removes the OpenMP nondeterminism and makes IPOPT reach the feasible point **reliably
+  (5/5 runs)**. This is exactly the phenomenon ZIB reports (local solvers fail to find
+  feasible points on hard NoVa instances even when they exist) and is the reason GazFlow's
+  weaker penalty-Newton consistently reports `NotSolvedLocal`. The feasibility itself is
+  not in doubt: a feasible point is exhibited.
+
+  No global solver (Couenne/BARON) run is needed: exhibiting a feasible point is a
+  constructive proof of feasibility. A global solver would only be required to prove
+  *infeasibility*, which is moot here.
+- **Bounded local NoVa solver (in-repo)** (`GAZFLOW_NOVA_FEASIBILITY=1`, `equations.md` §4.8):
+  reports `NotSolvedLocal` on `mild_618`. This is now understood as a local-solver weakness
+  on a non-convex NLP (confirmed by the IPOPT multistart behaviour above), not evidence
+  against feasibility. The honest local verdict remains "not solved (local)".
 - **Engineering / CI**: solver is stable (hard compressor coupling capped by `pressureOutMax`, CV setpoint infrastructure, component anchoring, bounded NoVa mode). Baselines preserved; 361 lib tests pass (only pre-existing flaky `test_ws_timeout_diverged` fails).
-- **Demo recommendation**: not recommended until NoVa feasibility is properly characterised by a global solver or a converged bounded-DOF formulation.
+- **Demo recommendation**: `nomination_mild_618` is feasible and may be shown, with the
+  caveat that the in-repo local solver does not itself converge to the feasible point; the
+  feasibility is established by the external IPOPT model. Improving the in-repo solver's
+  non-convex convergence (multistart, continuation, or SQP/IPOPT backend) is the remaining
+  engineering work to make the local verdict match the external one.
