@@ -1,0 +1,17 @@
+FROM rust:1.88-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    coinor-libipopt-dev \
+    libblas-dev \
+    liblapack-dev \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Le code source est monté en volume à /app (racine du crate `gazsim`).
+# Le cache Cargo est dans un volume nommé pour persister entre les builds.
+WORKDIR /app/back
+
+# Build par défaut : `cargo build --release --features nlp-ipopt --bin compressor_diag`
+CMD ["cargo", "build", "--release", "--features", "nlp-ipopt", "--bin", "compressor_diag"]

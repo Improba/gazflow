@@ -16,6 +16,8 @@ pub mod eos;
 pub mod gas_properties;
 pub(crate) mod iterative;
 pub(crate) mod newton;
+#[cfg(feature = "nlp-ipopt")]
+pub mod nlp_ipopt;
 pub mod presets;
 pub(crate) mod regulator;
 mod steady_state;
@@ -55,6 +57,8 @@ pub use presets::{
     NetworkTier, SolverPreset, preset_for_node_count, preset_from_request, preset_robust,
     recommended_demo_for_dataset, tier_for_dataset, tier_for_node_count,
 };
+#[cfg(feature = "nlp-ipopt")]
+pub use nlp_ipopt::{NovaIpoptOptions, NovaIpoptVerdict, solve_nova_with_ipopt};
 pub use regulator::{EquipmentState, RegulatorMode};
 pub use steady_state::{
     BoundaryNominationSlip, MassBalanceRefinementOutcome, MassBalanceReport, NodeMassImbalance,

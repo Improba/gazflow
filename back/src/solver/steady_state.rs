@@ -1943,6 +1943,40 @@ mod tests {
         );
     }
 
+    /// Phase VIII (option B) : solve effectif du NLP NoVa par IPOPT (backend C FFI)
+    /// sur le modèle in-repo. Réseau two_node (source fixée 70 bar, sink -10 m³/s) :
+    /// IPOPT doit trouver un point faisable (bilan massique ~0, bornes respectées).
+    /// Compilé/lié uniquement avec le feature `nlp-ipopt` (image gazflow-ipopt).
+    #[cfg(feature = "nlp-ipopt")]
+    #[test]
+    #[serial]
+    fn ipopt_solves_two_node_feasible() {
+        let net = two_node_network();
+        let mut demands = HashMap::new();
+        demands.insert("sink".to_string(), -10.0);
+        let gas = GasComposition::pure_ch4();
+        let opts = crate::solver::NovaIpoptOptions::default();
+        let verdict =
+            crate::solver::solve_nova_with_ipopt(&net, &demands, gas, &opts)
+                .expect("ipopt solve should not error");
+        match &verdict {
+            crate::solver::NovaIpoptVerdict::Feasible {
+                pressures_bar,
+                residual_inf,
+                status,
+                ..
+            } => {
+                let p_sink = pressures_bar["sink"];
+                eprintln!(
+                    "[ipopt] Feasible: p_sink={p_sink:.4} bar, residual_inf={residual_inf:.3e}, status={status}"
+                );
+                assert!(p_sink > 0.0 && p_sink < 70.0, "p_sink out of range: {p_sink}");
+                assert!(*residual_inf < 1e-2, "residual too high: {residual_inf}");
+            }
+            other => panic!("expected Feasible, got {other:?}"),
+        }
+    }
+
     #[test]
     fn steady_state_y_network_mass_conservation() {
         let net = y_network();

@@ -2626,7 +2626,6 @@ fn r2_cap_disabled_env() -> bool {
 fn build_nlp_setup(
     network: &GasNetwork,
     demands: &HashMap<String, f64>,
-    gas_composition: GasComposition,
 ) -> Result<NlpSetup> {
     let n = network.node_count();
     if n == 0 {
@@ -2800,7 +2799,7 @@ fn build_nlp_setup(
 
     // Sparsité unique du Jacobien ∂g/∂π (stencil conductances, agrégée par paire).
     let mut seen: Vec<(usize, usize)> = Vec::with_capacity(pipes.len() * 4);
-    let mut push_pair = |seen: &mut Vec<(usize, usize)>, a: usize, b: usize| {
+    let push_pair = |seen: &mut Vec<(usize, usize)>, a: usize, b: usize| {
         if a != usize::MAX && b != usize::MAX {
             seen.push((a, b));
         }
@@ -2850,7 +2849,8 @@ pub(crate) fn pressure_nlp_structure(
     demands: &HashMap<String, f64>,
     gas_composition: GasComposition,
 ) -> Result<PressureNlpStructure> {
-    let s = build_nlp_setup(network, demands, gas_composition)?;
+    let _ = gas_composition;
+    let s = build_nlp_setup(network, demands)?;
     Ok(PressureNlpStructure {
         free_node_ids: s.free_indices.iter().map(|&i| s.node_ids[i].clone()).collect(),
         var_lo: s.var_lo,
@@ -2868,7 +2868,7 @@ pub(crate) fn pressure_nlp_eval(
     gas_composition: GasComposition,
     x_free: &[f64],
 ) -> Result<PressureNlpEval> {
-    let s = build_nlp_setup(network, demands, gas_composition)?;
+    let s = build_nlp_setup(network, demands)?;
     if x_free.len() != s.free_indices.len() {
         bail!(
             "NLP NoVa: x de longueur {} (attendu {})",

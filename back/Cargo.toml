@@ -41,6 +41,12 @@ base64 = "0.22"
 rust_xlsxwriter = "0.94.0"
 rusqlite = { version = "=0.31.0", features = ["bundled"] }
 
+[features]
+# Backend IPOPT externe sur le modèle in-repo (Phase VIII, option B).
+# Link la lib C Ipopt (coinor-libipopt-dev / pkg-config ipopt). Build hors-hôte
+# (image Docker gazflow-ipopt) — le build par défaut n'a pas besoin d'Ipopt.
+nlp-ipopt = []
+
 [dev-dependencies]
 approx = "0.5"
 insta = { version = "1", features = ["yaml"] }
