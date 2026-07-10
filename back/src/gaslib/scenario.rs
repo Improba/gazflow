@@ -377,11 +377,64 @@ pub fn entry_zero_flow_anchor_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Ancre chaque source à son propre `pressureMax` du `.net` (au lieu de la pression uniforme
+/// `GAZFLOW_ENTRY_TRANSPORT_ANCHOR_BAR`). Test de reachabilité NoVa (Phase VIII) :
+/// les entries non nominées ont des `pressureMax` de 51 à 121 bar dans GasLib-582 ; les
+/// ancrer à leur borne `.net` maximise la pression amont disponible pour les sinks aval
+/// et permet de distinguer une vraie infeasibilité topologique d'un artefact d'ancrage.
+pub fn entry_anchor_use_pressure_max_enabled() -> bool {
+    std::env::var("GAZFLOW_ENTRY_ANCHOR_USE_PRESSURE_MAX")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Pression d'ancrage d'une source : `pressureMax` du `.net` si le flag de reachabilité est
+/// actif, sinon la pression uniforme `GAZFLOW_ENTRY_TRANSPORT_ANCHOR_BAR` (défaut 70 bar).
+/// Bornée supérieurement par `pressureMax` du nœud quand l'ancrage uniforme est utilisé
+/// (on ne dépasse jamais la limite physique de l'entry).
+fn source_anchor_bar(node: &crate::graph::Node) -> f64 {
+    let uniform = entry_transport_anchor_bar();
+    if entry_anchor_use_pressure_max_enabled() {
+        node.pressure_upper_bar.unwrap_or(uniform)
+    } else {
+        match node.pressure_upper_bar {
+            Some(pmax) if pmax > 1.0 => uniform.min(pmax),
+            _ => uniform,
+        }
+    }
+}
+
 /// Traite les control valves GasLib comme détendeurs à consigne aval (Phase VII).
 pub fn control_valve_regulator_enabled() -> bool {
     std::env::var("GAZFLOW_CONTROL_VALVE_AS_REGULATOR")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+/// Solveur NoVa borné (Phase VIII) : recherche d'un point faisable local.
+///
+/// Active la pénalité de bornes pression native `.net` sur **tous** les nœuds (entries
+/// comprises), laisse les pressions d'entry **flotter** dans `[pressureMin, pressureMax]`
+/// (Q fixé par la nomination, pas d'ancrage transport), et s'appuie sur le slack scénario
+/// pour la jauge. Les ratios compresseurs et consignes CV restent pilotés par leurs flags
+/// (`GAZFLOW_COMPRESSOR_DECISION_VARIABLES`, `GAZFLOW_CONTROL_VALVE_DECISION_VARIABLES`).
+///
+/// Per Pfetsch et al. (ZIB-12-41), un solveur local ne peut **pas** prouver l'infeasibilité :
+/// ce mode répond « point faisable trouvé » vs « non résolu (local) », jamais « infeasible ».
+pub fn nova_feasibility_enabled() -> bool {
+    std::env::var("GAZFLOW_NOVA_FEASIBILITY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Poids de la pénalité de bornes pression natives en mode NoVa faisabilité (m³/s par bar).
+/// Défaut : poids de pénalité scénario (cohérent avec l'existant).
+pub fn nova_native_penalty_weight() -> f64 {
+    std::env::var("GAZFLOW_NOVA_NATIVE_PENALTY_WEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|w: &f64| w.is_finite() && *w > 0.0)
+        .unwrap_or_else(scenario_pressure_penalty_weight)
 }
 
 /// Outer-loop NoVa : ajuste les consignes aval des control valves pour réduire les déficits P.
@@ -435,7 +488,11 @@ fn apply_entry_transport_anchors(network: &mut GasNetwork, scenario: &ScenarioDe
     if !entry_transport_anchor_enabled() {
         return;
     }
-    let anchor_bar = entry_transport_anchor_bar();
+    // Mode NoVa faisabilité : les entries flottent dans leurs bornes `.net` (Q fixé par la
+    // nomination, P pénalisée si hors bornes). On n'ancre pas leur pression.
+    if nova_feasibility_enabled() {
+        return;
+    }
     let entry_ids: Vec<String> = network
         .nodes()
         .filter(|n| is_nominated_entry(scenario, &n.id))
@@ -444,7 +501,7 @@ fn apply_entry_transport_anchors(network: &mut GasNetwork, scenario: &ScenarioDe
     for id in entry_ids {
         if let Some(node) = network.node_mut(&id) {
             if node.pressure_fixed_bar.is_none() {
-                node.pressure_fixed_bar = Some(anchor_bar);
+                node.pressure_fixed_bar = Some(source_anchor_bar(node));
             }
         }
     }
@@ -458,7 +515,7 @@ fn apply_entry_transport_anchors(network: &mut GasNetwork, scenario: &ScenarioDe
         for id in zero_flow_sources {
             if let Some(n) = network.node_mut(&id) {
                 if n.pressure_fixed_bar.is_none() {
-                    n.pressure_fixed_bar = Some(anchor_bar);
+                    n.pressure_fixed_bar = Some(source_anchor_bar(n));
                 }
             }
         }

@@ -141,6 +141,106 @@ pub struct NovaVerdict {
     pub cause: NovaCause,
 }
 
+/// Phase VIII — rapport de faisabilité NoVa borné (solveur local).
+///
+/// Vérifie les bornes pression `[pressure_lower_bar, pressure_upper_bar]` de **tous** les
+/// nœuds (bornes natives `.net` + enveloppes scénario déjà posées sur le réseau passé en
+/// argument) contre la solution `result`. Un nœud fixé (slack) est ignoré (sa pression est
+/// imposée, supposée dans ses bornes par construction).
+///
+/// Critère : faisable si (a) le solveur a convergé (`result.residual < tol`) ET (b) aucun nœud
+/// ne viole ses bornes au-delà de `pressure_tol_bar`. Comme un solveur local ne peut pas prouver
+/// l'infeasibilité (Pfetsch et al., ZIB-12-41), un échec est renvoyé comme `NotSolved`, jamais
+/// comme « infeasible ».
+#[derive(Debug, Clone, Serialize)]
+pub struct NovaFeasibilityReport {
+    pub converged: bool,
+    pub residual_m3s: f64,
+    pub feasible: bool,
+    pub cause: NovaFeasibilityCause,
+    pub worst_lower_shortfall_bar: f64,
+    pub worst_upper_excess_bar: f64,
+    pub violations: Vec<NovaBoundViolation>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub enum NovaFeasibilityCause {
+    Feasible,
+    NotSolvedLocal,
+    BoundViolation,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NovaBoundViolation {
+    pub node_id: String,
+    pub pressure_bar: f64,
+    pub lower_bar: Option<f64>,
+    pub upper_bar: Option<f64>,
+    pub shortfall_bar: f64,
+    pub excess_bar: f64,
+}
+
+/// Construit le rapport de faisabilité NoVa. `network` doit déjà porter les bornes (natives
+/// `.net` + enveloppes scénario appliquées). `tol_m3s` = tolérance de convergence du solveur ;
+/// `pressure_tol_bar` = marge sur les bornes pression (défaut 0,05 bar).
+pub fn nova_feasibility_report(
+    network: &GasNetwork,
+    result: &SolverResult,
+    converged: bool,
+    tol_m3s: f64,
+    pressure_tol_bar: f64,
+) -> NovaFeasibilityReport {
+    let mut violations = Vec::new();
+    let mut worst_lo = 0.0_f64;
+    let mut worst_hi = 0.0_f64;
+    for n in network.nodes() {
+        if n.pressure_fixed_bar.is_some() {
+            continue;
+        }
+        let Some(&p) = result.pressures.get(&n.id) else { continue };
+        let lo = n.pressure_lower_bar;
+        let hi = n.pressure_upper_bar;
+        let shortfall = lo.map(|l| (l - p).max(0.0)).unwrap_or(0.0);
+        let excess = hi.map(|h| (p - h).max(0.0)).unwrap_or(0.0);
+        if shortfall > pressure_tol_bar || excess > pressure_tol_bar {
+            violations.push(NovaBoundViolation {
+                node_id: n.id.clone(),
+                pressure_bar: p,
+                lower_bar: lo,
+                upper_bar: hi,
+                shortfall_bar: shortfall,
+                excess_bar: excess,
+            });
+            worst_lo = worst_lo.max(shortfall);
+            worst_hi = worst_hi.max(excess);
+        }
+    }
+    violations.sort_by(|a, b| {
+        (b.shortfall_bar + b.excess_bar)
+            .partial_cmp(&(a.shortfall_bar + a.excess_bar))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    violations.truncate(50);
+    let bound_ok = violations.is_empty();
+    let cause = if !converged || result.residual > tol_m3s {
+        NovaFeasibilityCause::NotSolvedLocal
+    } else if !bound_ok {
+        NovaFeasibilityCause::BoundViolation
+    } else {
+        NovaFeasibilityCause::Feasible
+    };
+    let feasible = matches!(cause, NovaFeasibilityCause::Feasible);
+    NovaFeasibilityReport {
+        converged,
+        residual_m3s: result.residual,
+        feasible,
+        cause,
+        worst_lower_shortfall_bar: worst_lo,
+        worst_upper_excess_bar: worst_hi,
+        violations,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +373,72 @@ mod tests {
         let verdict = nova_verdict(&diag, Some(1.0));
         assert!(verdict.feasible);
         assert_eq!(verdict.cause, NovaCause::Feasible);
+    }
+
+    #[test]
+    fn nova_feasibility_report_feasible_when_in_bounds() {
+        // T a des bornes natives [40, 120] ; P_T = 50 → dans les bornes → faisable.
+        let mut net = tiny_network();
+        if let Some(t) = net.node_mut("T") {
+            t.pressure_lower_bar = Some(40.0);
+            t.pressure_upper_bar = Some(120.0);
+        }
+        let result = synthetic_result(50.0);
+        let report = nova_feasibility_report(&net, &result, true, 1e-3, 0.05);
+        assert!(report.feasible);
+        assert_eq!(report.cause, NovaFeasibilityCause::Feasible);
+        assert!(report.violations.is_empty());
+    }
+
+    #[test]
+    fn nova_feasibility_report_violation_when_below_lower() {
+        let mut net = tiny_network();
+        if let Some(t) = net.node_mut("T") {
+            t.pressure_lower_bar = Some(80.0);
+            t.pressure_upper_bar = Some(120.0);
+        }
+        let result = synthetic_result(50.0); // 50 < 80 → shortfall 30
+        let report = nova_feasibility_report(&net, &result, true, 1e-3, 0.05);
+        assert!(!report.feasible);
+        assert_eq!(report.cause, NovaFeasibilityCause::BoundViolation);
+        assert!((report.worst_lower_shortfall_bar - 30.0).abs() < 1e-6);
+        assert_eq!(report.violations.len(), 1);
+        assert_eq!(report.violations[0].node_id, "T");
+    }
+
+    #[test]
+    fn nova_feasibility_report_not_solved_when_non_converged() {
+        let mut net = tiny_network();
+        if let Some(t) = net.node_mut("T") {
+            t.pressure_lower_bar = Some(40.0);
+            t.pressure_upper_bar = Some(120.0);
+        }
+        let mut result = synthetic_result(50.0);
+        result.residual = 5.0; // non convergé
+        let report = nova_feasibility_report(&net, &result, false, 1e-3, 0.05);
+        assert!(!report.feasible);
+        // Non convergé prévaut sur la vérification des bornes : un solveur local ne prouve
+        // jamais l'infeasibilité.
+        assert_eq!(report.cause, NovaFeasibilityCause::NotSolvedLocal);
+    }
+
+    #[test]
+    fn nova_feasibility_report_ignores_fixed_nodes() {
+        // S est fixé (slack) à 70 bar avec borne [80, 120] ; il doit être ignoré (pas de
+        // violation signalée sur un nœud fixé).
+        let mut net = tiny_network();
+        if let Some(s) = net.node_mut("S") {
+            s.pressure_lower_bar = Some(80.0);
+            s.pressure_upper_bar = Some(120.0);
+        }
+        if let Some(t) = net.node_mut("T") {
+            t.pressure_lower_bar = Some(40.0);
+            t.pressure_upper_bar = Some(120.0);
+        }
+        let result = synthetic_result(50.0);
+        let report = nova_feasibility_report(&net, &result, true, 1e-3, 0.05);
+        assert!(report.feasible);
+        assert!(report.violations.is_empty(), "fixed node S should be ignored");
     }
 
     /// Intégration GasLib-582 + mild_618 : valide le résolveur scénario et la cohérence

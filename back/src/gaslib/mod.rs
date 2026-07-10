@@ -33,6 +33,7 @@ pub use scenario::{
     scenario_boundary_active_envelopes_enabled, scenario_boundary_partial_accept_enabled,
     scenario_pressure_clamp_in_newton_enabled, scenario_pressure_in_newton_enabled,
     scenario_pressure_penalty_weight, shortpipe_coupled_envelopes_enabled,
+    nova_feasibility_enabled, nova_native_penalty_weight,
     shortpipe_merge_boundaries_enabled, shortpipe_partner_for,
     compressor_decision_variables_enabled, compressor_hard_coupling_enabled,
     entry_transport_anchor_enabled, entry_transport_anchor_bar, entry_transport_anchored_ids,

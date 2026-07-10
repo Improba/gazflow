@@ -1,5 +1,18 @@
 # GasLib-582 — diagnostic compresseur (mild_618, juin–juillet 2026)
 
+> ⚠ **Retraction (Phase VIII, juillet 2026)** — les verdicts « infeasibilité topologique réelle »,
+> « hydrauliquement non alimentés » et « capacity = 0 même à débit nul » pour sink_88/83/108
+> énoncés dans les Phases II à VII-bis ci-dessous sont **rétractés**: ils sont des artefacts de
+> la gestion des ancres de pression du solveur (slack 51 bar + sources 70 bar + hubs en conflit,
+> lues sur un état non convergé), pas une infeasibilité réelle. Une sonde de reachabilité à débit
+> nul avec ancre unique (source_14 = 86 bar) montre que sink_88/83/108 atteignent ~86 bar, très
+> au-dessus de leurs planchers contractuels (26/21/16 bar), et que les control valves passives
+> passent la pression. De plus, ancrer les sources à leur `pressureMax` `.net` (51-121 bar) rend
+> sink_122 et sink_125 faisables. Le statut scientifique correct: faisabilité à débit nul démontrée,
+> faisabilité sous nomination complète **ouverte** (requiert un solveur NoVa global; la
+> non-convergence d'un solveur local n'est pas une preuve d'infeasibilité, Pfetsch et al. ZIB-12-41).
+> Voir la section « Phase VIII » en fin de document et `docs/science/validation.md`.
+
 Document de référence architecture et décisions. Bench chiffré : [gaslib-582-compressor-bench.md](./gaslib-582-compressor-bench.md).
 
 ## Sémantique GasLib (mild_618)
@@ -21,8 +34,8 @@ Le champ JSON `boundary_nomination_slips` liste les écarts débit sur `source_*
 | Statut solve (nomination intacte) | `contract_violation` — infeasible, **résidu non informatif** (~23,4 m³/s sans soft setpoint, ~61,9 avec pénalité soft) |
 | Tolérance cible preset robust | 3×10⁻³ m³/s |
 | Sinks marginaux | sink_88, sink_83, sink_108, sink_122 (infeasibles) ; sink_125 (faisable via ancrage source_25) |
-| Verdict NoVa | **infeasibilité topologique** (reachabilité pression), pas addressable par compresseur ou CV |
-| Levier NoVa restant | **réduction de nomination** / ouverture de cheminées pression (décision métier, pas solver) |
+| Verdict NoVa | ⚠ **rétracté Phase VIII** — voir en fin de document. Verdict initial (ancres multiples en conflit, lu sur état non convergé): « infeasibilité topologique ». Statut correct: faisabilité à débit nul démontrée, sous charge pleine = ouvert (solveur global requis). |
+| Levier NoVa restant | ~~réduction de nomination~~ — non justifié tant que la faisabilité n'est pas tranchée par un solveur global. |
 
 > Le résidu Newton rapporté est le max des déséquilibres massiques nodaux. Avec les enveloppes contrat Q+P actives, mild_618 reste `contract_violation` : ce n'est pas un plateau de MVP mais une **infeasibilité physique réelle** des 4 sinks marginaux (Phase II-V, confirmée par l'étude capacité Phase VII-bis).
 
@@ -626,6 +639,11 @@ Pour les 4 sinks infeasibles, la pression amont reachable est inférieure à la 
 
 **Réduction de nomination** (ou ouverture de cheminées pression côté réseau) pour les 4 sinks infeasibles. C'est une **décision métier / contractuelle**, pas un correctif solver — le solveur a établi la preuve de non-faisabilité.
 
+> ⚠ **Rétracté Phase VIII**: le solveur n'a **pas** établi de preuve de non-faisabilité (un solveur
+> local ne le peut pas; les itérés étaient non convergés sous ancres conflit). La réduction de
+> nomination n'est pas justifiée tant que la faisabilité n'est pas tranchée par un solveur NoVa
+> global. Voir la section Phase VIII en fin de document.
+
 ### A-t-on fini le plan ?
 
 **Oui.** Le plan de diagnostic NoVa GasLib-582 (Phases I → VII-bis) est clos :
@@ -635,6 +653,11 @@ Pour les 4 sinks infeasibles, la pression amont reachable est inférieure à la 
 3. Les sinks problématiques sont **identifiés et quantifiés** (capacity study).
 4. Aucun levier solver supplémentaire n'est attendu — la suite est opérationnelle.
 
+> ⚠ **Point 2 ci-dessus rétracté par Phase VIII** (voir en fin de document): l'infeasibilité
+> n'est **pas** prouvée. C'était un artefact d'ancrage. Les points 1, 3, 4 restent valides
+> (le solveur est fiable, les sinks sont identifiés, les leviers solver sont épuisés — mais
+> la conclusion « infeasible » ne tient pas).
+
 ### Suite possible (hors plan solver, si demandé)
 
 - **Scénario de nomination réduite** : bench d'une nomination tronquée sur les 4 sinks infeasibles pour valider la restauration de faisabilité (le levier métier).
@@ -642,3 +665,101 @@ Pour les 4 sinks infeasibles, la pression amont reachable est inférieure à la 
 - **Transposition** : rejouer le pipeline Phases I-VII-bis sur d'autres nominations 582 ou d'autres datasets GasLib pour confirmer la généralité du verdict.
 
 Aucune de ces suites n'est du ressort du présent diagnostic solveur ; elles sont notées pour mémoire.
+
+---
+
+## Phase VIII — rétractation du verdict d'infeasibilité (juillet 2026)
+
+### Motivation
+
+Les Phases II à VII-bis ont conclu que sink_88/83/108 sont « topologiquement infeasible » avec
+« capacity = 0 même à débit nul » et « aucune source de pression sur le chemin ». Une relecture
+scientifique confrontée à la méthodologie ZIB (Pfetsch et al., ZIB-Report 12-41) a identifié deux
+problèmes: (a) un solveur local ne peut pas prouver l'infeasibilité, (b) la « capacity = 0 à débit
+nul » reposait sur un état non convergé avec ancres de pression multiples en conflit. Phase VIII
+vérifie la reachabilité réelle.
+
+### Test 1 — reachabilité topologique statique
+
+`scripts/trace_sink_reachability.py` construit le graphe des arcs conductifs (pipes, shortPipes,
+resistors, valves ouvertes, control valves passives, compresseurs en bypass) et calcule la
+reachabilité source → sink (sans solveur, sans friction) :
+
+| Sink | Source reachable | pressureMax source (bar) | Hops | CV traversées |
+|------|------------------|--------------------------|------|---------------|
+| sink_88  | source_14 | 86 | 49 | CV_17, CV_7 |
+| sink_83  | source_14 | 86 | 35 | CV_7 |
+| sink_108 | source_14 | 86 | 22 | CV_16, CV_7 |
+| sink_125 | source_13 | 86 | 1  | (shortPipe direct) |
+| sink_122 | source_10 | 85 | 1  | (shortPipe direct) |
+
+**Tous les sinks marginaux sont topologiquement connectés à une source haute pression.** Le verdict
+« aucune source de pression sur le chemin » (sink_88/83) est faux.
+
+### Test 2 — sonde de reachabilité à débit nul, ancre unique
+
+`compressor_diag` avec `GAZFLOW_REACHABILITY_PROBE=1`,
+`GAZFLOW_REACHABILITY_ANCHOR_SOURCES=source_14`, demandes nulles, CV passives. Ancre unique propre
+(pas de slack, pas d'ancres multiples en conflit) → à débit nul, friction nulle, la pression de
+chaaque nœud connecté = pression de l'ancre.
+
+| Nœud | P (bar) | plancher contractuel (bar) |
+|------|---------|------------------------------|
+| sink_88  | 86,10 | 26,01 |
+| sink_83  | 86,36 | 21,01 |
+| sink_108 | 86,04 | 16,01 |
+| innode_379 (aval CV_17) | 85,93 | — |
+| innode_351 (aval CV_7)  | 86,01 | — |
+| source_14 | 86,01 (fixée) | — |
+
+**Les control valves passives passent la pression (ΔP ≈ 0 à débit nul).** sink_88/83/108 atteignent
+~86 bar, très au-dessus de leurs planchers. La « capacity = 0 même à débit nul » des phases
+précédentes était un artefact des ancres multiples en conflit (slack 51 + sources 70-121 + hubs)
+lues sur un état non convergé.
+
+### Test 3 — sensibilité à l'ancrage des entries
+
+`GAZFLOW_ENTRY_ANCHOR_USE_PRESSURE_MAX=1` ancre chaque source à son `pressureMax` `.net`
+(51-121 bar) au lieu de 70 bar uniforme. Résultat (smoke, full nomination, non convergé mais
+directionnel) : sink_122 = 85,01 bar (besoin 74) et sink_125 = 86,01 bar (besoin 41) deviennent
+faisables. L'infeasibilité précédente de ces deux sinks était un artefact de l'ancrage uniforme à
+70 bar (sink_122 besoin 74 > ancre 70).
+
+### Cause racine de l'erreur de diagnostic
+
+L'étude de capacité (Phase VII-bis) fixait simultanément plusieurs nœuds de pression à des valeurs
+incompatibles (slack sink_109 à 51 bar, toutes les sources à 70 bar, hubs scénario) et interprétait
+les itérés basse-pression d'un Newton non convergé comme une limite de reachabilité. Avec une ancre
+unique cohérente, la pression se propage correctement à travers les CV passives.
+
+### Verdict scientifique corrigé
+
+- **Faisabilité à débit nul**: démontrée (tous les sinks atteignent leurs planchers avec marge).
+- **Faisabilité sous nomination complète (≈256 m³/s vers sink_109)**: **question ouverte**. La
+  friction sous charge pleine + les réglages d'organes actifs (compresseurs, consignes CV)
+  déterminent la faisabilité. Trancher exige un solveur NoVa traitant pressions d'entry, ratios
+  compresseurs et consignes CV comme variables bornées, et — pour un verdict définitif — un
+  solveur **global** (SCIP/Couenne/BARON). La non-convergence du solveur local GazFlow sous charge
+  pleine **n'est pas** une preuve d'infeasibilité (Pfetsch et al., ZIB-12-41).
+- **Rétraction**: les formulations « preuve de non-faisabilité », « infeasibilité topologique
+  réelle », « hydrauliquement non alimentés », « capacity = 0 même à débit nul » dans les phases
+  II-VII-bis sont à lire comme des artefacts de modélisation/ancrage, pas comme des propriétés du
+  réseau.
+
+### Artefacts
+
+- `back/582-reach-zero.json`, `back/582-reach-s14.json`, `back/582-reach-smoke.json` (sondes).
+- `scripts/trace_sink_reachability.py` (reachabilité statique).
+- Flags: `GAZFLOW_REACHABILITY_PROBE`, `GAZFLOW_REACHABILITY_ANCHOR_SOURCES`,
+  `GAZFLOW_ENTRY_ANCHOR_USE_PRESSURE_MAX`.
+
+### Suite recommandée
+
+Un **solveur NoVa borné local** (`GAZFLOW_NOVA_FEASIBILITY=1`) a été implémenté (Phase VIII,
+`equations.md` §4.8) : pressions d'entry flottantes dans les bornes `.net`, ratios compresseurs
+et consignes CV en variables de décision, bornes pression en pénalité Newton, verdict
+`Feasible` / `BoundViolation` / `NotSolvedLocal` (jamais « infeasible »). Sur `mild_618` il
+renvoie `NotSolvedLocal` (le Newton de base ne converge pas sur ce NLP non-convexe dur) — la
+réponse honnête. Pour un verdict définitif (faisable **ou** infeasible prouvé), un **solveur
+global** (SCIP/Couenne/BARON) reste nécessaire ; brancher un tel solveur externe sur la
+formulation bornée est la suite naturelle.

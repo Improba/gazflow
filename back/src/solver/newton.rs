@@ -16,7 +16,8 @@ use crate::compressor::{
 use crate::gaslib::{
     compressor_decision_variables_enabled, compressor_hard_coupling_enabled,
     control_valve_soft_penalty_weight, control_valve_soft_setpoint_enabled,
-    detect_shortpipe_boundary_pairs, scenario_boundary_active_envelopes_enabled,
+    detect_shortpipe_boundary_pairs, nova_feasibility_enabled, nova_native_penalty_weight,
+    scenario_boundary_active_envelopes_enabled,
     scenario_boundary_partial_accept_enabled, scenario_pressure_clamp_in_newton_enabled,
     scenario_pressure_envelopes_enabled, scenario_pressure_in_newton_enabled,
     scenario_pressure_penalty_weight, shortpipe_merge_boundaries_enabled,
@@ -82,6 +83,31 @@ impl PressureBoundContext {
             upper_bar: vec![None; node_count],
             penalty_weight: control_valve_soft_penalty_weight(),
             clamp_in_line_search: false,
+        }
+    }
+
+    /// Phase VIII — solveur NoVa borné : pénalité sur les bornes pression **native `.net`**
+    /// de tous les nœuds (entries comprises). Les nœuds d'enveloppe scénario gardent leur
+    /// borne contractuelle (plus serrée) déjà posée par `apply_scenario_pressure_envelopes`
+    /// sur `pressure_lower_bar`/`pressure_upper_bar` ; les autres nœuds utilisent leurs
+    /// bornes `.net` natives. Les entries flottent ainsi dans `[pressureMin, pressureMax]`.
+    fn from_network_nova(network: &GasNetwork, node_ids: &[String]) -> Self {
+        let mut lower_bar = Vec::with_capacity(node_ids.len());
+        let mut upper_bar = Vec::with_capacity(node_ids.len());
+        for id in node_ids {
+            let (lo, hi) = network
+                .nodes()
+                .find(|n| n.id == *id)
+                .map(|n| (n.pressure_lower_bar, n.pressure_upper_bar))
+                .unwrap_or((None, None));
+            lower_bar.push(lo);
+            upper_bar.push(hi);
+        }
+        Self {
+            lower_bar,
+            upper_bar,
+            penalty_weight: nova_native_penalty_weight(),
+            clamp_in_line_search: scenario_pressure_clamp_in_newton_enabled(),
         }
     }
 
@@ -678,7 +704,17 @@ where
     let hard_coupling_active = compressor_hard_coupling_enabled()
         && compressor_decision_variables_enabled();
 
-    let pressure_bounds = if (scenario_pressure_envelopes_enabled()
+    let pressure_bounds = if nova_feasibility_enabled() {
+        // Phase VIII — NoVa borné : pénalité bornes natives `.net` sur tous les nœuds + consignes
+        // CV souples. Les entries flottent (pas d'ancrage transport) dans leurs bornes `.net`.
+        let mut ctx = PressureBoundContext::from_network_nova(network, &node_ids);
+        ctx.merge_cv_soft_setpoints(network, &node_ids);
+        if ctx.has_active_bounds() {
+            Some(ctx)
+        } else {
+            None
+        }
+    } else if (scenario_pressure_envelopes_enabled()
         && scenario_pressure_in_newton_enabled())
         || control_valve_soft_setpoint_enabled()
     {

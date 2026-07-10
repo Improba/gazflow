@@ -43,9 +43,23 @@ This document describes the known limits of the solver in its current state. It 
 
 - GasLib-11 pressure validation: max relative error < 5 % (`test_gaslib_11_vs_reference_solution`).
 - GasLib-135 (135 nodes): recommended transport demo with continuation preset; steady-state smoke test passes (faer LU stable with component anchoring on fragmented subgraphs).
-- GasLib-582 (582 nodes): **Full convergence not reached** on `nomination_mild_618.scn` (July 2026). Best **intact nomination** residual: **2.045 m³/s** (measurement, partial accept). Reported ~2.0 m³/s with v18 Q relaxation is a **different boundary-value problem**, not improved GasLib fidelity. Dominant gap: partial accept plateau + MVP P² compressor (map gives ~1.46 ratio vs 4.09 equipment cap; not enthalpic operation). Not recommended as demo until residual < 0.01 m³/s on intact nomination. Bench: `compressor_diag GasLib-582` — see [bench](../testing/gaslib-582-compressor-bench.md).
+- GasLib-582 (582 nodes): `nomination_mild_618` is **not proven infeasible**. See Phase VIII correction below and [diagnosis](../testing/gaslib-582-compressor-diagnosis.md). Earlier phases concluded "topological infeasibility" for sink_88/83/108; a zero-demand reachability probe (single anchor source_14 at 86 bar) shows these sinks reach ~86 bar at zero flow, far above their contractual floors (26/21/16 bar). The earlier "capacity = 0 even at zero flow" was an artifact of multiple conflicting pressure anchors (slack 51 bar + sources 70-121 bar + non-convergence), not a real topological infeasibility. Convergence under the **full** nomination flow (≈256 m³/s to the slack sink_109) is a genuine capacity/NoVa question requiring a global solver to decide (per Pfetsch et al., ZIB-Report 12-41: a local solver non-convergence is **not** a proof of infeasibility). Not recommended as a demo until the NoVa feasibility is properly characterised.
 - Flow comparison against external `.sol` references: not yet systematic.
 - PDE transient: monotonicity tests on single pipe; full wave validation pending.
+
+### 3.1 GasLib-582 `nomination_mild_618` — corrected NoVa status (Phase VIII, July 2026)
+
+The earlier verdicts in `gaslib-582-compressor-diagnosis.md` (Phases II-VII-bis) stated that sink_88/83/108 are "topologiquement infeasible" / "hydrauliquement non alimentés" with "capacity = 0 même à débit nul". **These verdicts are retracted**: they were artifacts of the solver's boundary handling, not real infeasibility.
+
+Evidence (`scripts/trace_sink_reachability.py` + `compressor_diag --reachability-probe`):
+
+1. **Topological reachability (static, no solver):** all 5 marginal sinks are reachable from high-pressure sources via conductive paths (pipes + shortPipes + passive CVs + compressor bypass). sink_88 is connected to source_14 (pressureMax 86 bar) via 49 hops crossing 2 control valves (CV_17, CV_7); sink_83 via CV_7; sink_108 via CV_16 + CV_7. sink_125 via 1 shortPipe from source_13; sink_122 via 1 shortPipe from source_10.
+2. **Zero-demand reachability probe (single anchor source_14 = 86 bar, CVs passive):** sink_88 = 86.10 bar, sink_83 = 86.36 bar, sink_108 = 86.04 bar — all far above their contractual floors (26/21/16 bar). Control valves in passive mode pass pressure (ΔP ≈ 0 at zero flow).
+3. **Entry-anchor sensitivity:** anchoring sources at their per-node `pressureMax` (.net, 51-121 bar) instead of a uniform 70 bar flips sink_122 and sink_125 to feasible (85-86 bar vs needs 74/41). The prior "infeasibility" of those two sinks was an anchoring artifact.
+
+**Root cause of the earlier false verdict:** the capacity study anchored multiple pressure nodes simultaneously at conflicting values (slack sink_109 at 51 bar + all sources at 70 bar + scenario hubs) and ran at non-convergence; the resulting low-pressure iterates were misread as a reachability limit. With a single consistent anchor, pressure propagates correctly through the passive CVs.
+
+**Correct scientific status:** `nomination_mild_618` feasibility under the **full** nomination is an open NoVa question. At zero flow it is clearly feasible (all sinks reach their floors with large margin). Under full flow (≈256 m³/s to sink_109), friction plus the active-element setting (compressors, CV setpoints) determine feasibility — this requires a proper NoVa solve treating entry pressures, compressor ratios and CV setpoints as bounded decision variables, and per ZIB methodology only a **global** solver (SCIP/Couenne/BARON) can prove infeasibility. GazFlow being a local Newton solver, its non-convergence under full flow is **not** evidence of infeasibility.
 
 ## 4. Impact on usage
 
@@ -62,4 +76,4 @@ This document describes the known limits of the solver in its current state. It 
 - Outer-loop Re–Q in Newton Jacobian for sub-1 % accuracy.
 - Systematic external reference validation (pressure and flow).
 - Export edited network as GeoJSON/CSV from UI.
-- GasLib-582 full convergence on **intact nomination**: true enthalpic/energy compressor model or strict convergence study (v18 Q relaxation is a numerical workaround; v19 head Jacobian is opt-in P² sensitivity only).
+- **NoVa feasibility solver** (Phase VIII): implemented as a bounded local feasibility search (`GAZFLOW_NOVA_FEASIBILITY=1`, see `equations.md` §4.8). Entry pressures float within `.net` bounds, compressor ratios and CV setpoints are decision variables, pressure bounds enforced as a soft penalty in Newton, verdict `Feasible` / `BoundViolation` / `NotSolvedLocal` (never "infeasible" — a local solver cannot prove infeasibility per Pfetsch et al., ZIB-12-41). On `mild_618` it reports `NotSolvedLocal` (the base Newton does not converge on this hard non-convex NLP) — the honest answer. To obtain a definitive feasible/infeasible verdict on `mild_618`, a **global** solver (SCIP/Couenne/BARON) is still required.

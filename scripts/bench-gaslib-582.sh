@@ -215,6 +215,55 @@ case "$TAG" in
     export GAZFLOW_TRANSPORT_MINIMAL_ANCHORS=0
     export GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES=0
     ;;
+  phase-viii-reachability-smoke)
+    # Test décisif Phase VIII : reachabilité pression avec TOUTES les sources ancrées à
+    # leur pressureMax .net (51 à 121 bar) et CV passives (quasi-transparentes, pas de
+    # throttling). Distingue une vraie infeasibilité topologique d'un artefact d'ancrage
+    # / de gestion CV. Sans capacity study (smoke rapide).
+    export GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES=1
+    export GAZFLOW_SCENARIO_PRESSURE_ENVELOPES=1
+    export GAZFLOW_ENTRY_TRANSPORT_ANCHOR=1
+    export GAZFLOW_ENTRY_ZERO_FLOW_ANCHOR=1
+    export GAZFLOW_ENTRY_ANCHOR_USE_PRESSURE_MAX=1
+    export GAZFLOW_CONTROL_VALVE_AS_REGULATOR=0
+    export GAZFLOW_CONTROL_VALVE_DECISION_VARIABLES=0
+    export GAZFLOW_CONTROL_VALVE_SOFT_SETPOINT=0
+    export GAZFLOW_NOVA_SINK_CAPACITY_STUDY=0
+    export GAZFLOW_TRANSPORT_MINIMAL_ANCHORS=0
+    export GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES=0
+    ;;
+  phase-viii-reachability-capacity)
+    # Idem + étude capacité max Q par sink marginal (séquentiel, ~20-40 min).
+    export GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES=1
+    export GAZFLOW_SCENARIO_PRESSURE_ENVELOPES=1
+    export GAZFLOW_ENTRY_TRANSPORT_ANCHOR=1
+    export GAZFLOW_ENTRY_ZERO_FLOW_ANCHOR=1
+    export GAZFLOW_ENTRY_ANCHOR_USE_PRESSURE_MAX=1
+    export GAZFLOW_CONTROL_VALVE_AS_REGULATOR=0
+    export GAZFLOW_CONTROL_VALVE_DECISION_VARIABLES=0
+    export GAZFLOW_CONTROL_VALVE_SOFT_SETPOINT=0
+    export GAZFLOW_NOVA_SINK_CAPACITY_STUDY=1
+    export GAZFLOW_NOVA_CAPACITY_BISECTION_STEPS="${GAZFLOW_NOVA_CAPACITY_BISECTION_STEPS:-4}"
+    export GAZFLOW_TRANSPORT_MINIMAL_ANCHORS=0
+    export GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES=0
+    ;;
+  phase-viii-nova)
+    # Solveur NoVa borné (Phase VIII) : entries flottantes dans [pressureMin, pressureMax]
+    # .net (Q fixé par nomination), pénalité bornes natives sur tous les nœuds, ratios
+    # compresseurs et consignes CV en variables de décision, slack scénario pour la jauge.
+    # Répond « point faisable trouvé » vs « non résolu (local) » (jamais « infeasible »).
+    export GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES=1
+    export GAZFLOW_SCENARIO_PRESSURE_ENVELOPES=1
+    export GAZFLOW_NOVA_FEASIBILITY=1
+    export GAZFLOW_COMPRESSOR_DECISION_VARIABLES=1
+    export GAZFLOW_COMPRESSOR_HARD_COUPLING=1
+    export GAZFLOW_CONTROL_VALVE_AS_REGULATOR=1
+    export GAZFLOW_CONTROL_VALVE_DECISION_VARIABLES=1
+    export GAZFLOW_CONTROL_VALVE_SOFT_SETPOINT=1
+    export GAZFLOW_NOVA_SINK_CAPACITY_STUDY=0
+    export GAZFLOW_TRANSPORT_MINIMAL_ANCHORS=0
+    export GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES=0
+    ;;
   nominal-smoke)
     export GAZFLOW_SCENARIO_PRESSURE_ENVELOPES=0
     export GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON=0

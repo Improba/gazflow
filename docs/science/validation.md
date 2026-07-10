@@ -182,3 +182,42 @@ Reference solutions will be compared when available.
 - Options:
   - `GAZFLOW_REGEN_REFERENCE=1` to regenerate internal reference before T9;
   - `GAZFLOW_RUN_LARGE_SMOKE=1` to include large-dataset smoke tests.
+
+---
+
+## NoVa feasibility — methodology note & Phase VIII correction (July 2026)
+
+### Methodology (per Pfetsch et al., ZIB-Report 12-41 / Optim. Methods Softw. 2015)
+
+The GasLib-582 nominations are inputs to the **validation of nominations** (NoVa) problem: does there exist a setting of the active elements (compressors, control valves, valves) and a network state satisfying all pressure/flow bounds? NoVa is a non-convex MINLP feasibility problem. Two methodological rules from the literature govern the interpretation:
+
+1. **No official per-nomination feasibility status.** GasLib states the 4227 nominations are "assumed feasible in reality, but there is no proof for this so far" (GasLib paper, §2.1.6). `nomination_mild_618` carries no ZIB-issued feasible/infeasible label.
+2. **Local solver non-convergence ≠ infeasibility.** "If a local solver is not able to find a feasible solution, no conclusion for NoVa can be drawn. To prove infeasibility of a nomination, a global solver is required." GazFlow is a **local** Newton solver; it can confirm feasibility when it converges, but it **cannot** prove infeasibility.
+
+Consequently, any GazFlow non-convergence on a nomination must be reported as "not solved (local)" — never as "infeasible" or "proven non-feasible".
+
+### Phase VIII — reachability correction for `nomination_mild_618`
+
+Earlier phases (II-VII-bis, see `gaslib-582-compressor-diagnosis.md`) concluded that sink_88/83/108 are "topologiquement infeasible" with "capacity = 0 même à débit nul" and "aucune source de pression sur le chemin". **These conclusions are retracted** as artifacts of the solver's boundary handling.
+
+Decisive evidence:
+
+- **Static reachability** (`scripts/trace_sink_reachability.py`): all 5 marginal sinks are topologically reachable from high-pressure sources (source_14 pressureMax 86 bar for sink_88/83/108 via CV_17/CV_7/CV_16; source_13/10 for sink_125/122 via single shortPipes).
+- **Zero-demand probe, single anchor source_14 = 86 bar, CVs passive** (`GAZFLOW_REACHABILITY_PROBE=1`, `GAZFLOW_REACHABILITY_ANCHOR_SOURCES=source_14`): sink_88 = 86.10 bar, sink_83 = 86.36 bar, sink_108 = 86.04 bar — all far above their contractual floors (26/21/16 bar). Passive control valves pass pressure (ΔP ≈ 0 at zero flow).
+- **Entry-anchor sensitivity** (`GAZFLOW_ENTRY_ANCHOR_USE_PRESSURE_MAX=1`): anchoring sources at their per-node `.net` pressureMax (51-121 bar) instead of a uniform 70 bar flips sink_122 (85 bar, need 74) and sink_125 (86 bar, need 41) to feasible.
+
+Root cause of the earlier false verdict: the capacity study fixed multiple pressure nodes at conflicting values simultaneously (slack 51 bar + sources 70 bar + hubs) and read non-converged low-pressure iterates as a reachability limit. With a single consistent anchor, pressure propagates correctly through passive CVs.
+
+### Corrected Go/No-Go (GasLib-582 `nomination_mild_618`)
+
+- **Feasible at zero flow**: yes (all marginal sinks reach their floors with large margin).
+- **Feasible under full nomination flow**: **open (local solver)**. A bounded local NoVa
+  feasibility solver has been implemented (`GAZFLOW_NOVA_FEASIBILITY=1`, `equations.md` §4.8):
+  entry pressures float within `.net` bounds, compressor ratios and CV setpoints are decision
+  variables, pressure bounds enforced as a Newton soft penalty, verdict `Feasible` /
+  `BoundViolation` / `NotSolvedLocal`. On `mild_618` it reports `NotSolvedLocal` (residual 73.9
+  m³/s, base Newton non-convergence on this hard non-convex NLP). This is the honest answer per
+  Pfetsch et al. — a local solver cannot prove infeasibility. A definitive verdict requires a
+  global solver (SCIP/Couenne/BARON) on the bounded formulation.
+- **Engineering / CI**: solver is stable (hard compressor coupling capped by `pressureOutMax`, CV setpoint infrastructure, component anchoring, bounded NoVa mode). Baselines preserved; 361 lib tests pass (only pre-existing flaky `test_ws_timeout_diverged` fails).
+- **Demo recommendation**: not recommended until NoVa feasibility is properly characterised by a global solver or a converged bounded-DOF formulation.

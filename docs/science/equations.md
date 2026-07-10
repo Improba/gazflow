@@ -360,6 +360,60 @@ Outdoor temperature $T_{\mathrm{ext}}$ does **not** modify gas temperature in pi
 
 ---
 
+### 4.8 NoVa feasibility — bounded local solver (Phase VIII) ✅
+
+The **validation of nominations** (NoVa) problem asks: given a nomination (fixed nodal flow
+balances $d_i$), does there exist a setting of the active elements and a pressure/flow state
+satisfying all bounds $P_i \in [P_i^{\min}, P_i^{\max}]$? This is a non-convex feasibility
+problem (Pfetsch et al., ZIB-Report 12-41). GazFlow implements a **local** feasibility search,
+opt-in via `GAZFLOW_NOVA_FEASIBILITY=1`.
+
+#### Formulation
+
+Decision / state variables:
+- Squared pressures $\pi_i = P_i^2$ at every node (entries included).
+- Compressor ratios $r_k \in [1, r_k^{\max}]$ (decision variables, hard coupling $P_{\text{out}}^2 = r_k^2 P_{\text{in}}^2$).
+- Control-valve setpoints $s_j \in [P_{\text{out},j}^{\min}, P_{\text{out},j}^{\max}]$ (decision variables).
+
+Constraints:
+1. **Mass conservation** at every non-fixed node: $F_i(\boldsymbol{\pi}) = \sum_j Q_{ij}(\boldsymbol{\pi}) + d_i = 0$ (§4.1).
+2. **Pressure bounds** (native `.net` `[pressureMin, pressureMax]` for all nodes, plus scenario contract envelopes): enforced as a **soft penalty** added to the nodal residual:
+$$
+F_i \mathrel{+}= w \cdot \big[\max(0, P_i^{\min} - P_i) + \max(0, P_i - P_i^{\max})\big]
+$$
+with Jacobian contribution $\partial F_i / \partial \pi_i = -w/(2 P_i)$ when active. Weight
+$w$ = `GAZFLOW_NOVA_NATIVE_PENALTY_WEIGHT` (default = scenario penalty weight).
+3. **Gauge reference**: the pressure level is pinned by the scenario slack (one fixed-pressure
+node). Entries are **free** within their `.net` bounds (no transport anchor); their flow is fixed
+by the nomination.
+
+#### Outer loops
+
+The active-element decisions are adjusted by the existing outer loops between Newton solves:
+- compressors: `solve_with_compressor_map` (decision mode, `GAZFLOW_COMPRESSOR_DECISION_VARIABLES`);
+- control valves: `solve_with_control_valve_decision_loop` (`GAZFLOW_CONTROL_VALVE_DECISION_VARIABLES`), or soft-setpoint penalty in-Newton (`GAZFLOW_CONTROL_VALVE_SOFT_SETPOINT`).
+
+#### Feasibility verdict
+
+`nova_feasibility_report` evaluates the solution against every node's bounds:
+
+| Cause | Condition | Meaning |
+|------|-----------|---------|
+| `Feasible` | converged ($\|F\|_\infty < \varepsilon$) **and** no bound violation > 0.05 bar | local feasible point found |
+| `BoundViolation` | converged but some node outside its bounds | solved but infeasible under current decision settings |
+| `NotSolvedLocal` | not converged | local solver could not find a feasible point |
+
+**Methodological honesty (per Pfetsch et al.):** a local solver can confirm feasibility
+(`Feasible`) but **cannot prove infeasibility**. `BoundViolation` and `NotSolvedLocal` mean
+"not solved to feasibility locally", **not** "infeasible". A definitive infeasibility verdict
+requires a global solver (SCIP/Couenne/BARON).
+
+**Implementation:** `solver/newton.rs` (`PressureBoundContext::from_network_nova`),
+`gaslib/scenario.rs` (`nova_feasibility_enabled`, entry-anchor bypass),
+`solver/nova_diagnostics.rs` (`nova_feasibility_report`). Bench: `phase-viii-nova` tag.
+
+---
+
 ## 5. MVP assumptions and current model status
 
 | Feature                           | Status        | Notes |

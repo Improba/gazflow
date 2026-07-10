@@ -350,6 +350,9 @@ struct DiagOutput {
     /// Étude NoVa max Q faisable par sink marginal (Phase VII-bis).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     sink_capacity_report: Vec<SinkCapacityReport>,
+    /// Rapport de faisabilité NoVa borné (Phase VIII, solveur local).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nova_feasibility: Option<gazflow_back::solver::NovaFeasibilityReport>,
 }
 
 #[derive(Debug, Serialize)]
@@ -737,7 +740,142 @@ fn skipped_output(
         probe_nodes: Vec::new(),
         entry_transport_anchored_ids: Vec::new(),
         sink_capacity_report: Vec::new(),
+        nova_feasibility: None,
     }
+}
+
+fn emit_reachability_probe(
+    base_network: &GasNetwork,
+    scenario: &gazflow_back::gaslib::ScenarioDemands,
+    cli: &CliArgs,
+    network_display: &str,
+    scenario_display: &Option<String>,
+    flags: DiagFlags,
+) -> Result<()> {
+    // Test de reachabilité pression à débit nul (Phase VIII).
+    // Toutes les demandes sont mises à zéro -> aucune friction -> la pression à chaque nœud
+    // est déterminée uniquement par la reachabilité topologique depuis les sources ancrées
+    // (à leur pressureMax .net via ENTRY_ANCHOR_USE_PRESSURE_MAX) et le comportement des
+    // organes actifs (CV passive / compresseur bypass). Permet de distinguer une vraie
+    // infeasibilité topologique d'un artefact de modélisation CV / d'ancrage.
+    let preset = preset_robust(base_network.node_count());
+    let mut zero_scenario = scenario.clone();
+    zero_scenario.demands.clear();
+    // Ancrage explicite optionnel (ancre unique propre) : si
+    // GAZFLOW_REACHABILITY_ANCHOR_SOURCES=source_14 est défini, on fixe uniquement ces
+    // sources à leur pressureMax .net, on neutralise le slack et les hubs scénario, et on
+    // résout directement sur le réseau ancré (pas d'entry anchors multiples). Cela évite
+    // la sur-contrainte (slack 51 + sources 85-121 en conflit à débit nul) et teste la
+    // reachabilité pure depuis une source donnée.
+    let explicit = std::env::var("GAZFLOW_REACHABILITY_ANCHOR_SOURCES").ok();
+    let empty_demands: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let outcome: Result<gazflow_back::solver::SolverResult> = if let Some(list) = explicit.as_ref() {
+        let mut net = base_network.clone();
+        for id in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(n) = net.node_mut(id) {
+                n.pressure_fixed_bar = Some(n.pressure_upper_bar.unwrap_or(70.0));
+            }
+        }
+        gazflow_back::solver::solve_steady_state_with_preset(
+            &net,
+            &empty_demands,
+            None,
+            &preset,
+            GasComposition::pure_ch4(),
+            |_| SolverControl::Continue,
+            None::<fn(ContinuationStepEvent)>,
+        )
+    } else {
+        solve_with_mass_balance_refinement(
+            base_network,
+            &mut zero_scenario,
+            &preset,
+            GasComposition::pure_ch4(),
+            None::<fn(ContinuationStepEvent)>,
+        )
+        .map(|o| o.result)
+    };
+    let probe_ids: Vec<String> = std::env::var("GAZFLOW_DIAG_PROBE_NODES")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    #[derive(Serialize)]
+    struct ProbeRow {
+        node_id: String,
+        pressure_bar: f64,
+        fixed_bar: Option<f64>,
+        pressure_max_bar: Option<f64>,
+    }
+    #[derive(Serialize)]
+    struct ReachOutput {
+        status: String,
+        dataset: String,
+        network: String,
+        scenario: Option<String>,
+        probe: String,
+        residual: Option<f64>,
+        converged: bool,
+        nodes: Vec<ProbeRow>,
+        flags: DiagFlags,
+    }
+    let (status, residual, converged, nodes) = match outcome {
+        Ok(result) => {
+            let rows: Vec<ProbeRow> = probe_ids
+                .iter()
+                .filter_map(|id| {
+                    let n = base_network.nodes().find(|n| n.id == *id)?;
+                    let p = result.pressures.get(id).copied().unwrap_or(0.0);
+                    Some(ProbeRow {
+                        node_id: id.clone(),
+                        pressure_bar: p,
+                        fixed_bar: n.pressure_fixed_bar,
+                        pressure_max_bar: n.pressure_upper_bar,
+                    })
+                })
+                .collect();
+            ("reachability_ok".to_string(), Some(result.residual), result.residual < preset.tolerance, rows)
+        }
+        Err(_err) => {
+            let net = network_with_scenario_boundaries(base_network, scenario);
+            let rows: Vec<ProbeRow> = probe_ids
+                .iter()
+                .filter_map(|id| {
+                    let n = net.nodes().find(|n| n.id == *id)?;
+                    Some(ProbeRow {
+                        node_id: id.clone(),
+                        pressure_bar: 0.0,
+                        fixed_bar: n.pressure_fixed_bar,
+                        pressure_max_bar: n.pressure_upper_bar,
+                    })
+                })
+                .collect();
+            ("reachability_error".to_string(), None, false, rows)
+        }
+    };
+    let out = ReachOutput {
+        status,
+        dataset: cli.dataset.clone(),
+        network: network_display.to_string(),
+        scenario: scenario_display.clone(),
+        probe: "zero-demand".to_string(),
+        residual,
+        converged,
+        nodes,
+        flags,
+    };
+    let json = serde_json::to_string_pretty(&out).context("serialize reachability JSON")?;
+    if let Some(path) = cli.json_out.as_deref() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, json + "\n")?;
+        eprintln!("wrote reachability JSON: {}", path.display());
+    } else {
+        println!("{json}");
+    }
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -882,6 +1020,17 @@ fn main() -> Result<()> {
 
     let mut scenario = load_scenario_demands(&scenario_path).context("load scenario")?;
     enrich_scenario_with_balance_hub(&base_network, &mut scenario);
+
+    if env_flag("GAZFLOW_REACHABILITY_PROBE") {
+        return emit_reachability_probe(
+            &base_network,
+            &scenario,
+            &cli,
+            &network_display,
+            &scenario_display,
+            flags,
+        );
+    }
 
     let preset = preset_robust(base_network.node_count());
     let mut continuation_scales = Vec::new();
@@ -1039,6 +1188,21 @@ fn main() -> Result<()> {
             } else {
                 Vec::new()
             };
+            // Phase VIII — rapport de faisabilité NoVa borné (solveur local).
+            // Le réseau `network` porte déjà les enveloppes scénario + (en mode NoVa) les
+            // entries flottent ; on évalue `result` contre les bornes de tous les nœuds.
+            let nova_feasibility = if gazflow_back::gaslib::nova_feasibility_enabled() {
+                let converged = result.residual <= preset.tolerance;
+                Some(gazflow_back::solver::nova_feasibility_report(
+                    &network,
+                    &result,
+                    converged,
+                    preset.tolerance,
+                    0.05,
+                ))
+            } else {
+                None
+            };
             DiagOutput {
                 status: if contract_violated {
                     "contract_violation"
@@ -1079,6 +1243,7 @@ fn main() -> Result<()> {
                 probe_nodes,
                 entry_transport_anchored_ids,
                 sink_capacity_report,
+                nova_feasibility,
             }
         }
         Err(err) => {
@@ -1115,6 +1280,7 @@ fn main() -> Result<()> {
                 probe_nodes: Vec::new(),
                 entry_transport_anchored_ids: Vec::new(),
                 sink_capacity_report: Vec::new(),
+                nova_feasibility: None,
             }
         }
     };

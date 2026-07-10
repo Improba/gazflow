@@ -25,7 +25,8 @@ pub mod transient;
 pub use nova_capacity::{SinkCapacityReport, study_default_marginal_sinks, study_sinks_capacity};
 pub use nova_diagnostics::{
     NovaCause, NovaDiagnostics, NovaVerdict, SinkDiagnostic, UpstreamHop, compute_nova_diagnostics,
-    nova_verdict,
+    nova_verdict, NovaFeasibilityCause, NovaFeasibilityReport, NovaBoundViolation,
+    nova_feasibility_report,
 };
 pub use capacity::{CapacityBounds, CapacityViolation, ConstrainedSolverResult};
 pub use config::SteadyStateConfig;
