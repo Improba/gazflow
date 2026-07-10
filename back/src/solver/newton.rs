@@ -2541,3 +2541,390 @@ fn solve_dense_from_triplets(
     }
     solve_dense_linear(dense, b)
 }
+
+// ============================================================================
+// Phase VIII — Oracle NLP NoVa (backend IPOPT, option B)
+//
+// Assemblage du NLP borné de faisabilité NoVa **sur le modèle in-repo exact**,
+// réutilise `evaluate_state` (physique mass-balance + loi P² + couplage compresseur
+// par aliasing) sans pénalités : les bornes de pression deviennent des bornes
+// dures sur les variables (π = P²). Contraintes = bilan massique aux nœuds
+// libres (égalités g = 0). Les ratios compresseurs / consignes CV restent cuits
+// dans le réseau (boucles externes ou point Pyomo) pour cette étape ; l'optimisation
+// jointe (r, s) est une extension ultérieure.
+//
+// Deux points d'entrée pub(crate) :
+//   - `pressure_nlp_structure` : variables, bornes, motif de sparsité (constant).
+//   - `pressure_nlp_eval`      : résidu g(x) + valeurs du Jacobien à un x donné.
+// ============================================================================
+
+/// Structure constante du NLP (variables, bornes, sparsité du Jacobien).
+pub(crate) struct PressureNlpStructure {
+    /// Identifiants des nœuds libres (une variable π par nœud).
+    pub free_node_ids: Vec<String>,
+    /// Borne inférieure par variable (π² = bar²).
+    pub var_lo: Vec<f64>,
+    /// Borne supérieure par variable (π² = bar²).
+    pub var_hi: Vec<f64>,
+    /// Nombre de contraintes (= nombre de nœuds libres : bilan massique = 0).
+    pub num_constraints: usize,
+    /// Lignes du Jacobien (même longueur que `jac_col`).
+    pub jac_row: Vec<usize>,
+    /// Colonnes du Jacobien.
+    pub jac_col: Vec<usize>,
+}
+
+/// Évaluation du résidu et du Jacobien à un point x.
+pub(crate) struct PressureNlpEval {
+    /// Résidu de bilan massique par nœud libre (contraintes g = 0).
+    pub g: Vec<f64>,
+    /// Valeurs du Jacobien, dans l'ordre de `PressureNlpStructure::jac_row/jac_col`.
+    pub jac_val: Vec<f64>,
+    /// Norme infinie du résidu (max |g|).
+    pub residual_inf: f64,
+}
+
+struct NlpSetup {
+    node_ids: Vec<String>,
+    id_pos: HashMap<String, usize>,
+    free_indices: Vec<usize>,
+    free_pos: Vec<usize>,
+    fixed: HashMap<usize, f64>,
+    pipes: Vec<IndexedPipe>,
+    demands_vec: Vec<f64>,
+    scaling: NondimScaling,
+    var_lo: Vec<f64>,
+    var_hi: Vec<f64>,
+    /// Sparsité unique triée (row, col) du Jacobien ∂g/∂π.
+    jac_row: Vec<usize>,
+    jac_col: Vec<usize>,
+    /// Index d'une paire (row, col) dans `jac_row`/`jac_col` (agrégation conductances).
+    jac_index: HashMap<(usize, usize), usize>,
+    /// Contexte d'aliasing ShortPipe (sync pressions slaves ↔ maîtres en éval).
+    alias: ShortPipeAliasContext,
+}
+
+fn r2_cap_disabled_env() -> bool {
+    if std::env::var("GAZFLOW_DISABLE_R2_CAP")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    matches!(
+        std::env::var("GAZFLOW_COMPRESSOR_MAP_MODE")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("measurement") | Some("biquadratic")
+    )
+}
+
+/// Reconstruit le setup du NLP (indexation, aliasing, ancrage composantes flottantes,
+/// bornes natives, sparsité). Déterministe depuis (réseau, demandes, gaz) : stable
+/// entre appels IPOPT. `map_ctx` et pénalités sont absents (None) — bornes dures sur x.
+fn build_nlp_setup(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    gas_composition: GasComposition,
+) -> Result<NlpSetup> {
+    let n = network.node_count();
+    if n == 0 {
+        bail!("NLP NoVa: réseau vide");
+    }
+    let node_ids: Vec<String> = network.nodes().map(|n| n.id.clone()).collect();
+    let id_pos: HashMap<String, usize> = node_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.clone(), i))
+        .collect();
+
+    let shortpipe_alias = ShortPipeAliasContext::from_network(network, &id_pos, n);
+    let hard_coupling_active =
+        compressor_hard_coupling_enabled() && compressor_decision_variables_enabled();
+
+    let mut fixed: HashMap<usize, f64> = network
+        .nodes()
+        .filter_map(|n| {
+            n.pressure_fixed_bar.map(|p| (*id_pos.get(&n.id).unwrap(), p * p))
+        })
+        .collect();
+
+    let mut demands_vec = vec![0.0_f64; n];
+    for (id, &demand) in demands {
+        if !demand.is_finite() {
+            bail!("invalid demand value for node '{id}': {demand}");
+        }
+        let Some(&idx) = id_pos.get(id) else {
+            bail!("unknown demand node id: '{id}'");
+        };
+        demands_vec[idx] += demand;
+    }
+    shortpipe_alias.merge_demands_vec(&mut demands_vec);
+
+    let node_heights: HashMap<String, f64> =
+        network.nodes().map(|node| (node.id.clone(), node.height_m)).collect();
+
+    let disable_r2_cap = r2_cap_disabled_env();
+    let pipes: Vec<IndexedPipe> = network
+        .pipes()
+        .filter_map(|pipe| {
+            if !pipe.hydraulically_active() {
+                return None;
+            }
+            let raw_from = *id_pos.get(&pipe.from)?;
+            let raw_to = *id_pos.get(&pipe.to)?;
+            let from_idx = shortpipe_alias.resolve[raw_from];
+            let to_idx = shortpipe_alias.resolve[raw_to];
+            if from_idx == to_idx {
+                return None;
+            }
+            if hard_coupling_active && pipe.kind == ConnectionKind::CompressorStation {
+                return None;
+            }
+            let (length_km, diameter_mm, roughness_mm) = effective_pipe_geometry(pipe);
+            Some(IndexedPipe {
+                id: pipe.id.clone(),
+                from_idx,
+                to_idx,
+                kind: pipe.kind,
+                length_km,
+                diameter_mm,
+                roughness_mm,
+                pressure_from_coeff: crate::solver::steady_state::compressor_pressure_from_coeff_with_options(
+                    pipe,
+                    disable_r2_cap,
+                ),
+                operating_ratio: pipe
+                    .compressor_ratio_max
+                    .or(pipe.equipment.compressor_nominal_ratio),
+                pressure_cap_ratio: pipe.equipment.compressor_pressure_cap_ratio,
+                height_from_m: node_heights.get(&pipe.from).copied().unwrap_or(0.0),
+                height_to_m: node_heights.get(&pipe.to).copied().unwrap_or(0.0),
+                from_pressure_factor: shortpipe_alias.pressure_factor_for(raw_from),
+                to_pressure_factor: shortpipe_alias.pressure_factor_for(raw_to),
+            })
+        })
+        .collect();
+
+    // Adjacency + ancrage des composantes flottantes (miroir de 825-902) : un nœud de
+    // référence par composante sans pression fixée (jauge numérique).
+    let mut adjacency = vec![Vec::<usize>::new(); n];
+    for pipe in &pipes {
+        adjacency[pipe.from_idx].push(pipe.to_idx);
+        adjacency[pipe.to_idx].push(pipe.from_idx);
+    }
+    let mut visited = vec![false; n];
+    let anchor_default_p_sq = 70.0_f64.powi(2);
+    for start_idx in 0..n {
+        if visited[start_idx] || !shortpipe_alias.is_canonical(start_idx) {
+            visited[start_idx] = true;
+            continue;
+        }
+        let mut stack = vec![start_idx];
+        let mut component = Vec::<usize>::new();
+        visited[start_idx] = true;
+        while let Some(node_idx) = stack.pop() {
+            component.push(node_idx);
+            for &neighbor_idx in &adjacency[node_idx] {
+                if !visited[neighbor_idx] {
+                    visited[neighbor_idx] = true;
+                    stack.push(neighbor_idx);
+                }
+            }
+        }
+        if component.iter().any(|idx| fixed.contains_key(idx)) {
+            continue;
+        }
+        let mut demand_sum = 0.0_f64;
+        let mut gross = 0.0_f64;
+        for &idx in &component {
+            demand_sum += demands_vec[idx];
+            gross += demands_vec[idx].abs();
+        }
+        let tol = (1e-3 * gross).max(1e-6);
+        if demand_sum.abs() > tol {
+            bail!(
+                "NLP NoVa: composante flottante ({} nœuds) à demande nette insatisfiable {:.3e}",
+                component.len(),
+                demand_sum
+            );
+        }
+        let anchor = component
+            .iter()
+            .copied()
+            .filter(|&idx| demands_vec[idx].abs() > 0.0)
+            .max_by(|&a, &b| demands_vec[a].abs().total_cmp(&demands_vec[b].abs()))
+            .or_else(|| component.iter().copied().min());
+        if let Some(anchor_idx) = anchor {
+            fixed.insert(anchor_idx, anchor_default_p_sq);
+        }
+    }
+
+    shortpipe_alias.inherit_fixed(&mut fixed);
+
+    let free_indices: Vec<usize> = (0..n)
+        .filter(|&i| !fixed.contains_key(&i) && shortpipe_alias.is_canonical(i))
+        .collect();
+    let mut free_pos = vec![usize::MAX; n];
+    for (pos, &node_idx) in free_indices.iter().enumerate() {
+        free_pos[node_idx] = pos;
+    }
+    let scaling = NondimScaling::new(
+        pressure_sq_reference_from_fixed(&fixed),
+        flow_reference_from_demands(&demands_vec),
+    );
+
+    // Bornes dures natives (NoVa) : tous les nœuds, `pressure_lower/upper_bar`.
+    let bounds = PressureBoundContext::from_network_nova(network, &node_ids);
+    let mut var_lo = Vec::with_capacity(free_indices.len());
+    let mut var_hi = Vec::with_capacity(free_indices.len());
+    for &idx in &free_indices {
+        let lo = bounds
+            .lower_bar
+            .get(idx)
+            .copied()
+            .flatten()
+            .map(|p| (p * p).max(MIN_PRESSURE_SQ))
+            .unwrap_or(MIN_PRESSURE_SQ);
+        let hi = bounds
+            .upper_bar
+            .get(idx)
+            .copied()
+            .flatten()
+            .map(|p| p * p)
+            .unwrap_or(1e20);
+        var_lo.push(lo.min(hi));
+        var_hi.push(hi);
+    }
+
+    // Sparsité unique du Jacobien ∂g/∂π (stencil conductances, agrégée par paire).
+    let mut seen: Vec<(usize, usize)> = Vec::with_capacity(pipes.len() * 4);
+    let mut push_pair = |seen: &mut Vec<(usize, usize)>, a: usize, b: usize| {
+        if a != usize::MAX && b != usize::MAX {
+            seen.push((a, b));
+        }
+    };
+    for pipe in &pipes {
+        let a = free_pos[pipe.from_idx];
+        let b = free_pos[pipe.to_idx];
+        if a != usize::MAX {
+            push_pair(&mut seen, a, a);
+        }
+        if b != usize::MAX {
+            push_pair(&mut seen, b, b);
+        }
+        if a != usize::MAX && b != usize::MAX {
+            push_pair(&mut seen, a, b);
+            push_pair(&mut seen, b, a);
+        }
+    }
+    seen.sort_unstable();
+    seen.dedup();
+    let mut jac_index = HashMap::new();
+    for (k, &(r, c)) in seen.iter().enumerate() {
+        jac_index.insert((r, c), k);
+    }
+
+    Ok(NlpSetup {
+        node_ids,
+        id_pos,
+        free_indices,
+        free_pos,
+        fixed,
+        pipes,
+        demands_vec,
+        scaling,
+        var_lo,
+        var_hi,
+        jac_row: seen.iter().map(|&(r, _)| r).collect(),
+        jac_col: seen.iter().map(|&(_, c)| c).collect(),
+        jac_index,
+        alias: shortpipe_alias,
+    })
+}
+
+/// Structure constante du NLP NoVa (variables, bornes dures, sparsité Jacobien).
+pub(crate) fn pressure_nlp_structure(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    gas_composition: GasComposition,
+) -> Result<PressureNlpStructure> {
+    let s = build_nlp_setup(network, demands, gas_composition)?;
+    Ok(PressureNlpStructure {
+        free_node_ids: s.free_indices.iter().map(|&i| s.node_ids[i].clone()).collect(),
+        var_lo: s.var_lo,
+        var_hi: s.var_hi,
+        num_constraints: s.free_indices.len(),
+        jac_row: s.jac_row,
+        jac_col: s.jac_col,
+    })
+}
+
+/// Résidu g(x) + valeurs du Jacobien à x (π² des nœuds libres, longueur = nb libre).
+pub(crate) fn pressure_nlp_eval(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    gas_composition: GasComposition,
+    x_free: &[f64],
+) -> Result<PressureNlpEval> {
+    let s = build_nlp_setup(network, demands, gas_composition)?;
+    if x_free.len() != s.free_indices.len() {
+        bail!(
+            "NLP NoVa: x de longueur {} (attendu {})",
+            x_free.len(),
+            s.free_indices.len()
+        );
+    }
+    let n = s.node_ids.len();
+    let mut pressures_sq = vec![70.0_f64.powi(2); n];
+    for (&idx, &p_sq) in &s.fixed {
+        pressures_sq[idx] = p_sq;
+    }
+    for (i, &idx) in s.free_indices.iter().enumerate() {
+        pressures_sq[idx] = x_free[i];
+    }
+    // sync alias slaves (non-canoniques) depuis leur maître — requis pour les arcs
+    // mergés ShortPipe dont l'endpoint effectif dépend de la pression du maître.
+    s.alias.sync_pressures(&mut pressures_sq);
+
+    let state = evaluate_state(
+        &s.pipes,
+        &s.demands_vec,
+        &pressures_sq,
+        &s.free_indices,
+        s.scaling,
+        gas_composition,
+        None,
+        None,
+    );
+
+    let m = s.free_indices.len();
+    let g: Vec<f64> = (0..m).map(|i| state.f_node[s.free_indices[i]]).collect();
+    let residual_inf = g.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+
+    let mut jac_val = vec![0.0_f64; s.jac_row.len()];
+    for (pipe_idx, pipe) in s.pipes.iter().enumerate() {
+        let g_from = state.conductances_from[pipe_idx];
+        let g_to = state.conductances_to[pipe_idx];
+        let a = s.free_pos[pipe.from_idx];
+        let b = s.free_pos[pipe.to_idx];
+        let mut add = |r: usize, c: usize, v: f64| {
+            if let Some(&k) = s.jac_index.get(&(r, c)) {
+                jac_val[k] += v;
+            }
+        };
+        if a != usize::MAX {
+            add(a, a, -g_from);
+        }
+        if b != usize::MAX {
+            add(b, b, -g_to);
+        }
+        if a != usize::MAX && b != usize::MAX {
+            add(a, b, g_to);
+            add(b, a, g_from);
+        }
+    }
+
+    Ok(PressureNlpEval { g, jac_val, residual_inf })
+}

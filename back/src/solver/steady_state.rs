@@ -1888,6 +1888,61 @@ mod tests {
         );
     }
 
+    /// Phase VIII (option B) : l'oracle NLP `pressure_nlp_eval` réutilise la même
+    /// physique que le solveur (`evaluate_state`). Sur une solution convergée du
+    /// solveur in-repo, le résidu de bilan massique évalué par l'oracle doit être
+    /// ~0, et le Jacobien doit être fini. Cela valide l'assemblage du NLP avant de
+    /// le brancher à IPOPT.
+    #[test]
+    #[serial]
+    fn pressure_nlp_oracle_matches_solver_two_node() {
+        let net = two_node_network();
+        let mut demands = HashMap::new();
+        demands.insert("sink".to_string(), -10.0);
+        let gas = GasComposition::pure_ch4();
+
+        let result =
+            solve_steady_state(&net, &demands, 500, 1e-6).expect("solver should converge");
+
+        let structure = crate::solver::newton::pressure_nlp_structure(&net, &demands, gas)
+            .expect("nlp structure");
+        // source est fixée (70 bar) → seul "sink" est libre.
+        assert_eq!(
+            structure.free_node_ids,
+            vec!["sink".to_string()],
+            "free nodes should be the non-fixed nodes"
+        );
+        assert_eq!(structure.num_constraints, 1);
+
+        let x_free: Vec<f64> = structure
+            .free_node_ids
+            .iter()
+            .map(|id| result.pressures[id].powi(2))
+            .collect();
+        let eval = crate::solver::newton::pressure_nlp_eval(&net, &demands, gas, &x_free)
+            .expect("nlp eval");
+
+        eprintln!(
+            "oracle residual_inf = {:.3e} (solver residual = {:.3e}), jac_val = {:?}",
+            eval.residual_inf,
+            result.residual,
+            eval.jac_val
+        );
+        assert!(
+            eval.residual_inf < 1e-3,
+            "oracle mass residual should vanish at the solver solution, got {}",
+            eval.residual_inf
+        );
+        assert!(
+            eval.jac_val.iter().all(|v| v.is_finite()),
+            "Jacobian values must be finite"
+        );
+        assert!(
+            !eval.jac_val.is_empty(),
+            "Jacobian must have at least one nonzero (pipe stencil)"
+        );
+    }
+
     #[test]
     fn steady_state_y_network_mass_conservation() {
         let net = y_network();
