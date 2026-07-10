@@ -60,6 +60,28 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Optional warm-start pressures from an external solver (e.g. the Pyomo/IPOPT NoVa
+/// feasibility model). `GAZFLOW_INITIAL_PRESSURES_FILE` = path to a JSON object
+/// `{node_id: pressure_bar}`. Used to seed the in-repo Newton from a known feasible point
+/// (Phase VIII-bis: confirm the in-repo solver converges from the IPOPT point).
+fn load_initial_pressures_env() -> Option<std::collections::HashMap<String, f64>> {
+    use std::collections::HashMap;
+    let path = std::env::var("GAZFLOW_INITIAL_PRESSURES_FILE").ok()?;
+    let raw = fs::read_to_string(&path).ok()?;
+    let map: HashMap<String, f64> = serde_json::from_str(&raw)
+        .map_err(|e| {
+            eprintln!(
+                "load_initial_pressures: failed to parse {path}: {e}; ignoring warm-start"
+            );
+        })
+        .ok()?;
+    eprintln!(
+        "load_initial_pressures: {} node pressures from {path}",
+        map.len()
+    );
+    Some(map)
+}
+
 fn diag_env_enthalpic() -> bool {
     env_flag("GAZFLOW_COMPRESSOR_ENTHALPIC")
         || env_flag("GAZFLOW_COMPRESSOR_ENERGY_CLOSURE")
@@ -791,6 +813,7 @@ fn emit_reachability_probe(
             &mut zero_scenario,
             &preset,
             GasComposition::pure_ch4(),
+            None,
             None::<fn(ContinuationStepEvent)>,
         )
         .map(|o| o.result)
@@ -1034,11 +1057,13 @@ fn main() -> Result<()> {
 
     let preset = preset_robust(base_network.node_count());
     let mut continuation_scales = Vec::new();
+    let initial_pressures = load_initial_pressures_env();
     let refinement_outcome = solve_with_mass_balance_refinement(
         &base_network,
         &mut scenario,
         &preset,
         GasComposition::pure_ch4(),
+        initial_pressures.as_ref(),
         Some(|ev: ContinuationStepEvent| continuation_scales.push(ev.scale)),
     );
     let (network, solve_result, refinement_passes) = match refinement_outcome {

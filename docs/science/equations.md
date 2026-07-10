@@ -427,7 +427,10 @@ weakness on a non-convex NLP, not evidence against feasibility.
 `gaslib/scenario.rs` (`nova_feasibility_enabled`, entry-anchor bypass),
 `solver/nova_diagnostics.rs` (`nova_feasibility_report`). Bench: `phase-viii-nova` tag.
 External model: `scripts/nova/{nova_pyomo.py,Dockerfile}`, log
-`scripts/nova/results/mild_618_ipopt_FEASIBLE.log`.
+`scripts/nova/results/mild_618_ipopt_FEASIBLE.log`. Warm-start hook for the in-repo solver:
+`GAZFLOW_INITIAL_PRESSURES_FILE` (JSON `{node_id: pressure_bar}`) in `compressor_diag`, threaded
+through `solve_with_mass_balance_refinement`; used in the Phase VIII-ter convergence
+investigation (see `docs/science/validation.md`).
 
 ---
 

@@ -264,6 +264,25 @@ case "$TAG" in
     export GAZFLOW_TRANSPORT_MINIMAL_ANCHORS=0
     export GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES=0
     ;;
+  phase-viii-ter-warmstart)
+    # Phase VIII-ter : warm-start le solveur NoVa borné depuis le point faisable exhibé par
+    # IPOPT (scripts/nova/results/mild_618_feasible_pressures.json). Solve direct (pas de
+    # ramping) pour isoler la stabilité Newton. Attendu : divergence (le Newton-pénalité
+    # n'est pas robuste sur ce NLP non-convexe), cf. docs/science/validation.md §Phase VIII-ter.
+    export GAZFLOW_SCENARIO_BOUNDARY_ACTIVE_ENVELOPES=1
+    export GAZFLOW_SCENARIO_PRESSURE_ENVELOPES=1
+    export GAZFLOW_NOVA_FEASIBILITY=1
+    export GAZFLOW_COMPRESSOR_DECISION_VARIABLES=1
+    export GAZFLOW_COMPRESSOR_HARD_COUPLING=1
+    export GAZFLOW_CONTROL_VALVE_AS_REGULATOR=1
+    export GAZFLOW_CONTROL_VALVE_DECISION_VARIABLES=1
+    export GAZFLOW_CONTROL_VALVE_SOFT_SETPOINT=1
+    export GAZFLOW_NOVA_SINK_CAPACITY_STUDY=0
+    export GAZFLOW_TRANSPORT_MINIMAL_ANCHORS=0
+    export GAZFLOW_MASS_BALANCE_REFINEMENT_PASSES=0
+    export GAZFLOW_CONTINUATION_SCALES=1.0
+    export GAZFLOW_INITIAL_PRESSURES_FILE="${GAZFLOW_INITIAL_PRESSURES_FILE:-$(cd "$(dirname "$0")/.." && pwd)/scripts/nova/results/mild_618_feasible_pressures.json}"
+    ;;
   nominal-smoke)
     export GAZFLOW_SCENARIO_PRESSURE_ENVELOPES=0
     export GAZFLOW_SCENARIO_PRESSURE_IN_NEWTON=0

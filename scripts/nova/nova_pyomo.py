@@ -205,6 +205,28 @@ def pipe_resistance(length_km, diameter_mm, roughness_mm, rho_eff=50.0, re=1e7):
     return max(f * L * rho_eff / (2.0 * d * A * A * 1e10), 1e-12)
 
 
+# ---------- In-repo gas density (Papay, pure CH4) — to match GazFlow's rho(P_moy) ----------
+
+_R = 8.314462618
+_CH4_M = 0.01604
+_CH4_PC_BAR = 46.0
+_CH4_TC_K = 190.6
+_GAS_T_K = 288.15
+
+
+def papay_z(pressure_bar, temperature_k=_GAS_T_K):
+    pr = max(pressure_bar, 0.0) / _CH4_PC_BAR
+    tr = max(temperature_k / _CH4_TC_K, 0.1)
+    z = 1.0 - 3.52 * pr / (10 ** (0.9813 * tr)) + 0.274 * pr * pr / (10 ** (0.8157 * tr))
+    return min(max(z, 0.2), 1.5)
+
+
+def gas_density_kg_per_m3(pressure_bar, temperature_k=_GAS_T_K):
+    p_pa = max(pressure_bar, 0.0) * 1e5
+    z = papay_z(pressure_bar, temperature_k)
+    return p_pa * _CH4_M / (z * _R * max(temperature_k, 1.0))
+
+
 def effective_geometry(arc):
     """Return (length_km, diameter_mm, roughness_mm) matching GazFlow effective_pipe_geometry."""
     k = arc["kind"]
@@ -221,9 +243,30 @@ def effective_geometry(arc):
     return L, D, r
 
 
+def compute_per_pipe_rho(net_path, pressures_file):
+    """Per-pipe density rho(P_moy) matching GazFlow's pipe_resistance_at_pressure, evaluated
+    at the mean of the endpoint pressures from a prior feasible-point JSON. Used to align the
+    Pyomo K with the in-repo dynamic-rho K-linearization for warm-start isolation tests."""
+    import json
+    nodes, arcs = parse_net(net_path)
+    pressures = json.load(open(pressures_file))
+    out = {}
+    for a in arcs:
+        if a["kind"] not in ("pipe", "shortPipe", "resistor", "valve"):
+            continue
+        pf = pressures.get(a["from"])
+        pt = pressures.get(a["to"])
+        if pf is None or pt is None:
+            continue
+        pmoy = 0.5 * (pf + pt)
+        out[a["id"]] = gas_density_kg_per_m3(pmoy)
+    return out
+
+
 # ---------- Model ----------
 
-def build_and_solve(net_path, scn_path, solver="ipopt", eps=1e-3, tol=1e-4, seed=0):
+def build_and_solve(net_path, scn_path, solver="ipopt", eps=1e-3, tol=1e-4, seed=0,
+                    dump_pressures=None, rho_eff=50.0, per_pipe_rho=None):
     import pyomo.environ as pyo
     import random
 
@@ -270,9 +313,11 @@ def build_and_solve(net_path, scn_path, solver="ipopt", eps=1e-3, tol=1e-4, seed
         L, D, r = effective_geometry(a)
         if a["kind"] == "resistor" and a["drag"] is not None:
             # Resistor: model as a short pipe with drag-equivalent resistance.
-            # ΔP_bar = dragFactor * (Q/3600)^2 (1000m³/h) -- approximate as K via tiny pipe.
             L, D, r = min(a["length_km"] or 0.001, 0.001), max(a["diameter_mm"] or 1000.0, 1000.0), r
-        K[a["id"]] = pipe_resistance(L, D, r)
+        rho = rho_eff
+        if per_pipe_rho is not None and a["id"] in per_pipe_rho:
+            rho = per_pipe_rho[a["id"]]
+        K[a["id"]] = pipe_resistance(L, D, r, rho_eff=rho)
 
     def pipe_law(m, a_id):
         a = next(x for x in passive if x["id"] == a_id)
@@ -418,6 +463,12 @@ def build_and_solve(net_path, scn_path, solver="ipopt", eps=1e-3, tol=1e-4, seed
                 "source_1", "source_14", "source_13", "source_10"):
         if nid in m.P:
             print(f"  P[{nid}] = {m.P[nid]():.3f} bar")
+    if dump_pressures:
+        import json
+        pressures = {nid: float(m.P[nid]()) for nid in all_node_ids}
+        with open(dump_pressures, "w") as fh:
+            json.dump(pressures, fh, indent=0)
+        print(f"  dumped {len(pressures)} node pressures -> {dump_pressures}")
     return m, feasible, max_slack
 
 
@@ -431,17 +482,37 @@ def main():
     ap.add_argument("--multistart", type=int, default=1,
                     help="number of starts (seed 0 = uniform 70 bar; seeds 1..N = random). "
                          "Stops at first feasible point.")
+    ap.add_argument("--dump-pressures", default=None,
+                    help="write all node pressures as JSON {node_id: bar} to this path "
+                         "(on the first feasible start, or the last start if none feasible).")
+    ap.add_argument("--rho-eff", type=float, default=50.0,
+                    help="effective gas density (kg/m³) for the P² resistance; "
+                         "raise toward ~55 to match GazFlow's dynamic rho(P_moy) at ~70 bar.")
+    ap.add_argument("--per-pipe-rho-from", default=None,
+                    help="path to a pressures JSON {node_id: bar}; compute per-pipe rho(P_moy) "
+                         "matching GazFlow's dynamic-rho K-linearization for warm-start isolation.")
     args = ap.parse_args()
+    per_pipe_rho = None
+    if args.per_pipe_rho_from:
+        per_pipe_rho = compute_per_pipe_rho(args.net, args.per_pipe_rho_from)
+        print(f"per-pipe rho: computed for {len(per_pipe_rho)} passive arcs "
+              f"(min={min(per_pipe_rho.values()):.2f}, max={max(per_pipe_rho.values()):.2f} kg/m³)")
     if args.multistart <= 1:
-        build_and_solve(args.net, args.scn, args.solver, args.eps, args.tol, seed=0)
+        build_and_solve(args.net, args.scn, args.solver, args.eps, args.tol, seed=0,
+                        dump_pressures=args.dump_pressures, rho_eff=args.rho_eff,
+                        per_pipe_rho=per_pipe_rho)
         return
     best = None
     for s in range(args.multistart):
         print(f"\n##### multistart seed {s} #####")
-        _, feas, slack = build_and_solve(args.net, args.scn, args.solver, args.eps, args.tol, seed=s)
+        _, feas, slack = build_and_solve(args.net, args.scn, args.solver, args.eps, args.tol,
+                                         seed=s, rho_eff=args.rho_eff, per_pipe_rho=per_pipe_rho)
         if best is None or slack < best[1]:
             best = (s, slack, feas)
         if feas:
+            build_and_solve(args.net, args.scn, args.solver, args.eps, args.tol, seed=s,
+                            dump_pressures=args.dump_pressures, rho_eff=args.rho_eff,
+                            per_pipe_rho=per_pipe_rho)
             print(f"\n>>> FEASIBLE point found at seed {s}; stopping multistart.")
             return
     print(f"\n>>> No feasible point found in {args.multistart} starts. "

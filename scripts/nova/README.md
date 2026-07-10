@@ -58,3 +58,28 @@ point; no global solver (Couenne/BARON) is required. See `docs/science/validatio
   `P_out ≥ pressureInMin`); the active-setpoint/bypass complementarity is relaxed — sufficient
   to find a feasible point.
 - Valves assumed open (NLP relaxation; the MINLP binary decision is not exercised).
+
+## Options
+
+- `--dump-pressures PATH` — write the solved pressures as JSON `{node_id: bar}` (all nodes).
+  Used to feed the in-repo solver's warm-start hook.
+- `--multistart N` — run N starts (seed 0 = uniform 70 bar; seeds 1..N = random within
+  bounds); stop at the first feasible point. The NoVa NLP is non-convex, so multistart
+  improves the chance of finding a feasible point.
+- `--rho-eff RHO` — override the effective density (default 50; GazFlow's dynamic ρ is ≈ 54
+  at 70 bar). Note: higher ρ makes the naive-start solve harder (the feasible manifold
+  shifts); combine with `--multistart`.
+- `--per-pipe-rho-from FILE` — compute per-pipe `ρ(P_moy)` (Papay, pure CH₄, matching
+  GazFlow's `pipe_resistance_at_pressure`) from a prior pressures JSON, to align K with the
+  in-repo dynamic-rho linearization. Used for the warm-start isolation experiment
+  (Phase VIII-ter, `docs/science/validation.md`).
+
+## Warm-starting the in-repo solver (Phase VIII-ter)
+
+The in-repo `compressor_diag` accepts `GAZFLOW_INITIAL_PRESSURES_FILE=PATH` (JSON
+`{node_id: pressure_bar}`) to seed its Newton from an external point. Combined with
+`GAZFLOW_CONTINUATION_SCALES=1.0` (direct solve) and the `phase-viii-ter-warmstart` bench tag,
+this tests whether the in-repo penalty-Newton can converge from the IPOPT feasible point. It
+cannot (it diverges to residual ≈ 69.8 then errors) — the penalty-Newton is not robust enough
+on this non-convex NLP; a trust-region/SQP or IPOPT backend upgrade is needed. See
+`docs/science/validation.md` (Phase VIII-ter).

@@ -1457,6 +1457,7 @@ pub fn solve_with_mass_balance_refinement<G>(
     scenario: &mut crate::gaslib::ScenarioDemands,
     preset: &crate::solver::presets::SolverPreset,
     gas_composition: GasComposition,
+    initial_pressures: Option<&std::collections::HashMap<String, f64>>,
     mut on_first_continuation_step: Option<G>,
 ) -> Result<MassBalanceRefinementOutcome>
 where
@@ -1478,7 +1479,7 @@ where
     let mut result = solve_steady_state_with_preset(
         &network,
         &demands,
-        None,
+        initial_pressures,
         preset,
         gas_composition,
         |_| SolverControl::Continue,
@@ -1512,7 +1513,7 @@ where
         result = solve_steady_state_with_preset(
             &network,
             &demands,
-            None,
+            Some(&result.pressures),
             preset,
             gas_composition,
             |_| SolverControl::Continue,

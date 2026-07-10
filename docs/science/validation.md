@@ -250,3 +250,40 @@ Root cause of the earlier false verdict: the capacity study fixed multiple press
   feasibility is established by the external IPOPT model. Improving the in-repo solver's
   non-convex convergence (multistart, continuation, or SQP/IPOPT backend) is the remaining
   engineering work to make the local verdict match the external one.
+
+### Phase VIII-ter — in-repo solver convergence investigation (July 2026)
+
+After the external IPOPT proof, three levers were tried to make the in-repo penalty-Newton
+converge to the feasible point on `mild_618` (so the local verdict would match the external
+`Feasible`):
+
+1. **Demand continuation (already engaged).** The Large preset (582 nodes) already ramps
+   `[0.05, 0.1, 0.2, 0.4, 0.7, 1.0]` with `auto_bridges=6` and warm-start between steps. The
+   in-repo NoVa solver nonetheless stops at the same non-converged low-pressure basin
+   (residual ≈ 81.8, sink_122 = 4.2 bar, innode_11 mass imbalance ≈ 3.15e5). Overriding the
+   ramp (`GAZFLOW_CONTINUATION_SCALES`) only changes the floating-point tail, not the basin.
+
+2. **Warm-start from the IPOPT feasible point.** A new `GAZFLOW_INITIAL_PRESSURES_FILE` env
+   (JSON `{node_id: pressure_bar}`) was added to `compressor_diag` to seed the in-repo Newton
+   from the IPOPT point (`scripts/nova/results/mild_618_feasible_pressures.json`). In direct
+   solve (`CONTINUATION_SCALES=1.0`) the Newton **diverges from the warm-start to residual
+   ≈ 69.8 then errors out**; with a ramp it falls back to the same stuck basin. The warm-start
+   point is feasible for the Pyomo model (ρ_eff = 50, Re = 1e7) but not exactly for the in-repo
+   model (dynamic ρ(P_moy) ≈ 54 at 70 bar via Papay, dynamic Re, compressor/CV decision loops,
+   effective demands) — a ≈ 9 % K mismatch — yet the Newton diverges instead of converging to
+   the in-repo's own nearby feasible point.
+
+3. **Model-matching isolation.** The Pyomo model was extended with per-pipe `ρ(P_moy)` matching
+   GazFlow's `pipe_resistance_at_pressure` (Papay, pure CH₄) to align K with the in-repo
+   linearization (`--per-pipe-rho-from`). The per-pipe-ρ NLP (ρ 2.7–58 kg/m³) is harder and
+   uniform-start IPOPT did not find a feasible point in 6 starts, so a matched-K warm-start
+   point could not be produced cheaply.
+
+**Conclusion (engineering).** The in-repo penalty-Newton is **not robust enough** for this
+non-convex NoVa NLP: it diverges even when started near a feasible point of a closely-related
+model. Continuation and warm-start are insufficient. Closing the gap so the local verdict
+matches the external `Feasible` requires a **solver upgrade**: a trust-region / SQP Newton, or
+an external IPOPT backend solving the in-repo model directly (eliminating the model mismatch).
+The honest local verdict remains `NotSolvedLocal`; the feasibility of `mild_618` is settled by
+the external IPOPT proof (Phase VIII-bis). The `GAZFLOW_INITIAL_PRESSURES_FILE` warm-start hook
+is kept as a general capability.
