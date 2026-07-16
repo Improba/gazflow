@@ -6,7 +6,7 @@
         | Itér. : <b>{{ simulateStore.iteration }}</b>
       </template>
       <template v-if="simulateStore.residual != null">
-        | Résidu : <b>{{ simulateStore.residual.toExponential(2) }}</b>
+        | {{ CONVERGENCE_GAP_LABEL }} : <b>{{ simulateStore.residual.toExponential(2) }}</b>
       </template>
       <template v-if="simulateStore.elapsedMs != null">
         | Temps : <b>{{ simulateStore.elapsedMs }} ms</b>
@@ -26,6 +26,7 @@
 import { computed } from 'vue';
 import { useSimulateStore } from 'src/stores/simulate';
 import { simulationStatusLabel } from 'src/utils/simulationStatus';
+import { CONVERGENCE_GAP_LABEL } from 'src/utils/novaLabels';
 
 const simulateStore = useSimulateStore();
 

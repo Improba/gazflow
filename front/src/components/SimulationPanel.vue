@@ -150,7 +150,7 @@
         <q-icon name="info" />
       </template>
       <span v-if="scenarioDirty">Nomination modifiée — relancez pour re-valider la tenue pression.</span>
-      <span v-else>Demandes ou organes modifiés — relancez la simulation pour voir l'effet.</span>
+      <span v-else>{{ MODIFIED_WITHDRAWALS_EQUIPMENT_BANNER }}</span>
     </q-banner>
 
     <div class="row items-center q-mb-xs">
@@ -326,7 +326,7 @@
       >
         <div class="text-subtitle2 q-mb-xs">
           Convergence en {{ simulateStore.result.iterations }} itérations
-          (résidu : {{ simulateStore.result.residual.toExponential(2) }})
+          ({{ CONVERGENCE_GAP_LABEL.toLowerCase() }} : {{ simulateStore.result.residual.toExponential(2) }})
         </div>
 
         <div class="row q-col-gutter-sm q-mb-sm">
@@ -443,7 +443,7 @@
         dense
         dark
         icon="settings_input_component"
-        :label="`Organes (${simulateStore.equipmentStates.length})`"
+        :label="`${EQUIPMENT_SETTINGS_SECTION_LABEL} (${simulateStore.equipmentStates.length})`"
         class="q-mb-sm bg-grey-10 rounded-borders"
         default-opened
       >
@@ -535,6 +535,11 @@ import { useTimeseriesStore } from 'src/stores/timeseries';
 import type { WsStartOptions } from 'src/services/ws';
 import { G20_NOMINAL, PURE_CH4, type GasCompositionDto, type PipeEquipmentDto } from 'src/services/api';
 import { SIMULATION_MODE_HELP } from 'src/utils/simulationStatus';
+import {
+  CONVERGENCE_GAP_LABEL,
+  EQUIPMENT_SETTINGS_SECTION_LABEL,
+  MODIFIED_WITHDRAWALS_EQUIPMENT_BANNER,
+} from 'src/utils/novaLabels';
 import { equipmentKindLabel, regulatorModeLabel } from 'src/utils/equipmentLabels';
 import { runDemoCase } from 'src/utils/demoCase';
 import { formatApiError } from 'src/utils/importError';

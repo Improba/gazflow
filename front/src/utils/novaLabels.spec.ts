@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { novaOutcomeBadgeLabel, solverSignatureBadgeLabel } from './novaLabels';
+import {
+  CONVERGENCE_GAP_LABEL,
+  EQUIPMENT_SETTINGS_SECTION_LABEL,
+  MODIFIED_WITHDRAWALS_EQUIPMENT_BANNER,
+  novaOutcomeBadgeLabel,
+  solverSignatureBadgeLabel,
+} from './novaLabels';
 
 describe('novaLabels', () => {
+  it('exports convergence vocabulary constants', () => {
+    expect(CONVERGENCE_GAP_LABEL).toBe('Écart de convergence');
+    expect(EQUIPMENT_SETTINGS_SECTION_LABEL).toBe('Réglages équipements');
+    expect(MODIFIED_WITHDRAWALS_EQUIPMENT_BANNER).toContain('Soutirages ou réglages équipements');
+  });
+
   it('labels feasible outcomes', () => {
     expect(novaOutcomeBadgeLabel(true, 'Feasible')).toBe('Faisable');
   });
