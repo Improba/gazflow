@@ -358,6 +358,9 @@ fn run_nova_solve_for_compare(
     let diag = crate::solver::compute_nova_diagnostics(network, scenario, &result);
     let converged = result.residual <= preset.tolerance;
     let verdict = super::nova_finalize::finalize_nova_verdict(
+        network,
+        &demands,
+        gas,
         &diag,
         converged,
         preset.tolerance,

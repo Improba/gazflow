@@ -165,6 +165,9 @@ fn run_one_case(
             let diag = crate::solver::compute_nova_diagnostics(&net, scenario, &result);
             let converged = result.residual <= preset.tolerance;
             let verdict = super::nova_finalize::finalize_nova_verdict(
+                &net,
+                &demands,
+                gas,
                 &diag,
                 converged,
                 preset.tolerance,
