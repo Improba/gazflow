@@ -20,6 +20,7 @@ pub(crate) enum IpoptEscalationMode {
 
 /// Lit le mode d'escalade depuis l'environnement. Off par défaut (IPOPT jamais par défaut).
 pub(crate) fn ipopt_escalation_mode() -> IpoptEscalationMode {
+    static IPOPT_ENV_WITHOUT_FEATURE: std::sync::Once = std::sync::Once::new();
     match std::env::var("GAZFLOW_NOVA_IPOPT_ESCALATION")
         .ok()
         .as_deref()
@@ -27,9 +28,23 @@ pub(crate) fn ipopt_escalation_mode() -> IpoptEscalationMode {
     {
         None | Some("") => IpoptEscalationMode::Off,
         Some(v) if matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on") => {
+            #[cfg(not(feature = "nlp-ipopt"))]
+            IPOPT_ENV_WITHOUT_FEATURE.call_once(|| {
+                eprintln!(
+                    "warning: GAZFLOW_NOVA_IPOPT_ESCALATION is set but binary was built without nlp-ipopt feature"
+                );
+            });
             IpoptEscalationMode::On
         }
-        Some(v) if v.eq_ignore_ascii_case("on-notsolved") => IpoptEscalationMode::OnNotSolved,
+        Some(v) if v.eq_ignore_ascii_case("on-notsolved") => {
+            #[cfg(not(feature = "nlp-ipopt"))]
+            IPOPT_ENV_WITHOUT_FEATURE.call_once(|| {
+                eprintln!(
+                    "warning: GAZFLOW_NOVA_IPOPT_ESCALATION is set but binary was built without nlp-ipopt feature"
+                );
+            });
+            IpoptEscalationMode::OnNotSolved
+        }
         Some(_) => IpoptEscalationMode::Off,
     }
 }
@@ -156,6 +171,7 @@ fn try_ipopt_escalation(
 mod tests {
     use super::*;
     use crate::solver::ScenarioPressureSlip;
+    use serial_test::serial;
 
     fn slip(
         node_id: &str,
@@ -188,12 +204,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn ipopt_escalation_mode_off_by_default() {
         unsafe { std::env::remove_var("GAZFLOW_NOVA_IPOPT_ESCALATION") };
         assert_eq!(ipopt_escalation_mode(), IpoptEscalationMode::Off);
     }
 
     #[test]
+    #[serial]
     fn ipopt_escalation_mode_parses_enabled_values() {
         for value in ["1", "true", "on", "ON", "True"] {
             unsafe { std::env::set_var("GAZFLOW_NOVA_IPOPT_ESCALATION", value) };
@@ -209,6 +227,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn ipopt_escalation_mode_unknown_value_is_off() {
         unsafe { std::env::set_var("GAZFLOW_NOVA_IPOPT_ESCALATION", "maybe") };
         assert_eq!(ipopt_escalation_mode(), IpoptEscalationMode::Off);
@@ -252,6 +271,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn finalize_skips_escalation_when_mode_off() {
         unsafe { std::env::remove_var("GAZFLOW_NOVA_IPOPT_ESCALATION") };
         let network = GasNetwork::new();

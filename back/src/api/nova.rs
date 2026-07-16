@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ApiError, SharedState, active_dataset_id, active_gas_composition, active_network,
+    sync_compressor_map_mode_for_solve,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -135,6 +136,7 @@ pub(super) async fn post_nova_capacity(
         })?;
 
     let pool = state.rayon_pool.clone();
+    let state_for_mode = state.clone();
     let join_result: Result<
         Result<Vec<crate::solver::SinkCapacityReport>, (StatusCode, Json<ApiError>)>,
         tokio::task::JoinError,
@@ -144,6 +146,7 @@ pub(super) async fn post_nova_capacity(
             .map_err(|err| api_error(StatusCode::UNPROCESSABLE_ENTITY, format!("{err:#}")))?;
         crate::gaslib::enrich_scenario_with_balance_hub(&network, &mut scenario);
         pool.install(|| {
+            sync_compressor_map_mode_for_solve(&state_for_mode);
             crate::solver::study_sinks_capacity(
                 &network,
                 &scenario,
@@ -435,9 +438,11 @@ pub(super) async fn post_compare_nominations(
 
     let a_id = payload.scenario_a_id.clone();
     let b_id = payload.scenario_b_id.clone();
+    let state_for_mode = state.clone();
     let join = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         pool.install(|| {
+            sync_compressor_map_mode_for_solve(&state_for_mode);
             let mut scenario_a = crate::gaslib::parse_scenario_demands_from_str(&xml_a)
                 .map_err(|err| format!("{err:#}"))?;
             crate::gaslib::enrich_scenario_with_balance_hub(&network_for_solve, &mut scenario_a);

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ApiError, SharedState, active_dataset_id, active_gas_composition, active_network,
-    resolve_scenario_xml, scenarios,
+    resolve_scenario_xml, scenarios, sync_compressor_map_mode_for_solve,
 };
 
 fn api_error(status: StatusCode, message: impl Into<String>) -> (StatusCode, Json<ApiError>) {
@@ -140,6 +140,8 @@ fn run_one_case(
             *v *= demand_scale;
         }
     }
+
+    sync_compressor_map_mode_for_solve(state);
 
     let preset = crate::solver::preset_from_request(
         net.node_count(),

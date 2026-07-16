@@ -1,10 +1,9 @@
 <template>
   <q-expansion-item
-    v-if="hasPoints"
     dense
     dark
     icon="compress"
-    :label="`Stations de compression (${points.length})`"
+    :label="hasPoints ? `Stations de compression (${points.length})` : 'Stations de compression'"
     class="q-mb-sm bg-grey-10 rounded-borders"
     default-opened
   >
@@ -21,7 +20,14 @@
         @update:model-value="onModeChange"
       />
 
-      <q-markup-table dense flat bordered dark class="bg-grey-10 text-grey-2">
+      <q-markup-table
+        v-if="hasPoints"
+        dense
+        flat
+        bordered
+        dark
+        class="bg-grey-10 text-grey-2"
+      >
         <thead>
           <tr>
             <th class="text-left">Station</th>
@@ -41,6 +47,10 @@
           </tr>
         </tbody>
       </q-markup-table>
+
+      <div v-else class="text-caption text-grey-5 q-mt-xs">
+        Aucun point — lancer une simulation
+      </div>
     </div>
   </q-expansion-item>
 </template>

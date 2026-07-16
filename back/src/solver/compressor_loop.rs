@@ -1157,6 +1157,7 @@ mod tests {
         FLOW_UPDATE_THRESHOLD_M3S, RatioUpdateContext, decision_ratio_target,
         guarded_compressor_ratio_step,
     };
+    use serial_test::serial;
 
     fn ctx(q: f64, residual: f64, tolerance: f64, nominal: f64, relax: f64) -> RatioUpdateContext {
         RatioUpdateContext {
@@ -1171,6 +1172,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn compressor_map_mode_parses_measurement() {
         super::set_thread_compressor_map_mode_override(None);
         unsafe { std::env::set_var("GAZFLOW_COMPRESSOR_MAP_MODE", "measurement") };
@@ -1192,6 +1194,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn compressor_map_mode_session_override_takes_precedence() {
         unsafe { std::env::set_var("GAZFLOW_COMPRESSOR_MAP_MODE", "legacy") };
         super::set_thread_compressor_map_mode_override(Some(CompressorMapMode::Measurement));
