@@ -36,8 +36,8 @@ Natural gas network flow simulator, inspired by SIMONE.
 The UI is organised around an **operational overview before deep analysis**:
 
 - **Tableau de bord** (`/`) — landing page. Aggregates operational KPIs (min pressure, capacity margin, demand served, N-1 compliance), an alert center (capacity violations, sink diagnostics, solver warnings, N-1 alerts), recent networks, and contextual CTAs.
-- **Espace d'analyse** (`/workspace`) — multi-view analytical workspace with a segmented switcher between a **2D nodal schematic** (pipe load colours, node pressures), a **pressure profile** along a path, and a **results table** (nodes + pipes), side-by-side with a **results rail** (verdict, sink diagnostics, boundary supply, capacity study, exports).
-- **Carte** (`/map`) — Cesium 3D geospatial view with the simulation panel, property panel, and legend. When no network is loaded it redirects to the dashboard.
+- **Espace d'analyse** (`/workspace`) — multi-view analytical workspace with a segmented switcher between a **2D nodal schematic** (pipe load colours, node pressures), a **pressure profile** along a path, and a **results table** (nodes + pipes), side-by-side with a **results rail** (verdict, sink diagnostics, boundary supply, capacity study, exports). The **ResultsRail** hosts the NoVa workflow stepper (Verdict → Causes → Capacity → Export).
+- **Carte** (`/map`) — Cesium 3D geospatial view with the **SimulationPanel** (same NoVa stepper and certification flow), property panel, and legend. When no network is loaded it redirects to the dashboard.
 - **Global status bar** — a persistent bar (network, run status, nomination, N-1 compliance) shared across all pages.
 - **Task-oriented navigation** — primary entries (Dashboard, Workspace, Map) plus a "Tâches" menu grouping Import, N-1, Calage SCADA, Transitoire, Exports, Batch.
 
@@ -50,6 +50,7 @@ The tool computes hydraulic operating points (nodal pressures, pipe flows in Nm�
 ### Use cases
 
 - Study hydraulic behaviour under different withdrawal/injection levels and gas compositions (G20, H₂ blends with auto PR-78 above 20 % H₂)
+- **Validate transport nominations (NoVa)**: feasibility verdict, deficit causes, per-sink capacity, save reduced nomination, N-1 on nomination, certification report
 - Import a network from **GeoJSON, CSV + YAML mapping, or Shapefile** and run operational scenarios
 - **24 h timeseries** with thermosensitive demand profiles, weather CSV, weekday/weekend curves
 - **N-1 security analysis** with parallel contingency runs, map overlay, Excel/CSV export
@@ -172,4 +173,6 @@ See [LICENSING.md](LICENSING.md) and [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.
 - [Test corpus](docs/testing/corpus/README.md)
 - [Implementation plan (shared)](docs/plans/implementation-plan.md)
 - [MVP features](docs/features/mvp.md)
+- [NoVa persona (Camille)](docs/personas/ingenieur-natran.md)
+- [NoVa interface plan](docs/temp/plan-interface-natran-nova.md)
 

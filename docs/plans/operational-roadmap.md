@@ -19,6 +19,8 @@
 
 Plan complétion : `docs/plans/completion-plan.md`.
 
+**Note (juillet 2026)** : parcours NoVa Camille livré sur `main` (verdict, nomination, capacité, nomination réduite, N-1, rapport) — voir [plan interface NoVa](../temp/plan-interface-natran-nova.md) et [persona Camille](../personas/ingenieur-natran.md). P11 (transitoire) et P7 (physique) inchangés.
+
 ## Contexte
 
 ### Ce qui existe (MVP, phases 0–5)

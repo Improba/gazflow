@@ -62,18 +62,32 @@ Camille **valide les nominations** des expéditeurs (shippers) contre la capacit
 - **Interruptions** : fréquentes (appels expéditeurs, opérateurs terrain) → doit pouvoir reprendre une session à l'identique.
 - **Données** : réseaux de taille moyenne à grande (jusqu'à ~600 nœuds type GasLib-582).
 
-## 8. Frustrations actuelles avec GazFlow (audit)
+## 8. Frustrations actuelles avec GazFlow
 
-- Aucun verdict explicite : elle doit **déduire** la faisabilité en scrolant une colonne infinie.
-- Pas d'objet « Nomination » : c'est dilué en « Demandes ».
-- Vocabulaire solveur (« Demandes », « Organes », « Mode robuste (continuation) ») au lieu de vocabulaire réseau.
-- Le diagnostic riche existe (trace amont, max_up vs need, capacité par sink) mais **n'est pas affiché** — il vit dans les JSON de bench.
-- Aucun raccourci vers son levier réel : réduire une nomination et re-valider.
-- N-1, calage et transitoire sont au même niveau que « Import » et « Exports » dans la nav — l'IA mélange écrans techniques et analyses métier.
+### État produit (juillet 2026)
+
+Le parcours NoVa Camille est livré sur `main` :
+
+- **Verdict** explicite (faisable / non faisable / verdict non établi) avec cause actionnable et signature moteur.
+- **Nomination** first-class : sélection `.scn`, panneau dédié, import et comparaison.
+- **Marges pression** contractuelles exposées avec les slips.
+- **Capacité par sink** : étude opt-in, réduction par sink ou globale, re-validation.
+- **Enregistrer nomination réduite** : `POST /api/nova/nominations/reduced` (entries mass-balance à débit fixe).
+- **CTA N-1** sur la nomination active (lien vers l'analyse N-1 avec `scenario_id`).
+- **Rapport de certification** exportable (impression / PDF / JSON).
+- **Vocabulaire métier** NoVa (nomination, soutirages, réglages équipements, écart de convergence).
+- **Stepper** Verdict → Causes → Capacité → Export dans l'Espace d'analyse (`ResultsRail` / `SimulationPanel`).
+
+### Limites restantes
+
+- Pas de **drawer workflows** complet : la nav « Tâches » reste plate (N-1, calage, transitoire au même niveau qu'Import / Exports).
+- **Science GasLib-582** : le solveur Newton local peut renvoyer `NotSolvedLocal` sur `mild_618` ; l'escalade IPOPT est opt-in (`GAZFLOW_NOVA_IPOPT_ESCALATION`).
+- **Pas certifié SIMONE** : outil de simulation comparative, pas un simulateur d'exploitation certifié.
+- **Jargon solveur** encore possible sur les écrans périphériques (calage SCADA, transitoire).
 
 ## 9. Critère de succès (le test Camille)
 
-> « Je charge mild_618 → je vois ⛔ Non faisable avec 4 sinks en déficit → je clique sink_88 → je vois max_up 2,64 bar vs besoin 26,0 → je lance l'étude capacité → je clique "Appliquer la capacité max partout" → je re-valide → ✅ Faisable → j'exporte le rapport de certification. »
+> « Je charge mild_618 → je vois ⛔ Non faisable avec 4 sinks en déficit → je clique sink_88 → je vois max_up 2,64 bar vs besoin 26,0 → je lance l'étude capacité → je clique "Appliquer la capacité max partout" → je re-valide → ✅ Faisable → j'enregistre la nomination réduite → je lance l'analyse N-1 sur cette nomination → j'exporte le rapport de certification. »
 >
 > **Sans jamais ouvrir un JSON, ni scroller une liste de 582 pressions, ni lire le mot "résidu".**
 

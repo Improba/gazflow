@@ -39,6 +39,15 @@ This document describes the known limits of the solver in its current state. It 
 - **Compressor outer loop (fallback)**: after continuation failure on transport networks (≥200 nodes with high-ratio compressors), a progressive blend schedule ramps `compressor_ratio_max` toward nominal (`GAZFLOW_SKIP_COMPRESSOR_OUTER=1` to disable; `GAZFLOW_COMPRESSOR_OUTER=1` to force on smaller networks). With map modes, outer loop applies `find_operating_point_for_mode` and guarded ratio steps until residual settles or partial accept.
 - **CDF screening**: multi-scale evaluation via `GAZFLOW_CDF_SCREEN_SCALES` (default `0.15,0.4` for N>500); routings that fragment the active graph (multiple components without fixed pressure) are rejected on large networks. On large connected baselines (no floating components, N>500), CDF screening is **skipped by default**; set `GAZFLOW_FORCE_CDF_ROUTING=1` to run it anyway.
 
+## 2.2 NoVa product path (UI / API)
+
+- **Solve with `scenario_id`** uses `resolve_simulation_demands`: nominal Q from the `.scn` plus partial client overrides merged before the WS solve.
+- **Pressure diagnostics** are post-hoc envelope checks on the converged result (except capacity study and N-1, which use `network_with_scenario_boundaries_for_nova`).
+- **IPOPT escalation** is never the default; enable via `GAZFLOW_NOVA_IPOPT_ESCALATION` (`on`, `on-notsolved`, `maybe`).
+- **Reduced nomination** (`POST /api/nova/nominations/reduced`): mass-balance entries at fixed flow; not a substitute for certification without re-validation.
+- **GasLib-582 `mild_618`**: feasible with external IPOPT NLP; the in-repo Newton solver may return `NotSolvedLocal`.
+- **No systematic `.sol` validation** against external reference solutions.
+
 ## 3. Data and validation limits
 
 - GasLib-11 pressure validation: max relative error < 5 % (`test_gaslib_11_vs_reference_solution`).
