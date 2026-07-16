@@ -17,12 +17,17 @@
           icon="science"
           :label="simulateStore.sinkCapacity.length > 0 ? 'Re-lancer l\'étude' : 'Étudier la capacité'"
           :loading="simulateStore.capacityLoading"
-          :disable="simulateStore.capacityLoading || simulateStore.loading"
+          :disable="simulateStore.capacityLoading || simulateStore.loading || scenarioDirty"
           @click="$emit('run-study')"
         >
           <q-tooltip max-width="280px">
-            Dichotomie par sink : débit max faisable sous borne pression contractuelle.
-            Coûteux (plusieurs solves) — limité aux sinks déficitaires.
+            <span v-if="scenarioDirty">
+              Nomination modifiée — re-validez la tenue pression avant l'étude capacité.
+            </span>
+            <span v-else>
+              Dichotomie par sink sur la nomination enregistrée du dernier run (pas les overrides locaux).
+              Coûteux — limité aux sinks déficitaires.
+            </span>
           </q-tooltip>
         </q-btn>
         <q-btn
@@ -32,10 +37,13 @@
           color="primary"
           icon="tune"
           label="Appliquer la capacité max partout"
-          :disable="simulateStore.loading"
+          :disable="simulateStore.loading || scenarioDirty"
           @click="reduceAll"
         >
-          <q-tooltip>Réduit chaque sink à son débit max faisable puis re-valide la nomination.</q-tooltip>
+          <q-tooltip>
+            <span v-if="scenarioDirty">Nomination modifiée — re-validez avant de réduire.</span>
+            <span v-else>Réduit chaque sink à son débit max faisable puis re-valide la nomination.</span>
+          </q-tooltip>
         </q-btn>
         <q-btn
           v-if="hasReductions"
@@ -44,11 +52,12 @@
           color="primary"
           icon="save"
           label="Enregistrer la nomination réduite"
-          :disable="simulateStore.loading || !hasActiveScenario"
+          :disable="simulateStore.loading || !hasActiveScenario || scenarioDirty"
           @click="saveReduced"
         >
           <q-tooltip max-width="280px">
-            <span v-if="hasActiveScenario">
+            <span v-if="scenarioDirty">Nomination modifiée — re-validez avant d'enregistrer.</span>
+            <span v-else-if="hasActiveScenario">
               Sauvegarde les débits max faisables (exits) comme une nouvelle nomination .scn
               et la sélectionne. Nomination réduite mass-balancée sur entries à débit fixe :
               re-validez avant de certifier.
@@ -115,9 +124,11 @@
                 flat
                 color="secondary"
                 label="Réduire"
-                :disable="simulateStore.loading"
+                :disable="simulateStore.loading || scenarioDirty"
                 @click="$emit('reduce', r.sink_id, r.max_feasible_q_m3s)"
-              />
+              >
+                <q-tooltip v-if="scenarioDirty">Nomination modifiée — re-validez avant de réduire.</q-tooltip>
+              </q-btn>
               <q-icon v-else name="check" color="green-4" size="18px">
                 <q-tooltip>Tenue pression OK à la nomination.</q-tooltip>
               </q-icon>
@@ -143,6 +154,8 @@ const emit = defineEmits<{
 }>();
 
 const visible = computed(() => simulateStore.activeScenarioId !== null);
+
+const scenarioDirty = computed(() => simulateStore.scenarioDirty);
 
 const hasReductions = computed(() =>
   simulateStore.sinkCapacity.some((r) => r.feasible_fraction < 1),

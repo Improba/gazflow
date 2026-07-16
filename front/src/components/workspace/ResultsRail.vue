@@ -1,6 +1,18 @@
 <template>
   <template v-if="simulateStore.result">
     <div class="results-rail dark">
+      <q-banner
+        v-if="scenarioDirty"
+        dense
+        rounded
+        class="bg-amber-10 text-amber-2 q-mb-sm"
+      >
+        <template #avatar>
+          <q-icon name="info" />
+        </template>
+        Nomination modifiée — relancez pour re-valider la tenue pression.
+      </q-banner>
+
       <div
         data-section="verdict"
         class="nova-section q-mb-sm"

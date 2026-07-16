@@ -6,7 +6,7 @@
           <div class="text-h6">Rapport de certification NoVa</div>
           <div class="text-caption text-grey-5">
             {{ networkStore.activeNetwork ?? '—' }}
-            <span v-if="nominationStore.activeFilename"> · {{ nominationStore.activeFilename }}</span>
+            <span v-if="runNominationFilename"> · {{ runNominationFilename }}</span>
           </div>
         </div>
         <q-btn flat dense round icon="close" @click="close" />
@@ -33,7 +33,7 @@
         <div class="row q-gutter-md q-mb-md text-caption">
           <div><span class="text-grey-5">Date :</span> {{ reportDate }}</div>
           <div><span class="text-grey-5">Run :</span> {{ simulateStore.currentRunId ?? '—' }}</div>
-          <div><span class="text-grey-5">Nomination :</span> {{ nominationStore.activeFilename ?? '—' }}</div>
+          <div><span class="text-grey-5">Nomination :</span> {{ runNominationFilename ?? '—' }}</div>
         </div>
 
         <div class="text-subtitle2 q-mb-xs">Points de livraison en déficit ({{ deficitCount }})</div>
@@ -153,6 +153,12 @@ const networkStore = useNetworkStore();
 const nominationStore = useNominationStore();
 const simulateStore = useSimulateStore();
 
+const runNominationFilename = computed(() => {
+  const id = simulateStore.activeScenarioId;
+  if (!id) return null;
+  return nominationStore.list.find((s) => s.id === id)?.filename ?? id;
+});
+
 const verdict = computed(() => simulateStore.novaVerdict);
 const deficitCount = computed(() => simulateStore.sinkDiagnostics.length);
 const reportMargins = computed(() => simulateStore.pressureMargins.slice(0, 25));
@@ -268,13 +274,17 @@ interface CertificationReport {
 }
 
 function buildReport(): CertificationReport {
+  const runId = simulateStore.activeScenarioId;
+  const runFilename = runId
+    ? nominationStore.list.find((s) => s.id === runId)?.filename ?? runId
+    : null;
   return {
     generated_at: new Date().toISOString(),
     run_id: simulateStore.currentRunId ?? null,
     network: networkStore.activeNetwork ?? null,
     nomination: {
-      id: nominationStore.activeId,
-      filename: nominationStore.activeFilename,
+      id: runId,
+      filename: runFilename,
     },
     verdict: verdict.value
       ? {
@@ -300,7 +310,7 @@ function exportJson() {
   const href = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = href;
-  const base = nominationStore.activeId ?? simulateStore.currentRunId ?? 'nova';
+  const base = simulateStore.activeScenarioId ?? simulateStore.currentRunId ?? 'nova';
   anchor.download = `rapport-certification-${base}.json`;
   document.body.appendChild(anchor);
   anchor.click();
