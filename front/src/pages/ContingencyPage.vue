@@ -289,17 +289,35 @@ function buildContingencyPayload(): ContingencyRequest {
   };
 }
 
-onMounted(() => {
-  if (nominationScenarioId.value && networkStore.nodes.length > 0) {
-    void runAnalysis();
+function maybeAutoRunAnalysis() {
+  if (
+    contingencyStore.loading ||
+    !nominationScenarioId.value ||
+    networkStore.nodes.length === 0
+  ) {
+    return;
   }
+  void runAnalysis();
+}
+
+onMounted(() => {
+  maybeAutoRunAnalysis();
 });
 
 watch(
   () => nominationScenarioId.value,
   (nextId, prevId) => {
-    if (nextId && nextId !== prevId && networkStore.nodes.length > 0) {
-      void runAnalysis();
+    if (nextId && nextId !== prevId) {
+      maybeAutoRunAnalysis();
+    }
+  },
+);
+
+watch(
+  () => networkStore.nodes.length,
+  (nextLen, prevLen) => {
+    if (nextLen > 0 && prevLen === 0) {
+      maybeAutoRunAnalysis();
     }
   },
 );

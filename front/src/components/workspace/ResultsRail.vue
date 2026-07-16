@@ -157,9 +157,7 @@ const simulateStore = useSimulateStore();
 const nominationStore = useNominationStore();
 const showReport = ref(false);
 
-const novaNominationId = computed(
-  () => simulateStore.activeScenarioId ?? nominationStore.activeId,
-);
+const novaNominationId = computed(() => nominationStore.activeId);
 
 const contingencyNominationLink = computed(() => ({
   name: 'contingency' as const,

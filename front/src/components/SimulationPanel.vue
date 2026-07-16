@@ -552,9 +552,7 @@ const comparePanelOpen = computed(() => route.query.compare === '1');
 const demandOverrides = ref<Record<string, number>>({});
 const equipmentOverrides = ref<Record<string, PipeEquipmentDto>>({});
 const novaScenarioId = computed(() => nominationStore.activeId);
-const novaNominationId = computed(
-  () => simulateStore.activeScenarioId ?? nominationStore.activeId,
-);
+const novaNominationId = computed(() => nominationStore.activeId);
 const contingencyNominationLink = computed(() => ({
   name: 'contingency' as const,
   query: novaNominationId.value ? { scenario_id: novaNominationId.value } : {},
