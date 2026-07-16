@@ -259,22 +259,6 @@
         class="q-mb-sm"
       />
 
-      <div class="row q-mb-sm">
-        <q-btn
-          v-if="simulateStore.novaActive"
-          dense
-          outline
-          color="primary"
-          icon="assignment_turned_in"
-          label="Rapport de certification"
-          class="full-width"
-          :disable="simulateStore.loading"
-          @click="showReport = true"
-        >
-          <q-tooltip>Verdict, points déficitaires et capacité — export PDF ou JSON.</q-tooltip>
-        </q-btn>
-      </div>
-
       <div
         data-section="verdict"
         class="nova-section q-mb-sm"
@@ -344,6 +328,20 @@
             />
           </div>
         </div>
+
+        <q-btn
+          v-if="simulateStore.novaActive"
+          dense
+          outline
+          color="primary"
+          icon="assignment_turned_in"
+          label="Rapport de certification"
+          class="full-width"
+          :disable="simulateStore.loading"
+          @click="showReport = true"
+        >
+          <q-tooltip>Verdict, points déficitaires et capacité — export PDF ou JSON.</q-tooltip>
+        </q-btn>
       </div>
 
       <div v-if="simulateStore.capacityViolations.length > 0" class="q-mt-md">
