@@ -512,26 +512,35 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                         .as_ref()
                                         .clone()
                                 };
-                                let resolved_demands = match super::resolve_contingency_demands(
-                                    &state,
-                                    &network,
-                                    scenario_id.as_deref(),
-                                    demands.as_ref(),
-                                ) {
-                                    Ok(demands) => demands,
-                                    Err((_, api_error)) => {
-                                        let _ = tx
-                                            .send(ServerMessage::Error {
-                                                run_id: run_id.clone(),
-                                                seq: 0,
-                                                message: api_error.0.error,
-                                                fatal: false,
-                                            })
-                                            .await;
-                                        continue;
-                                    }
-                                };
+                                let (resolved_demands, scenario) =
+                                    match super::resolve_contingency_demands(
+                                        &state,
+                                        &network,
+                                        scenario_id.as_deref(),
+                                        demands.as_ref(),
+                                    ) {
+                                        Ok(pair) => pair,
+                                        Err((_, api_error)) => {
+                                            let _ = tx
+                                                .send(ServerMessage::Error {
+                                                    run_id: run_id.clone(),
+                                                    seq: 0,
+                                                    message: api_error.0.error,
+                                                    fatal: false,
+                                                })
+                                                .await;
+                                            continue;
+                                        }
+                                    };
                                 let demands = resolved_demands;
+                                let network_for_solve = scenario
+                                    .as_ref()
+                                    .map(|sc| {
+                                        crate::gaslib::network_with_scenario_boundaries_for_nova(
+                                            &network, sc,
+                                        )
+                                    })
+                                    .unwrap_or_else(|| network.clone());
                                 let cases =
                                     match super::resolve_contingency_cases(&network, scope, custom_cases)
                                     {
@@ -587,7 +596,7 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                     let _permit = permit;
                                     run_contingency_stream(ContingencyStreamContext {
                                         state: state_for_solver,
-                                        network: Arc::new(network),
+                                        network: Arc::new(network_for_solve),
                                         demands,
                                         cases,
                                         run_id,

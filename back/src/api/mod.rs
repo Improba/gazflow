@@ -1235,7 +1235,7 @@ pub(crate) fn resolve_contingency_demands(
     network: &GasNetwork,
     scenario_id: Option<&str>,
     body_demands: Option<&HashMap<String, f64>>,
-) -> Result<HashMap<String, f64>, (StatusCode, Json<ApiError>)> {
+) -> Result<(HashMap<String, f64>, Option<gaslib::ScenarioDemands>), (StatusCode, Json<ApiError>)> {
     if let Some(scenario_id) = scenario_id {
         let dataset_id = active_dataset_id(state);
         let mut scenario = load_scenario_demands_by_id(state, &dataset_id, scenario_id).map_err(
@@ -1247,16 +1247,23 @@ pub(crate) fn resolve_contingency_demands(
             },
         )?;
         gaslib::enrich_scenario_with_balance_hub(network, &mut scenario);
-        return Ok(gaslib::effective_solver_demands_for_network(
+        let mut base = gaslib::effective_solver_demands_for_network(
             network,
             &scenario.demands,
             &scenario,
-        ));
+        );
+        if let Some(overrides) = body_demands {
+            for (key, value) in overrides {
+                base.insert(key.clone(), *value);
+            }
+        }
+        Ok((base, Some(scenario)))
+    } else {
+        let demands = body_demands
+            .cloned()
+            .unwrap_or_else(|| (*active_default_demands(state)).clone());
+        Ok((demands, None))
     }
-    if let Some(demands) = body_demands {
-        return Ok(demands.clone());
-    }
-    Ok((*active_default_demands(state)).clone())
 }
 
 async fn compute_contingency_report(
@@ -1264,13 +1271,16 @@ async fn compute_contingency_report(
     payload: ContingencyRequest,
 ) -> Result<solver::ContingencyReport, (StatusCode, Json<ApiError>)> {
     let network = active_network(state);
-    let demands = resolve_contingency_demands(
+    let (demands, scenario) = resolve_contingency_demands(
         state,
         &network,
         payload.scenario_id.as_deref(),
         payload.demands.as_ref(),
     )?;
-    let network_for_solve = network.clone();
+    let network_for_solve = scenario
+        .as_ref()
+        .map(|sc| gaslib::network_with_scenario_boundaries_for_nova(&network, sc))
+        .unwrap_or_else(|| (*network).clone());
     let cases = resolve_contingency_cases(&network, payload.scope, payload.custom_cases)?;
 
     let permit = state
@@ -2135,14 +2145,17 @@ mod tests {
         let network = contingency_test_network();
         let state = contingency_test_state(network.clone(), defaults, tmp.clone());
 
-        let resolved = resolve_contingency_demands(&state, &network, None, None)
+        let (resolved, scenario) = resolve_contingency_demands(&state, &network, None, None)
             .expect("defaults");
+        assert!(scenario.is_none());
         assert_eq!(resolved.get("sink").copied(), Some(-5.0));
 
         let mut body = HashMap::new();
         body.insert("sink".to_string(), -12.0);
-        let resolved = resolve_contingency_demands(&state, &network, None, Some(&body))
-            .expect("body demands");
+        let (resolved, scenario) =
+            resolve_contingency_demands(&state, &network, None, Some(&body))
+                .expect("body demands");
+        assert!(scenario.is_none());
         assert_eq!(resolved.get("sink").copied(), Some(-12.0));
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -2166,11 +2179,128 @@ mod tests {
         let network = contingency_test_network();
         let state = contingency_test_state(network.clone(), defaults, tmp.clone());
 
-        let resolved =
-            resolve_contingency_demands(&state, &network, Some("ct_nom"), None).expect("scenario");
+        let (resolved, scenario) =
+            resolve_contingency_demands(&state, &network, Some("ct_nom"), None)
+                .expect("scenario");
+        assert!(scenario.is_some());
         assert_eq!(resolved.get("sink").copied(), Some(-42.0));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_contingency_demands_with_scenario_id_merges_partial_client_overrides() {
+        let tmp = contingency_scratch_dir("ct-merge");
+        let scenario_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<boundaryValue>
+  <scenario id="ct_merge">
+    <node type="sink" id="sink_a">
+      <flow value="-30.0"/>
+    </node>
+    <node type="sink" id="sink_b">
+      <flow value="-20.0"/>
+    </node>
+  </scenario>
+</boundaryValue>"#;
+        std::fs::write(tmp.join("ct_merge.scn"), scenario_xml).unwrap();
+
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "source".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: Some(10.0),
+            lat: Some(50.0),
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+        for sink_id in ["sink_a", "sink_b"] {
+            net.add_node(Node {
+                id: sink_id.into(),
+                x: 1.0,
+                y: 0.0,
+                lon: Some(11.0),
+                lat: Some(50.0),
+                height_m: 0.0,
+                pressure_lower_bar: None,
+                pressure_upper_bar: None,
+                pressure_fixed_bar: None,
+                flow_min_m3s: None,
+                flow_max_m3s: None,
+            });
+        }
+        net.add_pipe(Pipe {
+            id: "p1".into(),
+            from: "source".into(),
+            to: "sink_a".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 10.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
+        });
+        net.add_pipe(Pipe {
+            id: "p2".into(),
+            from: "source".into(),
+            to: "sink_b".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 10.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
+        });
+
+        let defaults = HashMap::new();
+        let state = contingency_test_state(net.clone(), defaults, tmp.clone());
+
+        let mut overrides = HashMap::new();
+        overrides.insert("sink_a".to_string(), -1.0);
+        let (resolved, scenario) =
+            resolve_contingency_demands(&state, &net, Some("ct_merge"), Some(&overrides))
+                .expect("merged");
+        assert!(scenario.is_some());
+        assert_eq!(resolved.get("sink_a").copied(), Some(-1.0));
+        assert_eq!(resolved.get("sink_b").copied(), Some(-20.0));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn contingency_network_with_scenario_applies_contractual_envelope() {
+        let network = contingency_test_network();
+        let scenario = gaslib::ScenarioDemands {
+            scenario_id: Some("env".into()),
+            demands: HashMap::from([("sink".to_string(), -5.0)]),
+            pressure_slack: None,
+            balance_hubs: Vec::new(),
+            junction_anchors: Vec::new(),
+            boundary_spine_anchors: Vec::new(),
+            mass_balance_anchors: Vec::new(),
+            zero_flow_boundary_anchors: Vec::new(),
+            contract_flow_relaxed: Vec::new(),
+            contract_pressure_anchors: Vec::new(),
+            pressure_envelopes: vec![gaslib::ScenarioPressureEnvelope {
+                node_id: "sink".to_string(),
+                lower_bar: Some(80.0),
+                upper_bar: Some(120.0),
+            }],
+        };
+        let prepared = gaslib::network_with_scenario_boundaries_for_nova(&network, &scenario);
+        let sink = prepared.nodes().find(|n| n.id == "sink").expect("sink");
+        assert_eq!(sink.pressure_lower_bar, Some(80.0));
+        assert!(prepared.scenario_pressure_envelope_nodes.contains("sink"));
     }
 
     #[tokio::test]
