@@ -1535,6 +1535,125 @@ fn replace_flow_values_in_node_block(node_block: &str, q_m3s: f64) -> String {
     out
 }
 
+const FLOW_BALANCE_EPS_M3S: f64 = 1e-6;
+
+fn scn_flow_unit_default(unit: Option<&str>) -> &str {
+    unit.unwrap_or("1000m_cube_per_hour")
+}
+
+fn flow_value_m3s_from_tag(flow_tag: &str) -> Option<f64> {
+    let value = extract_xml_attr(flow_tag, "value")?.parse::<f64>().ok()?;
+    let unit = extract_xml_attr(flow_tag, "unit");
+    Some(convert_flow_to_m3_per_s(
+        value,
+        Some(scn_flow_unit_default(unit.as_deref())),
+    ))
+}
+
+fn extract_flow_bounds_m3s_from_node_block(node_block: &str) -> (Option<f64>, Option<f64>) {
+    let mut lower = None;
+    let mut upper = None;
+    let mut pos = 0;
+    while pos < node_block.len() {
+        let Some(flow_start) = node_block[pos..].find("<flow") else {
+            break;
+        };
+        let abs_flow = pos + flow_start;
+        let tag_end = node_block[abs_flow..]
+            .find('>')
+            .map(|i| abs_flow + i + 1)
+            .unwrap_or(node_block.len());
+        let flow_tag = &node_block[abs_flow..tag_end];
+        let Some(value_m3s) = flow_value_m3s_from_tag(flow_tag) else {
+            pos = tag_end;
+            continue;
+        };
+        match extract_xml_attr(flow_tag, "bound").as_deref() {
+            Some("lower") => lower = Some(value_m3s),
+            Some("upper") => upper = Some(value_m3s),
+            Some("both") => {
+                lower = Some(value_m3s);
+                upper = Some(value_m3s);
+            }
+            _ => {}
+        }
+        pos = tag_end;
+    }
+    (lower, upper)
+}
+
+fn nominal_flow_m3s_from_node_block(node_block: &str) -> Option<f64> {
+    let (lower, upper) = extract_flow_bounds_m3s_from_node_block(node_block);
+    match (lower, upper) {
+        (Some(l), Some(u)) => Some((l + u) / 2.0),
+        (Some(l), None) => Some(l),
+        (None, Some(u)) => Some(u),
+        (None, None) => None,
+    }
+}
+
+fn is_fixed_flow_node_block(node_block: &str) -> bool {
+    let (lower, upper) = extract_flow_bounds_m3s_from_node_block(node_block);
+    match (lower, upper) {
+        (Some(l), Some(u)) => (l - u).abs() < FLOW_BALANCE_EPS_M3S,
+        _ => false,
+    }
+}
+
+fn compute_exit_rebalance_factor(
+    base_xml: &str,
+    reduced_demands: &HashMap<String, f64>,
+) -> f64 {
+    let mut sum_exit_nominal = 0.0;
+    let mut sum_exit_reduced = 0.0;
+    let mut pos = 0;
+
+    while pos < base_xml.len() {
+        let Some(node_start) = base_xml[pos..].find("<node") else {
+            break;
+        };
+        let abs_start = pos + node_start;
+        let open_end = base_xml[abs_start..]
+            .find('>')
+            .map(|i| abs_start + i + 1)
+            .unwrap_or(base_xml.len());
+        let open_tag = &base_xml[abs_start..open_end];
+        if open_tag.ends_with("/>") {
+            pos = open_end;
+            continue;
+        }
+        let close_tag = "</node>";
+        let Some(close_rel) = base_xml[open_end..].find(close_tag) else {
+            break;
+        };
+        let close_pos = open_end + close_rel + close_tag.len();
+        let node_block = &base_xml[abs_start..close_pos];
+        let node_id = extract_xml_attr(open_tag, "id");
+        let node_type = extract_xml_attr(open_tag, "type");
+
+        if node_type.as_deref() == Some("exit") {
+            if let Some(q_nom_m3s) = nominal_flow_m3s_from_node_block(node_block) {
+                let abs_nom = q_nom_m3s.abs();
+                sum_exit_nominal += abs_nom;
+                let abs_red = node_id
+                    .as_ref()
+                    .and_then(|id| reduced_demands.get(id))
+                    .map(|q| q.abs())
+                    .unwrap_or(abs_nom);
+                sum_exit_reduced += abs_red;
+            }
+        }
+
+        pos = close_pos;
+    }
+
+    if sum_exit_nominal < FLOW_BALANCE_EPS_M3S {
+        1.0
+    } else {
+        sum_exit_reduced / sum_exit_nominal
+    }
+}
+
 /// Substitute exit-node flow lower/upper bounds in a base `.scn` XML.
 /// `reduced_demands` values are Nm³/s (signed or absolute); only listed exit ids are touched.
 pub fn apply_reduced_demands_to_scn_xml(
@@ -1544,6 +1663,8 @@ pub fn apply_reduced_demands_to_scn_xml(
     if reduced_demands.is_empty() {
         anyhow::bail!("reduced_demands must not be empty");
     }
+
+    let entry_scale = compute_exit_rebalance_factor(base_xml, reduced_demands);
 
     let mut result = String::with_capacity(base_xml.len());
     let mut pos = 0;
@@ -1586,6 +1707,15 @@ pub fn apply_reduced_demands_to_scn_xml(
                     touched_ids.insert(id.clone());
                 }
             }
+        } else if node_type.as_deref() == Some("entry") && (entry_scale - 1.0).abs() > FLOW_BALANCE_EPS_M3S
+        {
+            if let Some(q_nom_m3s) = nominal_flow_m3s_from_node_block(&node_block) {
+                if q_nom_m3s.abs() > FLOW_BALANCE_EPS_M3S && is_fixed_flow_node_block(&node_block)
+                {
+                    node_block =
+                        replace_flow_values_in_node_block(&node_block, q_nom_m3s * entry_scale);
+                }
+            }
         }
 
         result.push_str(&node_block);
@@ -1620,8 +1750,8 @@ mod tests {
 <boundaryValue xmlns="http://gaslib.zib.de/Gas">
   <scenario id="base">
     <node type="entry" id="entry01">
-      <flow bound="lower" value="160.00" unit="1000m_cube_per_hour"/>
-      <flow bound="upper" value="160.00" unit="1000m_cube_per_hour"/>
+      <flow bound="lower" value="100.00" unit="1000m_cube_per_hour"/>
+      <flow bound="upper" value="100.00" unit="1000m_cube_per_hour"/>
     </node>
     <node type="exit" id="exit01">
       <flow bound="lower" value="100.00" unit="1000m_cube_per_hour"/>
@@ -1635,8 +1765,46 @@ mod tests {
         let patched = apply_reduced_demands_to_scn_xml(xml, &reduced).expect("patch");
         let parsed = parse_scenario_demands_from_str(&patched).expect("re-parse");
         assert!((parsed.demands["exit01"] + 25.0).abs() < 1e-6);
-        assert!((parsed.demands["entry01"] - 44.444_444_444).abs() < 1e-6);
+        assert!((parsed.demands["entry01"] - 25.0).abs() < 1e-6);
         assert!(patched.contains(r#"value="90.0000""#));
+        let sum: f64 = parsed.demands.values().sum();
+        assert!(sum.abs() < 1e-6, "global balance sum={sum}");
+    }
+
+    #[test]
+    fn test_apply_reduced_demands_mass_balance_multi_exit() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<boundaryValue xmlns="http://gaslib.zib.de/Gas">
+  <scenario id="base">
+    <node type="entry" id="entry01">
+      <flow bound="lower" value="200.00" unit="1000m_cube_per_hour"/>
+      <flow bound="upper" value="200.00" unit="1000m_cube_per_hour"/>
+    </node>
+    <node type="entry" id="entry02">
+      <flow bound="lower" value="0.00" unit="1000m_cube_per_hour"/>
+      <flow bound="upper" value="0.00" unit="1000m_cube_per_hour"/>
+    </node>
+    <node type="exit" id="exit01">
+      <flow bound="lower" value="100.00" unit="1000m_cube_per_hour"/>
+      <flow bound="upper" value="100.00" unit="1000m_cube_per_hour"/>
+    </node>
+    <node type="exit" id="exit02">
+      <flow bound="lower" value="100.00" unit="1000m_cube_per_hour"/>
+      <flow bound="upper" value="100.00" unit="1000m_cube_per_hour"/>
+    </node>
+  </scenario>
+</boundaryValue>"#;
+        let mut reduced = HashMap::new();
+        reduced.insert("exit01".to_string(), -20.0);
+        let patched = apply_reduced_demands_to_scn_xml(xml, &reduced).expect("patch");
+        let parsed = parse_scenario_demands_from_str(&patched).expect("re-parse");
+        let exit_sum: f64 = ["exit01", "exit02"]
+            .iter()
+            .map(|id| parsed.demands[*id].abs())
+            .sum();
+        let entry_sum: f64 = parsed.demands["entry01"];
+        assert!((entry_sum - exit_sum).abs() < 1e-6);
+        assert!((parsed.demands["entry02"]).abs() < 1e-6);
     }
 
     #[test]
