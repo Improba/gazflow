@@ -784,6 +784,15 @@ export const api = {
     return data;
   },
 
+  async saveReducedNovaNomination(payload: {
+    base_scenario_id: string;
+    reduced_demands: Record<string, number>;
+    filename?: string;
+  }): Promise<NovaScenarioSummary> {
+    const { data } = await client.post<NovaScenarioSummary>('/nova/nominations/reduced', payload);
+    return data;
+  },
+
   async deleteNovaNomination(id: string): Promise<void> {
     await client.delete(`/nova/nominations/${encodeURIComponent(id)}`);
   },

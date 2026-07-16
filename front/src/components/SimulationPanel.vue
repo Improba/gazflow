@@ -301,6 +301,7 @@
           @run-study="runCapacityStudy"
           @reduce="onReduceSink"
           @reduce-all="onReduceAll"
+          @save-reduced="onSaveReduced"
         />
         <SinkDiagnosticPopover @reduce="onReduceSink" @run-study="runCapacityStudy" />
       </div>
@@ -763,6 +764,12 @@ function onReduceAll() {
   }
   demandOverrides.value = next;
   startSimulation();
+}
+
+function onSaveReduced(demands: Record<string, number>) {
+  const baseId = novaScenarioId.value;
+  if (!baseId) return;
+  void nominationStore.saveReduced(baseId, demands);
 }
 
 function startSimulation() {

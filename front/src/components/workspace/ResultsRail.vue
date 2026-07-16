@@ -43,6 +43,7 @@
           @run-study="emit('run-study')"
           @reduce="(sinkId, maxFeasibleQ) => emit('reduce', sinkId, maxFeasibleQ)"
           @reduce-all="emit('reduce-all')"
+          @save-reduced="(demands) => emit('save-reduced', demands)"
         />
       </div>
 
@@ -179,6 +180,7 @@ const emit = defineEmits<{
   (e: 'run-study'): void;
   (e: 'reduce', sinkId: string, maxFeasibleQ: number): void;
   (e: 'reduce-all'): void;
+  (e: 'save-reduced', demands: Record<string, number>): void;
 }>();
 
 const exportFormats = [

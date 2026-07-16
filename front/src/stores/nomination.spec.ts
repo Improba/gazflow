@@ -6,15 +6,26 @@ const apiSpies = vi.hoisted(() => ({
     { id: 'nomination_mild_618', filename: 'nomination_mild_618.scn', relative_path: 'Nominations-582/nomination_mild_618.scn' },
     { id: 'GasLib-582', filename: 'GasLib-582.scn', relative_path: 'GasLib-582.scn' },
   ]),
+  saveReducedNovaNomination: vi.fn(async () => ({
+    id: 'imported-nomination_mild_618_reduit-123',
+    filename: 'nomination_mild_618_reduit.scn',
+    relative_path: '',
+    source: 'imported',
+  })),
 }));
 
 const networkStoreMock = vi.hoisted(() => ({
   activeNetwork: null as string | null,
 }));
 
+vi.mock('quasar', () => ({
+  Notify: { create: vi.fn() },
+}));
+
 vi.mock('src/services/api', () => ({
   api: {
     listNovaScenarios: apiSpies.listNovaScenarios,
+    saveReducedNovaNomination: apiSpies.saveReducedNovaNomination,
   },
 }));
 
@@ -85,5 +96,26 @@ describe('useNominationStore', () => {
     const store = useNominationStore();
     expect(store.activeId).toBeNull();
     expect(store.activeFilename).toBeNull();
+  });
+
+  it('saveReduced calls API, reloads list and selects the new nomination', async () => {
+    const store = useNominationStore();
+    await store.load();
+    store.selectById('nomination_mild_618');
+
+    apiSpies.listNovaScenarios.mockResolvedValueOnce([
+      { id: 'nomination_mild_618', filename: 'nomination_mild_618.scn', relative_path: 'Nominations-582/nomination_mild_618.scn' },
+      { id: 'imported-nomination_mild_618_reduit-123', filename: 'nomination_mild_618_reduit.scn', relative_path: '', source: 'imported' },
+    ]);
+
+    const demands = { exit01: -12.5 };
+    await store.saveReduced('nomination_mild_618', demands);
+
+    expect(apiSpies.saveReducedNovaNomination).toHaveBeenCalledWith({
+      base_scenario_id: 'nomination_mild_618',
+      reduced_demands: demands,
+    });
+    expect(store.activeId).toBe('imported-nomination_mild_618_reduit-123');
+    expect(store.activeFilename).toBe('nomination_mild_618_reduit.scn');
   });
 });

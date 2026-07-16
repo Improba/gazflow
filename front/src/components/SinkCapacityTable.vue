@@ -37,6 +37,20 @@
         >
           <q-tooltip>Réduit chaque sink à son débit max faisable puis re-valide la nomination.</q-tooltip>
         </q-btn>
+        <q-btn
+          v-if="hasReductions"
+          dense
+          outline
+          color="primary"
+          icon="save"
+          label="Enregistrer la nomination réduite"
+          :disable="simulateStore.loading"
+          @click="saveReduced"
+        >
+          <q-tooltip max-width="280px">
+            Sauvegarde les débits max faisables comme une nouvelle nomination .scn et la sélectionne.
+          </q-tooltip>
+        </q-btn>
       </div>
 
       <q-banner
@@ -118,6 +132,7 @@ const emit = defineEmits<{
   (e: 'run-study'): void;
   (e: 'reduce', sinkId: string, maxFeasibleQ: number): void;
   (e: 'reduce-all'): void;
+  (e: 'save-reduced', demands: Record<string, number>): void;
 }>();
 
 const visible = computed(() => simulateStore.activeScenarioId !== null);
@@ -128,6 +143,16 @@ const hasReductions = computed(() =>
 
 function reduceAll() {
   emit('reduce-all');
+}
+
+function saveReduced() {
+  const demands: Record<string, number> = {};
+  for (const r of simulateStore.sinkCapacity) {
+    if (r.feasible_fraction < 1) {
+      demands[r.sink_id] = -Math.abs(r.max_feasible_q_m3s);
+    }
+  }
+  emit('save-reduced', demands);
 }
 
 function formatQ(value: number): string {

@@ -103,6 +103,7 @@
           @run-study="onRunStudy"
           @reduce="onReduce"
           @reduce-all="onReduceAll"
+          @save-reduced="onSaveReduced"
         />
       </aside>
     </div>
@@ -121,6 +122,7 @@ import ResultsRail from 'src/components/workspace/ResultsRail.vue';
 import { useDemo } from 'src/composables/useDemo';
 import { useNovaWorkflow } from 'src/composables/useNovaWorkflow';
 import { useNetworkStore } from 'src/stores/network';
+import { useNominationStore } from 'src/stores/nomination';
 import { useSimulateStore } from 'src/stores/simulate';
 
 type WorkspaceView = 'schematic' | 'profile' | 'table';
@@ -128,6 +130,7 @@ type WorkspaceView = 'schematic' | 'profile' | 'table';
 const router = useRouter();
 const $q = useQuasar();
 const networkStore = useNetworkStore();
+const nominationStore = useNominationStore();
 const simulateStore = useSimulateStore();
 const { isLoadingDemo, launchDemo } = useDemo();
 const { enabled: novaWorkflowEnabled, currentStep: novaCurrentStep } = useNovaWorkflow();
@@ -181,6 +184,12 @@ function onReduce(_sinkId: string, _maxFeasibleQ: number): void {
 
 function onReduceAll(): void {
   notifyReduceFromMap();
+}
+
+function onSaveReduced(demands: Record<string, number>): void {
+  const baseId = nominationStore.activeId;
+  if (!baseId) return;
+  void nominationStore.saveReduced(baseId, demands);
 }
 </script>
 
