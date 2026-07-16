@@ -1467,9 +1467,15 @@ fn convert_flow_to_m3_per_s(value: f64, unit: Option<&str>) -> f64 {
     }
 }
 
-/// Nm³/s → valeur `.scn` en unités `1000m_cube_per_hour` (débit positif).
-fn m3_per_s_to_1000m3_per_h(q_m3s: f64) -> f64 {
-    q_m3s.abs() * 3.6
+/// Nm³/s → valeur `.scn` dans l'unité native (débit positif).
+fn m3_per_s_to_scn_flow(q_m3s: f64, unit: Option<&str>) -> f64 {
+    let abs_q = q_m3s.abs();
+    match unit.unwrap_or("1000m_cube_per_hour") {
+        "1000m_cube_per_hour" => abs_q * 3.6,
+        "m_cube_per_hour" => abs_q * 3600.0,
+        "m_cube_per_second" => abs_q,
+        _ => abs_q * 3.6,
+    }
 }
 
 fn format_scn_flow_value(value: f64) -> String {
@@ -1489,7 +1495,7 @@ fn extract_xml_attr(tag: &str, name: &str) -> Option<String> {
     None
 }
 
-fn replace_flow_values_in_node_block(node_block: &str, new_value: &str) -> String {
+fn replace_flow_values_in_node_block(node_block: &str, q_m3s: f64) -> String {
     let mut out = String::with_capacity(node_block.len());
     let mut pos = 0;
     while pos < node_block.len() {
@@ -1504,6 +1510,8 @@ fn replace_flow_values_in_node_block(node_block: &str, new_value: &str) -> Strin
             .map(|i| abs_flow + i + 1)
             .unwrap_or(node_block.len());
         let flow_tag = &node_block[abs_flow..tag_end];
+        let unit = extract_xml_attr(flow_tag, "unit");
+        let new_value = format_scn_flow_value(m3_per_s_to_scn_flow(q_m3s, unit.as_deref()));
         let replaced = if let Some(value_start) = flow_tag.find("value=") {
             let after = &flow_tag[value_start + 6..];
             let quote = after.chars().next().unwrap_or('"');
@@ -1574,8 +1582,7 @@ pub fn apply_reduced_demands_to_scn_xml(
         if node_type.as_deref() == Some("exit") {
             if let Some(ref id) = node_id {
                 if let Some(&q_m3s) = reduced_demands.get(id) {
-                    let flow_val = format_scn_flow_value(m3_per_s_to_1000m3_per_h(q_m3s));
-                    node_block = replace_flow_values_in_node_block(&node_block, &flow_val);
+                    node_block = replace_flow_values_in_node_block(&node_block, q_m3s);
                     touched_ids.insert(id.clone());
                 }
             }
@@ -2186,5 +2193,46 @@ mod tests {
         assert!((v1 - (1000.0 / 3600.0)).abs() < 1e-12);
         assert!((v2 - 1.0).abs() < 1e-12);
         assert!((v3 - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_m3_per_s_to_scn_flow_units() {
+        let q = 1.0;
+        assert!((m3_per_s_to_scn_flow(q, Some("1000m_cube_per_hour")) - 3.6).abs() < 1e-12);
+        assert!((m3_per_s_to_scn_flow(q, Some("m_cube_per_hour")) - 3600.0).abs() < 1e-12);
+        assert!((m3_per_s_to_scn_flow(q, Some("m_cube_per_second")) - 1.0).abs() < 1e-12);
+        assert!((m3_per_s_to_scn_flow(q, None) - 3.6).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_replace_flow_values_preserves_native_unit() {
+        let xml_1000 = r#"<node type="exit" id="e1">
+      <flow bound="lower" value="100.00" unit="1000m_cube_per_hour"/>
+      <flow bound="upper" value="100.00" unit="1000m_cube_per_hour"/>
+    </node>"#;
+        let patched = replace_flow_values_in_node_block(xml_1000, -25.0);
+        assert!(patched.contains(r#"unit="1000m_cube_per_hour""#));
+        assert!(patched.contains(r#"value="90.0000""#));
+
+        let xml_m3h = r#"<node type="exit" id="e2">
+      <flow bound="both" value="36000.00" unit="m_cube_per_hour"/>
+    </node>"#;
+        let patched = replace_flow_values_in_node_block(xml_m3h, -10.0);
+        assert!(patched.contains(r#"unit="m_cube_per_hour""#));
+        assert!(patched.contains(r#"value="36000.0000""#));
+
+        let xml_m3s = r#"<node type="exit" id="e3">
+      <flow bound="both" value="5.00" unit="m_cube_per_second"/>
+    </node>"#;
+        let patched = replace_flow_values_in_node_block(xml_m3s, -2.5);
+        assert!(patched.contains(r#"unit="m_cube_per_second""#));
+        assert!(patched.contains(r#"value="2.5000""#));
+
+        let xml_default = r#"<node type="exit" id="e4">
+      <flow bound="both" value="90.00"/>
+    </node>"#;
+        let patched = replace_flow_values_in_node_block(xml_default, -25.0);
+        assert!(!patched.contains("unit="));
+        assert!(patched.contains(r#"value="90.0000""#));
     }
 }
