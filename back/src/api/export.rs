@@ -1192,6 +1192,8 @@ mod tests {
             gas_composition: Arc::new(RwLock::new(super::super::solver::GasComposition::default())),
             scenario_repo: crate::store::ScenarioRepo::open(None).expect("in-memory repo"),
             scenario_baselines: Arc::new(RwLock::new(HashMap::new())),
+            compressor_map_mode_override: Arc::new(RwLock::new(None)),
+            last_simulation: Arc::new(RwLock::new(None)),
         })
     }
 

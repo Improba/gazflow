@@ -1,6 +1,8 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use anyhow::{Result, anyhow, bail};
+use serde::Serialize;
 
 use crate::compressor::{
     CompressorCatalog, CompressorOperatingContext, effective_ratio_with_nominal_for_mode,
@@ -40,22 +42,116 @@ pub enum CompressorMapMode {
     Biquadratic,
 }
 
-pub fn compressor_map_mode() -> CompressorMapMode {
+impl CompressorMapMode {
+    pub fn api_label(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Measurement => "measurement",
+            Self::Biquadratic => "biquadratic",
+        }
+    }
+
+    pub fn parse_api(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "legacy" => Some(Self::Legacy),
+            "measurement" => Some(Self::Measurement),
+            "biquadratic" => Some(Self::Biquadratic),
+            _ => None,
+        }
+    }
+}
+
+thread_local! {
+    static SESSION_COMPRESSOR_MAP_MODE: RefCell<Option<CompressorMapMode>> =
+        const { RefCell::new(None) };
+}
+
+/// Override session pour `compressor_map_mode()` sans `set_var` sur l'environnement.
+pub fn set_thread_compressor_map_mode_override(mode: Option<CompressorMapMode>) {
+    SESSION_COMPRESSOR_MAP_MODE.with(|slot| *slot.borrow_mut() = mode);
+}
+
+pub fn thread_compressor_map_mode_override() -> Option<CompressorMapMode> {
+    SESSION_COMPRESSOR_MAP_MODE.with(|slot| *slot.borrow())
+}
+
+pub fn compressor_map_mode_from_env() -> CompressorMapMode {
     let Some(raw) = std::env::var("GAZFLOW_COMPRESSOR_MAP_MODE").ok() else {
         return CompressorMapMode::Legacy;
     };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "legacy" => CompressorMapMode::Legacy,
-        "measurement" => CompressorMapMode::Measurement,
-        "biquadratic" => CompressorMapMode::Biquadratic,
-        other => {
-            tracing::warn!(
-                mode = other,
-                "unknown GAZFLOW_COMPRESSOR_MAP_MODE, falling back to legacy"
-            );
-            CompressorMapMode::Legacy
-        }
+    CompressorMapMode::parse_api(&raw).unwrap_or_else(|| {
+        tracing::warn!(
+            mode = raw.as_str(),
+            "unknown GAZFLOW_COMPRESSOR_MAP_MODE, falling back to legacy"
+        );
+        CompressorMapMode::Legacy
+    })
+}
+
+pub fn compressor_map_mode() -> CompressorMapMode {
+    if let Some(mode) = thread_compressor_map_mode_override() {
+        return mode;
     }
+    compressor_map_mode_from_env()
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CompressorOperatingPoint {
+    pub station_id: String,
+    pub q_m3s: f64,
+    pub ratio: f64,
+    pub p_in_bar: f64,
+    pub p_out_bar: f64,
+}
+
+/// Points de fonctionnement compresseur pour l'API (réseau + dernier résultat solveur).
+pub fn compressor_operating_points(
+    network: &GasNetwork,
+    result: &SolverResult,
+    demands: &HashMap<String, f64>,
+    demand_scale: f64,
+) -> Vec<CompressorOperatingPoint> {
+    let prefer_estimated = prefer_estimated_flow_for_map(result, 1e-6);
+    let mut points = Vec::new();
+    for pipe in network.pipes() {
+        if pipe.kind != ConnectionKind::CompressorStation || !pipe.hydraulically_active() {
+            continue;
+        }
+        let q_m3s = effective_flow_for_map_update(
+            network,
+            result,
+            network
+                .pipes()
+                .filter(|p| p.kind == ConnectionKind::CompressorStation && p.hydraulically_active())
+                .count(),
+            demands,
+            pipe,
+            demand_scale,
+            prefer_estimated,
+        );
+        let p_in_bar = map_inlet_pressure_bar(pipe, result);
+        let p_out_solved = result.pressures.get(&pipe.to).copied().unwrap_or(0.0);
+        let ratio_coeff = pipe.compressor_ratio_max.unwrap_or(1.08);
+        let p_out_bar = if p_out_solved > 1.0 {
+            p_out_solved
+        } else {
+            p_in_bar * ratio_coeff
+        };
+        let ratio = if p_in_bar > 1e-6 {
+            (p_out_bar / p_in_bar).clamp(MIN_COMPRESSOR_RATIO, MAX_COMPRESSOR_RATIO)
+        } else {
+            ratio_coeff
+        };
+        points.push(CompressorOperatingPoint {
+            station_id: pipe.id.clone(),
+            q_m3s,
+            ratio,
+            p_in_bar,
+            p_out_bar,
+        });
+    }
+    points.sort_by(|a, b| a.station_id.cmp(&b.station_id));
+    points
 }
 
 fn env_bool(name: &str, default: bool) -> bool {
@@ -1076,8 +1172,31 @@ mod tests {
 
     #[test]
     fn compressor_map_mode_parses_measurement() {
+        super::set_thread_compressor_map_mode_override(None);
         unsafe { std::env::set_var("GAZFLOW_COMPRESSOR_MAP_MODE", "measurement") };
         assert_eq!(super::compressor_map_mode(), CompressorMapMode::Measurement);
+        unsafe { std::env::remove_var("GAZFLOW_COMPRESSOR_MAP_MODE") };
+    }
+
+    #[test]
+    fn compressor_map_mode_parse_api_labels() {
+        assert_eq!(
+            CompressorMapMode::parse_api("biquadratic"),
+            Some(CompressorMapMode::Biquadratic)
+        );
+        assert_eq!(CompressorMapMode::parse_api("unknown"), None);
+        assert_eq!(
+            CompressorMapMode::Legacy.api_label(),
+            "legacy"
+        );
+    }
+
+    #[test]
+    fn compressor_map_mode_session_override_takes_precedence() {
+        unsafe { std::env::set_var("GAZFLOW_COMPRESSOR_MAP_MODE", "legacy") };
+        super::set_thread_compressor_map_mode_override(Some(CompressorMapMode::Measurement));
+        assert_eq!(super::compressor_map_mode(), CompressorMapMode::Measurement);
+        super::set_thread_compressor_map_mode_override(None);
         unsafe { std::env::remove_var("GAZFLOW_COMPRESSOR_MAP_MODE") };
     }
 

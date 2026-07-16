@@ -47,9 +47,11 @@ pub use control_valve_loop::{
 };
 pub use compressor_loop::{
     CompressorDecisionUpdate, CompressorDecisionUpdateStats, CompressorMapMode,
-    DecisionSinkDeficit, RatioUpdateStats, apply_compressor_decision_updates,
-    apply_map_ratios_after_continuation_step, compressor_accept_partial_enabled,
-    compressor_map_mode, estimate_station_norm_flow, estimated_compressor_map_flow_m3s,
+    CompressorOperatingPoint, DecisionSinkDeficit, RatioUpdateStats,
+    apply_compressor_decision_updates, apply_map_ratios_after_continuation_step,
+    compressor_accept_partial_enabled, compressor_map_mode, compressor_map_mode_from_env,
+    compressor_operating_points, estimate_station_norm_flow, estimated_compressor_map_flow_m3s,
+    set_thread_compressor_map_mode_override, thread_compressor_map_mode_override,
 };
 pub use demand::{ClientCategory, DemandProfile, normalize_daily_weights, resolve_demands};
 pub use gas_properties::GasComposition;

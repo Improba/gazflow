@@ -728,7 +728,9 @@ fn run_solver_stream(ctx: SolverStreamContext) {
     let preset_for_routing = options.solver_preset(network.node_count());
     let network_path = state.data_dir.join(format!("{network_id}.net"));
     let mut network_prepared = (*network).clone();
+    let state_for_mode = state.clone();
     let routing_outcome = state.rayon_pool.install(|| {
+        super::sync_compressor_map_mode_for_solve(&state_for_mode);
         crate::gaslib::resolve_and_apply_cdf_routing(
             &mut network_prepared,
             &network_path,
@@ -757,7 +759,9 @@ fn run_solver_stream(ctx: SolverStreamContext) {
     let outcome = match (&capacity_bounds, &mode) {
         (Some(api_bounds), Some(SimulationMode::Optimize)) => {
             let bounds = super::api_bounds_to_solver(api_bounds, &network_prepared);
+            let state_for_mode = state.clone();
             let result = state.rayon_pool.install(|| {
+                super::sync_compressor_map_mode_for_solve(&state_for_mode);
                 solver::capacity::solve_steady_state_constrained(
                     &network_prepared,
                     &demands,
@@ -779,7 +783,9 @@ fn run_solver_stream(ctx: SolverStreamContext) {
             let bounds = super::api_bounds_to_solver(api_bounds, &network_prepared);
             let preset = options.solver_preset(network_prepared.node_count());
             let gas = steady_config.gas_composition;
+            let state_for_mode = state.clone();
             let result = state.rayon_pool.install(|| {
+                super::sync_compressor_map_mode_for_solve(&state_for_mode);
                 solver::solve_steady_state_with_preset(
                     &network_prepared,
                     &demands,
@@ -804,7 +810,9 @@ fn run_solver_stream(ctx: SolverStreamContext) {
         _ => {
             let preset = options.solver_preset(network_prepared.node_count());
             let gas = steady_config.gas_composition;
+            let state_for_mode = state.clone();
             let result = state.rayon_pool.install(|| {
+                super::sync_compressor_map_mode_for_solve(&state_for_mode);
                 solver::solve_steady_state_with_preset(
                     &network_prepared,
                     &demands,
@@ -830,6 +838,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
 
     match outcome {
         SolveOutcome::Normal(Ok(final_result)) => {
+            super::store_last_simulation(&state, demands.clone(), final_result.clone());
             super::export::store_export_record(
                 &state,
                 super::export::new_export_record(
@@ -888,6 +897,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
             result: Ok(final_result),
             bounds,
         } => {
+            super::store_last_simulation(&state, demands.clone(), final_result.clone());
             let violations = solver::capacity::check_capacity_violations(
                 &network_prepared,
                 &final_result,
@@ -956,6 +966,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                 constrained.iterations,
                 constrained.residual,
             );
+            super::store_last_simulation(&state, demands.clone(), ws_result.clone());
             let ws_violations = constrained.capacity_violations.clone();
             let ws_adjusted = constrained.adjusted_demands.clone();
             let ws_active = constrained.active_bounds.clone();

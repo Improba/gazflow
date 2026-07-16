@@ -299,21 +299,17 @@ fn compressor_r2_cap_disabled_from_env() -> bool {
         return true;
     }
     matches!(
-        std::env::var("GAZFLOW_COMPRESSOR_MAP_MODE")
-            .ok()
-            .map(|v| v.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("measurement") | Some("biquadratic")
+        super::compressor_loop::compressor_map_mode(),
+        super::compressor_loop::CompressorMapMode::Measurement
+            | super::compressor_loop::CompressorMapMode::Biquadratic
     )
 }
 
 fn compressor_r2_cap_hybrid_until_converged() -> bool {
     let default = matches!(
-        std::env::var("GAZFLOW_COMPRESSOR_MAP_MODE")
-            .ok()
-            .map(|v| v.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("measurement") | Some("biquadratic")
+        super::compressor_loop::compressor_map_mode(),
+        super::compressor_loop::CompressorMapMode::Measurement
+            | super::compressor_loop::CompressorMapMode::Biquadratic
     );
     env_bool("GAZFLOW_COMPRESSOR_R2_CAP_UNTIL_CONVERGED", default)
 }

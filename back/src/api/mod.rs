@@ -25,6 +25,7 @@ use crate::store::ScenarioRepo;
 mod export;
 mod import;
 mod batch;
+mod compressor;
 mod network_edit;
 mod nova;
 mod nova_finalize;
@@ -60,6 +61,12 @@ impl GasPropertiesDto {
 }
 
 #[derive(Clone)]
+pub(crate) struct LastSimulationSnapshot {
+    pub demands: HashMap<String, f64>,
+    pub result: solver::SolverResult,
+}
+
+#[derive(Clone)]
 pub(crate) struct AppState {
     network: Arc<RwLock<Arc<GasNetwork>>>,
     default_demands: Arc<RwLock<Arc<HashMap<String, f64>>>>,
@@ -74,6 +81,8 @@ pub(crate) struct AppState {
     exports: Arc<RwLock<HashMap<String, export::ExportRecord>>>,
     scenario_repo: ScenarioRepo,
     scenario_baselines: scenarios::ScenarioBaselines,
+    compressor_map_mode_override: Arc<RwLock<Option<solver::CompressorMapMode>>>,
+    last_simulation: Arc<RwLock<Option<LastSimulationSnapshot>>>,
 }
 
 type SharedState = Arc<AppState>;
@@ -197,6 +206,8 @@ pub fn create_router_with_repo_and_datasets(
         exports: Arc::new(RwLock::new(HashMap::new())),
         scenario_repo,
         scenario_baselines: Arc::new(RwLock::new(HashMap::new())),
+        compressor_map_mode_override: Arc::new(RwLock::new(None)),
+        last_simulation: Arc::new(RwLock::new(None)),
     });
 
     let initial_network = shared
@@ -261,6 +272,11 @@ pub fn create_router_with_repo_and_datasets(
         .route(
             "/api/batch/runs/{id}",
             get(batch::get_batch_run).delete(batch::delete_batch_run),
+        )
+        .route("/api/compressor/map-mode", get(compressor::get_map_mode).put(compressor::put_map_mode))
+        .route(
+            "/api/compressor/operating-points",
+            get(compressor::get_operating_points),
         )
         .route(
             "/api/nova/nominations",
@@ -1236,6 +1252,7 @@ async fn run_simulation_with_demands(
     mode: Option<SimulationMode>,
 ) -> ApiResult<SimulationResponse> {
     let demands_for_export = demands.clone();
+    let demands_for_snapshot = demands.clone();
     let network = active_network(state);
     let network_for_solve = network.clone();
     let network_id = active_dataset_id(state);
@@ -1254,6 +1271,7 @@ async fn run_simulation_with_demands(
         })?;
     let pool = state.rayon_pool.clone();
     let gas_composition = active_gas_composition(state);
+    let state_for_store = state.clone();
     let started = std::time::Instant::now();
 
     let mut export_stored = false;
@@ -1261,9 +1279,11 @@ async fn run_simulation_with_demands(
         Some(ref api_bounds) if matches!(mode, Some(SimulationMode::Optimize)) => {
             let bounds = api_bounds_to_solver(api_bounds, &network_for_solve);
             let demands_clone = demands.clone();
+            let state_for_mode = state_for_store.clone();
             let constrained_result = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 pool.install(|| {
+                    sync_compressor_map_mode_for_solve(&state_for_mode);
                     solver::capacity::solve_steady_state_constrained(
                         &network_for_solve,
                         &demands_clone,
@@ -1319,9 +1339,11 @@ async fn run_simulation_with_demands(
         Some(ref api_bounds) => {
             let bounds = api_bounds_to_solver(api_bounds, &network_for_solve);
             let demands_for_check = demands.clone();
+            let state_for_mode = state_for_store.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 pool.install(|| {
+                    sync_compressor_map_mode_for_solve(&state_for_mode);
                     solve_rest_steady(&network_for_solve, &demands_for_check, gas_composition)
                 })
             })
@@ -1349,9 +1371,13 @@ async fn run_simulation_with_demands(
             resp
         }
         None => {
+            let state_for_mode = state_for_store.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                pool.install(|| solve_rest_steady(&network_for_solve, &demands, gas_composition))
+                pool.install(|| {
+                    sync_compressor_map_mode_for_solve(&state_for_mode);
+                    solve_rest_steady(&network_for_solve, &demands, gas_composition)
+                })
             })
             .await
             .map_err(|err| {
@@ -1401,6 +1427,14 @@ async fn run_simulation_with_demands(
         );
     }
 
+    let snapshot_result = solver::SolverResult::from_core(
+        response.pressures.clone(),
+        response.flows.clone(),
+        response.iterations,
+        response.residual,
+    );
+    store_last_simulation(state, demands_for_snapshot, snapshot_result);
+
     Ok(Json(response))
 }
 
@@ -1426,6 +1460,27 @@ fn active_dataset_id(state: &SharedState) -> String {
         .read()
         .expect("active dataset lock should not be poisoned")
         .clone()
+}
+
+pub(crate) fn sync_compressor_map_mode_for_solve(state: &SharedState) {
+    let override_mode = state
+        .compressor_map_mode_override
+        .read()
+        .expect("compressor map mode lock should not be poisoned")
+        .clone();
+    solver::set_thread_compressor_map_mode_override(override_mode);
+}
+
+pub(crate) fn store_last_simulation(
+    state: &SharedState,
+    demands: HashMap<String, f64>,
+    result: solver::SolverResult,
+) {
+    let mut guard = state
+        .last_simulation
+        .write()
+        .expect("last simulation lock should not be poisoned");
+    *guard = Some(LastSimulationSnapshot { demands, result });
 }
 
 /// Résolution unifiée d'un scénario `.scn` par id : d'abord les nominations importées
