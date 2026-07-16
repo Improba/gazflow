@@ -529,6 +529,7 @@ import {
 } from 'src/utils/novaLabels';
 import { equipmentKindLabel, regulatorModeLabel } from 'src/utils/equipmentLabels';
 import { runDemoCase } from 'src/utils/demoCase';
+import { deficitSinkIds } from 'src/utils/novaDeficitSinks';
 import { formatApiError } from 'src/utils/importError';
 
 const networkStore = useNetworkStore();
@@ -722,32 +723,67 @@ function focusFirstDeficit() {
   }
 }
 
-function deficitSinkIds(): string[] {
-  const fromDiagnostics = simulateStore.sinkDiagnostics.map((d) => d.node_id);
-  if (fromDiagnostics.length > 0) return fromDiagnostics;
-  return simulateStore.novaVerdict?.deficit_sinks ?? [];
+function runCapacityStudy() {
+  if (simulateStore.sinkCapacity.length > 0) {
+    void simulateStore.runSinkCapacity([]);
+    return;
+  }
+  void simulateStore.runSinkCapacity(
+    deficitSinkIds(simulateStore.sinkDiagnostics, simulateStore.novaVerdict),
+  );
 }
 
-function runCapacityStudy() {
-  void simulateStore.runSinkCapacity(deficitSinkIds());
+function reduceScenarioId(): string | null {
+  return simulateStore.activeScenarioId ?? nominationStore.activeId;
+}
+
+function buildReduceRunOptions() {
+  const scenarioId = reduceScenarioId();
+  const opts: WsStartOptions = {
+    gas_composition: { ...networkStore.gas.composition },
+  };
+  if (scenarioId) {
+    opts.scenario_id = scenarioId;
+  }
+  if (simulationMode.value !== 'free') {
+    opts.mode = simulationMode.value;
+    const bounds: Record<string, { min: number; max: number }> = {};
+    for (const node of networkStore.nodes) {
+      if (node.flow_min_m3s != null && node.flow_max_m3s != null) {
+        bounds[node.id] = { min: node.flow_min_m3s, max: node.flow_max_m3s };
+      }
+    }
+    opts.capacity_bounds = bounds;
+  }
+  return opts;
 }
 
 /** Overrides partiels : le backend fusionne sur les demandes du scénario actif. */
 function onReduceSink(sinkId: string, maxFeasibleQ: number) {
+  const demands = {
+    ...(simulateStore.lastInputDemands() ?? {}),
+    ...demandOverrides.value,
+    [sinkId]: -Math.abs(maxFeasibleQ),
+  };
   demandOverrides.value = { ...demandOverrides.value, [sinkId]: -Math.abs(maxFeasibleQ) };
-  startSimulation();
+  lastRunDemandKey.value = demandKey(demandOverrides.value);
+  void simulateStore.runSimulation(demands, buildReduceRunOptions(), equipmentOverrides.value);
 }
 
 /** Overrides partiels : le backend fusionne sur les demandes du scénario actif. */
 function onReduceAll() {
-  const next = { ...demandOverrides.value };
+  const next = {
+    ...(simulateStore.lastInputDemands() ?? {}),
+    ...demandOverrides.value,
+  };
   for (const r of simulateStore.sinkCapacity) {
     if (r.feasible_fraction < 1) {
       next[r.sink_id] = -Math.abs(r.max_feasible_q_m3s);
     }
   }
   demandOverrides.value = next;
-  startSimulation();
+  lastRunDemandKey.value = demandKey(demandOverrides.value);
+  void simulateStore.runSimulation(next, buildReduceRunOptions(), equipmentOverrides.value);
 }
 
 async function onSaveReduced(demands: Record<string, number>) {

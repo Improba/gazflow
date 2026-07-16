@@ -124,6 +124,7 @@ import { useNovaWorkflow } from 'src/composables/useNovaWorkflow';
 import { useNetworkStore } from 'src/stores/network';
 import { useNominationStore } from 'src/stores/nomination';
 import { useSimulateStore } from 'src/stores/simulate';
+import { deficitSinkIds } from 'src/utils/novaDeficitSinks';
 
 type WorkspaceView = 'schematic' | 'profile' | 'table';
 
@@ -142,7 +143,9 @@ const hasNetwork = computed(() => networkStore.nodes.length > 0);
 const hasResult = computed(() => simulateStore.result !== null);
 
 function onRunStudy(): void {
-  void simulateStore.runSinkCapacity();
+  void simulateStore.runSinkCapacity(
+    deficitSinkIds(simulateStore.sinkDiagnostics, simulateStore.novaVerdict),
+  );
 }
 
 function onSelectNode(nodeId: string): void {
@@ -154,27 +157,44 @@ function onSelectNode(nodeId: string): void {
 }
 
 function onFocusDeficits(): void {
+  const ids = deficitSinkIds(simulateStore.sinkDiagnostics, simulateStore.novaVerdict);
+  if (ids.length > 0) {
+    selectedNode.value = ids[0];
+    $q.notify({
+      message: `Nœud ${ids[0]} sélectionné`,
+      timeout: 1500,
+    });
+    return;
+  }
   $q.notify({
     type: 'info',
-    message: 'Déficits affichés dans le centre d\'alertes et le rail.',
+    message: 'Aucun point déficitaire identifié sur ce run.',
     timeout: 2000,
   });
 }
 
+function buildWorkspaceRunOptions(scenarioId: string | null) {
+  return {
+    ...(simulateStore.lastRunOptions() ?? {}),
+    ...(scenarioId ? { scenario_id: scenarioId } : {}),
+  };
+}
+
 function onReduce(sinkId: string, maxFeasibleQ: number): void {
-  const base = simulateStore.lastInputDemands() ?? {};
-  const demands = { ...base, [sinkId]: -Math.abs(maxFeasibleQ) };
+  const demands = {
+    ...(simulateStore.lastInputDemands() ?? {}),
+    [sinkId]: -Math.abs(maxFeasibleQ),
+  };
   const scenarioId = simulateStore.activeScenarioId ?? nominationStore.activeId;
   void simulateStore.runSimulation(
     demands,
-    scenarioId ? { scenario_id: scenarioId } : undefined,
+    buildWorkspaceRunOptions(scenarioId),
     simulateStore.lastRunEquipmentOverrides(),
   );
 }
 
 function onReduceAll(): void {
-  const base = simulateStore.lastInputDemands() ?? {};
-  const demands = { ...base };
+  const demands = { ...(simulateStore.lastInputDemands() ?? {}) };
   for (const r of simulateStore.sinkCapacity) {
     if (r.feasible_fraction < 1) {
       demands[r.sink_id] = -Math.abs(r.max_feasible_q_m3s);
@@ -183,7 +203,7 @@ function onReduceAll(): void {
   const scenarioId = simulateStore.activeScenarioId ?? nominationStore.activeId;
   void simulateStore.runSimulation(
     Object.keys(demands).length > 0 ? demands : undefined,
-    scenarioId ? { scenario_id: scenarioId } : undefined,
+    buildWorkspaceRunOptions(scenarioId),
     simulateStore.lastRunEquipmentOverrides(),
   );
 }
