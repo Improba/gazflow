@@ -311,7 +311,7 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                 }
 
                                 let run_id = run_id.unwrap_or_else(default_run_id);
-                                let (mut network, network_id, default_demands) = {
+                                let (mut network, network_id) = {
                                     let network = state
                                         .network
                                         .read()
@@ -323,47 +323,37 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                         .read()
                                         .expect("active dataset lock should not be poisoned")
                                         .clone();
-                                    let default_demands = state
-                                        .default_demands
-                                        .read()
-                                        .expect("default demands lock should not be poisoned")
-                                        .clone();
-                                    (network, network_id, default_demands)
+                                    (network, network_id)
                                 };
                                 if let Some(ref overrides) = equipment_overrides {
                                     network.apply_equipment_overrides(overrides);
                                 }
                                 let network = Arc::new(network);
-                                let demands = demands.unwrap_or_else(|| (*default_demands).clone());
                                 let mut options = options.map(|o| *o).unwrap_or_default();
                                 if options.gas_composition.is_none() {
                                     options.gas_composition =
                                         Some(super::active_gas_composition(&state));
                                 }
-                                let scenario = match options.scenario_id.as_deref() {
-                                    Some(scenario_id) => {
-                                        match super::load_scenario_demands_by_id(
-                                            &state,
-                                            &network_id,
-                                            scenario_id,
-                                        ) {
-                                            Ok(mut sc) => {
-                                                crate::gaslib::enrich_scenario_with_balance_hub(&network, &mut sc);
-                                                Some(sc)
-                                            }
-                                            Err(err) => {
-                                                let _ = tx.send(ServerMessage::Error {
-                                                    run_id: run_id.clone(),
-                                                    seq: 0,
-                                                    message: err,
-                                                    fatal: false,
-                                                }).await;
-                                                None
-                                            }
+                                let scenario_id = options.scenario_id.as_deref();
+                                let (demands, scenario) =
+                                    match super::resolve_simulation_demands(
+                                        &state,
+                                        &network,
+                                        scenario_id,
+                                        demands.as_ref(),
+                                    ) {
+                                        Ok(pair) => pair,
+                                        Err(err) => {
+                                            let _ = tx.send(ServerMessage::Error {
+                                                run_id: run_id.clone(),
+                                                seq: 0,
+                                                message: err,
+                                                fatal: false,
+                                            })
+                                            .await;
+                                            continue;
                                         }
-                                    }
-                                    None => None,
-                                };
+                                    };
                                 let permit = match state.simulation_slots.clone().try_acquire_owned() {
                                     Ok(permit) => permit,
                                     Err(_) => {

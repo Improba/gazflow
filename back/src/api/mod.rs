@@ -1199,6 +1199,37 @@ fn resolve_contingency_cases(
     Ok(cases)
 }
 
+/// Demandes effectives pour une simulation WS/REST :
+/// scénario NoVa comme base, overrides client par clé, sinon défauts réseau.
+pub(crate) fn resolve_simulation_demands(
+    state: &SharedState,
+    network: &GasNetwork,
+    scenario_id: Option<&str>,
+    client_demands: Option<&HashMap<String, f64>>,
+) -> Result<(HashMap<String, f64>, Option<gaslib::ScenarioDemands>), String> {
+    if let Some(scenario_id) = scenario_id {
+        let dataset_id = active_dataset_id(state);
+        let mut scenario = load_scenario_demands_by_id(state, &dataset_id, scenario_id)?;
+        gaslib::enrich_scenario_with_balance_hub(network, &mut scenario);
+        let mut base = gaslib::effective_solver_demands_for_network(
+            network,
+            &scenario.demands,
+            &scenario,
+        );
+        if let Some(overrides) = client_demands {
+            for (key, value) in overrides {
+                base.insert(key.clone(), *value);
+            }
+        }
+        Ok((base, Some(scenario)))
+    } else {
+        let demands = client_demands
+            .cloned()
+            .unwrap_or_else(|| (*active_default_demands(state)).clone());
+        Ok((demands, None))
+    }
+}
+
 pub(crate) fn resolve_contingency_demands(
     state: &SharedState,
     network: &GasNetwork,
@@ -1953,6 +1984,145 @@ mod tests {
             compressor_map_mode_override: Arc::new(RwLock::new(None)),
             last_simulation: Arc::new(RwLock::new(None)),
         })
+    }
+
+    #[test]
+    fn resolve_simulation_demands_without_scenario_id_uses_body_or_defaults() {
+        let tmp = contingency_scratch_dir("sim-defaults");
+        let mut defaults = HashMap::new();
+        defaults.insert("sink".to_string(), -5.0);
+        let network = contingency_test_network();
+        let state = contingency_test_state(network.clone(), defaults, tmp.clone());
+
+        let (resolved, scenario) =
+            resolve_simulation_demands(&state, &network, None, None).expect("defaults");
+        assert!(scenario.is_none());
+        assert_eq!(resolved.get("sink").copied(), Some(-5.0));
+
+        let mut body = HashMap::new();
+        body.insert("sink".to_string(), -12.0);
+        let (resolved, scenario) =
+            resolve_simulation_demands(&state, &network, None, Some(&body)).expect("body");
+        assert!(scenario.is_none());
+        assert_eq!(resolved.get("sink").copied(), Some(-12.0));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_simulation_demands_with_scenario_id_loads_scenario() {
+        let tmp = contingency_scratch_dir("sim-scenario");
+        let scenario_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<boundaryValue>
+  <scenario id="sim_nom">
+    <node type="sink" id="sink">
+      <flow value="-42.0"/>
+    </node>
+  </scenario>
+</boundaryValue>"#;
+        std::fs::write(tmp.join("sim_nom.scn"), scenario_xml).unwrap();
+
+        let mut defaults = HashMap::new();
+        defaults.insert("sink".to_string(), -5.0);
+        let network = contingency_test_network();
+        let state = contingency_test_state(network.clone(), defaults, tmp.clone());
+
+        let (resolved, scenario) =
+            resolve_simulation_demands(&state, &network, Some("sim_nom"), None)
+                .expect("scenario");
+        assert!(scenario.is_some());
+        assert_eq!(resolved.get("sink").copied(), Some(-42.0));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_simulation_demands_with_scenario_id_merges_partial_client_overrides() {
+        let tmp = contingency_scratch_dir("sim-merge");
+        let scenario_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<boundaryValue>
+  <scenario id="sim_merge">
+    <node type="sink" id="sink_a">
+      <flow value="-30.0"/>
+    </node>
+    <node type="sink" id="sink_b">
+      <flow value="-20.0"/>
+    </node>
+  </scenario>
+</boundaryValue>"#;
+        std::fs::write(tmp.join("sim_merge.scn"), scenario_xml).unwrap();
+
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "source".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: Some(10.0),
+            lat: Some(50.0),
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+        for sink_id in ["sink_a", "sink_b"] {
+            net.add_node(Node {
+                id: sink_id.into(),
+                x: 1.0,
+                y: 0.0,
+                lon: Some(11.0),
+                lat: Some(50.0),
+                height_m: 0.0,
+                pressure_lower_bar: None,
+                pressure_upper_bar: None,
+                pressure_fixed_bar: None,
+                flow_min_m3s: None,
+                flow_max_m3s: None,
+            });
+        }
+        net.add_pipe(Pipe {
+            id: "p1".into(),
+            from: "source".into(),
+            to: "sink_a".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 10.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
+        });
+        net.add_pipe(Pipe {
+            id: "p2".into(),
+            from: "source".into(),
+            to: "sink_b".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 10.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
+        });
+
+        let defaults = HashMap::new();
+        let state = contingency_test_state(net.clone(), defaults, tmp.clone());
+
+        let mut overrides = HashMap::new();
+        overrides.insert("sink_a".to_string(), -1.0);
+        let (resolved, scenario) =
+            resolve_simulation_demands(&state, &net, Some("sim_merge"), Some(&overrides))
+                .expect("merged");
+        assert!(scenario.is_some());
+        assert_eq!(resolved.get("sink_a").copied(), Some(-1.0));
+        assert_eq!(resolved.get("sink_b").copied(), Some(-20.0));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
