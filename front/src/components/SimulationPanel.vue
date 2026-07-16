@@ -750,11 +750,13 @@ function runCapacityStudy() {
   void simulateStore.runSinkCapacity(deficitSinkIds());
 }
 
+/** Overrides partiels : le backend fusionne sur les demandes du scénario actif. */
 function onReduceSink(sinkId: string, maxFeasibleQ: number) {
   demandOverrides.value = { ...demandOverrides.value, [sinkId]: -Math.abs(maxFeasibleQ) };
   startSimulation();
 }
 
+/** Overrides partiels : le backend fusionne sur les demandes du scénario actif. */
 function onReduceAll() {
   const next = { ...demandOverrides.value };
   for (const r of simulateStore.sinkCapacity) {
@@ -767,7 +769,7 @@ function onReduceAll() {
 }
 
 async function onSaveReduced(demands: Record<string, number>) {
-  const baseId = novaScenarioId.value;
+  const baseId = simulateStore.activeScenarioId ?? nominationStore.activeId;
   if (!baseId) {
     Notify.create({
       type: 'warning',

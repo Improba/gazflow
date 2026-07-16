@@ -5,6 +5,7 @@ import {
   type ContingencyReport,
   type ContingencyRequest,
   type ContingencyResult,
+  type ContingencyScope,
 } from 'src/services/api';
 import { SimulationWsClient, type WsServerMessage } from 'src/services/ws';
 import { formatApiError } from 'src/utils/importError';

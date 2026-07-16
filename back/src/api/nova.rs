@@ -300,6 +300,14 @@ pub(super) async fn post_reduced_nomination(
             "reduced_demands must not be empty",
         ));
     }
+    for (node_id, q) in &payload.reduced_demands {
+        if !q.is_finite() {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                format!("reduced_demands[{node_id}] must be a finite number"),
+            ));
+        }
+    }
 
     let dataset_id = super::active_dataset_id(&state);
     let base_xml = super::resolve_scenario_xml(&state, &dataset_id, &payload.base_scenario_id)
@@ -886,6 +894,39 @@ mod tests {
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn post_reduced_nomination_rejects_non_finite_demands() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use std::collections::HashMap;
+        use tower::ServiceExt;
+
+        let tmp = scratch_dir_for("reduced-nan");
+        let net = crate::graph::GasNetwork::new();
+        let defaults: HashMap<String, f64> = HashMap::new();
+        let app = crate::api::create_router_with_runtime_limits_and_datasets(
+            net,
+            defaults,
+            "test".to_string(),
+            vec!["test".to_string()],
+            tmp.clone(),
+            2,
+            1,
+        );
+
+        let body = r#"{"base_scenario_id":"any","reduced_demands":{"exit01":NaN}}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/nova/nominations/reduced")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

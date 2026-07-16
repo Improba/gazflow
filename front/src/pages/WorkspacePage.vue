@@ -187,7 +187,7 @@ function onReduceAll(): void {
 }
 
 async function onSaveReduced(demands: Record<string, number>): Promise<void> {
-  const baseId = nominationStore.activeId;
+  const baseId = simulateStore.activeScenarioId ?? nominationStore.activeId;
   if (!baseId) {
     $q.notify({
       type: 'warning',
