@@ -83,3 +83,24 @@ this tests whether the in-repo penalty-Newton can converge from the IPOPT feasib
 cannot (it diverges to residual ≈ 69.8 then errors) — the penalty-Newton is not robust enough
 on this non-convex NLP; a trust-region/SQP or IPOPT backend upgrade is needed. See
 `docs/science/validation.md` (Phase VIII-ter).
+
+## Smoke in-repo IPOPT escalation (`nlp-ipopt`)
+
+Le feature Cargo `nlp-ipopt` lie la lib C Ipopt (`coinor-libipopt-dev`). **Pas installé sur l'hôte par défaut** — utiliser l'image `gazflow-ipopt` :
+
+```bash
+# one-off image (si absente)
+docker build -t gazflow-ipopt -f docker/Dockerfile.ipopt docker/
+
+# micro-smoke : check + gates GAZFLOW_NOVA_IPOPT_ESCALATION + FFI two_node
+./scripts/nova/smoke-ipopt-escalation.sh
+```
+
+Variables :
+
+| Env | Rôle |
+|-----|------|
+| `GAZFLOW_NOVA_IPOPT_ESCALATION` | `off` (défaut) / `on`\|`1`\|`true` / `on-notsolved` |
+| *(pas de `GAZFLOW_NOVA_IPOPT`)* | n'existe pas ; ne pas confondre |
+
+`finalize_nova_verdict` (API) tente IPOPT seulement si signature `Unresolved` et mode On / OnNotSolved. `compressor_diag` **ne branche pas** cette escalade.
