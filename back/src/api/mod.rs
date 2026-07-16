@@ -279,6 +279,10 @@ pub fn create_router_with_repo_and_datasets(
             get(compressor::get_operating_points),
         )
         .route(
+            "/api/nova/nominations/reduced",
+            post(nova::post_reduced_nomination),
+        )
+        .route(
             "/api/nova/nominations",
             post(nova::post_import_nomination),
         )

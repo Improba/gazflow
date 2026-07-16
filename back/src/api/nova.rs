@@ -43,6 +43,17 @@ pub(super) struct ImportNominationRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub(super) struct ReducedNominationRequest {
+    /// Scénario `.scn` source (bundlé ou importé).
+    pub base_scenario_id: String,
+    /// Débits réduits par sink (Nm³/s, signé ou absolu).
+    pub reduced_demands: HashMap<String, f64>,
+    /// Nom du fichier `.scn` produit (défaut : `{stem}_reduit.scn`).
+    #[serde(default)]
+    pub filename: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub(super) struct NovaCapacityRequest {
     /// Identifiant du scénario `.scn` (ex. `nomination_mild_618`).
     pub scenario_id: String,
@@ -257,6 +268,97 @@ pub(super) async fn post_import_nomination(
     Ok(Json(NovaScenarioSummary {
         id,
         filename: filename.to_string(),
+        relative_path: String::new(),
+        source: "imported".to_string(),
+    }))
+}
+
+fn reduced_nomination_stem(base_scenario_id: &str) -> String {
+    let stem = file_stem(base_scenario_id);
+    if stem.is_empty() {
+        base_scenario_id.to_string()
+    } else {
+        stem
+    }
+}
+
+/// `POST /api/nova/nominations/reduced` : dérive une nomination `.scn` à partir d'une base
+/// en substituant les débits max faisables sur les sinks concernés.
+pub(super) async fn post_reduced_nomination(
+    State(state): State<SharedState>,
+    Json(payload): Json<ReducedNominationRequest>,
+) -> Result<Json<NovaScenarioSummary>, (StatusCode, Json<ApiError>)> {
+    if payload.base_scenario_id.trim().is_empty() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "base_scenario_id must not be empty",
+        ));
+    }
+    if payload.reduced_demands.is_empty() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "reduced_demands must not be empty",
+        ));
+    }
+
+    let dataset_id = super::active_dataset_id(&state);
+    let base_xml = super::resolve_scenario_xml(&state, &dataset_id, &payload.base_scenario_id)
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::NOT_FOUND,
+                format!(
+                    "scénario {} introuvable pour le dataset {}",
+                    payload.base_scenario_id, dataset_id
+                ),
+            )
+        })?;
+
+    let patched_xml = crate::gaslib::apply_reduced_demands_to_scn_xml(
+        &base_xml,
+        &payload.reduced_demands,
+    )
+    .map_err(|err| api_error(StatusCode::UNPROCESSABLE_ENTITY, format!("{err:#}")))?;
+
+    if let Err(err) = crate::gaslib::parse_scenario_demands_from_str(&patched_xml) {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("invalid reduced .scn XML: {err:#}"),
+        ));
+    }
+
+    let stem = reduced_nomination_stem(&payload.base_scenario_id);
+    let filename = payload
+        .filename
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("{stem}_reduit.scn"));
+    if !filename.ends_with(".scn") {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "filename must end with .scn",
+        ));
+    }
+
+    let ts = now_ms();
+    let id = format!("imported-{stem}_reduit-{ts}");
+    let record = crate::store::ImportedNominationRecord {
+        id: id.clone(),
+        dataset_id,
+        filename: filename.clone(),
+        source: "imported".to_string(),
+        created_at_ms: ts,
+        xml: patched_xml,
+    };
+    state
+        .scenario_repo
+        .insert_imported_nomination(&record)
+        .map_err(|err| api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+    Ok(Json(NovaScenarioSummary {
+        id,
+        filename,
         relative_path: String::new(),
         source: "imported".to_string(),
     }))
@@ -780,6 +882,91 @@ mod tests {
         let req = Request::builder()
             .method("DELETE")
             .uri(format!("/api/nova/nominations/{id}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn reduced_nomination_import_then_list_and_delete() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::{Request, StatusCode};
+        use std::collections::HashMap;
+        use tower::ServiceExt;
+
+        let tmp = scratch_dir_for("reduced");
+        let net = crate::graph::GasNetwork::new();
+        let defaults: HashMap<String, f64> = HashMap::new();
+        let app = crate::api::create_router_with_runtime_limits_and_datasets(
+            net,
+            defaults,
+            "test".to_string(),
+            vec!["test".to_string()],
+            tmp.clone(),
+            2,
+            1,
+        );
+
+        // Import base nomination.
+        let body = serde_json::json!({
+            "filename": "custom_imported.scn",
+            "xml": VALID_SCN_XML,
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/nova/nominations")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let base_id = v["id"].as_str().unwrap().to_string();
+
+        // Create reduced nomination from base.
+        let reduced = serde_json::json!({
+            "base_scenario_id": base_id,
+            "reduced_demands": { "exit01": -20.0 },
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/nova/nominations/reduced")
+            .header("content-type", "application/json")
+            .body(Body::from(reduced.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "reduced import failed");
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let reduced_id = v["id"].as_str().unwrap().to_string();
+        assert!(reduced_id.contains("_reduit-"));
+        assert_eq!(v["source"].as_str(), Some("imported"));
+
+        // Listed in scenarios.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/nova/scenarios")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let listed: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        assert!(listed.contains(&reduced_id.as_str()));
+
+        // Delete reduced nomination.
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/nova/nominations/{reduced_id}"))
             .body(Body::empty())
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();

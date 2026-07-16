@@ -1467,11 +1467,161 @@ fn convert_flow_to_m3_per_s(value: f64, unit: Option<&str>) -> f64 {
     }
 }
 
+/// Nm³/s → valeur `.scn` en unités `1000m_cube_per_hour` (débit positif).
+fn m3_per_s_to_1000m3_per_h(q_m3s: f64) -> f64 {
+    q_m3s.abs() * 3.6
+}
+
+fn format_scn_flow_value(value: f64) -> String {
+    format!("{value:.4}")
+}
+
+fn extract_xml_attr(tag: &str, name: &str) -> Option<String> {
+    for quote in ['"', '\''] {
+        let pattern = format!("{name}={quote}");
+        if let Some(start) = tag.find(&pattern) {
+            let rest = &tag[start + pattern.len()..];
+            if let Some(end) = rest.find(quote) {
+                return Some(rest[..end].to_string());
+            }
+        }
+    }
+    None
+}
+
+fn replace_flow_values_in_node_block(node_block: &str, new_value: &str) -> String {
+    let mut out = String::with_capacity(node_block.len());
+    let mut pos = 0;
+    while pos < node_block.len() {
+        let Some(flow_start) = node_block[pos..].find("<flow") else {
+            out.push_str(&node_block[pos..]);
+            break;
+        };
+        let abs_flow = pos + flow_start;
+        out.push_str(&node_block[pos..abs_flow]);
+        let tag_end = node_block[abs_flow..]
+            .find('>')
+            .map(|i| abs_flow + i + 1)
+            .unwrap_or(node_block.len());
+        let flow_tag = &node_block[abs_flow..tag_end];
+        let replaced = if let Some(value_start) = flow_tag.find("value=") {
+            let after = &flow_tag[value_start + 6..];
+            let quote = after.chars().next().unwrap_or('"');
+            if let Some(end) = after[1..].find(quote) {
+                format!(
+                    "{prefix}{q}{new_value}{q}{suffix}",
+                    prefix = &flow_tag[..value_start + 6],
+                    q = quote,
+                    new_value = new_value,
+                    suffix = &after[1 + end + 1..],
+                )
+            } else {
+                flow_tag.to_string()
+            }
+        } else {
+            flow_tag.to_string()
+        };
+        out.push_str(&replaced);
+        pos = tag_end;
+    }
+    out
+}
+
+/// Substitute exit-node flow lower/upper bounds in a base `.scn` XML.
+/// `reduced_demands` values are Nm³/s (signed or absolute); only listed exit ids are touched.
+pub fn apply_reduced_demands_to_scn_xml(
+    base_xml: &str,
+    reduced_demands: &HashMap<String, f64>,
+) -> Result<String> {
+    if reduced_demands.is_empty() {
+        anyhow::bail!("reduced_demands must not be empty");
+    }
+
+    let mut result = String::with_capacity(base_xml.len());
+    let mut pos = 0;
+    let mut touched = 0usize;
+
+    while pos < base_xml.len() {
+        let Some(node_start) = base_xml[pos..].find("<node") else {
+            result.push_str(&base_xml[pos..]);
+            break;
+        };
+        let abs_start = pos + node_start;
+        result.push_str(&base_xml[pos..abs_start]);
+
+        let open_end = base_xml[abs_start..]
+            .find('>')
+            .map(|i| abs_start + i + 1)
+            .context("malformed .scn XML: unclosed <node tag")?;
+        let open_tag = &base_xml[abs_start..open_end];
+
+        if open_tag.ends_with("/>") {
+            result.push_str(open_tag);
+            pos = open_end;
+            continue;
+        }
+
+        let close_tag = "</node>";
+        let close_pos = base_xml[open_end..]
+            .find(close_tag)
+            .map(|i| open_end + i + close_tag.len())
+            .context("malformed .scn XML: missing </node>")?;
+
+        let mut node_block = base_xml[abs_start..close_pos].to_string();
+        let node_id = extract_xml_attr(open_tag, "id");
+        let node_type = extract_xml_attr(open_tag, "type");
+
+        if node_type.as_deref() == Some("exit") {
+            if let Some(ref id) = node_id {
+                if let Some(&q_m3s) = reduced_demands.get(id) {
+                    let flow_val = format_scn_flow_value(m3_per_s_to_1000m3_per_h(q_m3s));
+                    node_block = replace_flow_values_in_node_block(&node_block, &flow_val);
+                    touched += 1;
+                }
+            }
+        }
+
+        result.push_str(&node_block);
+        pos = close_pos;
+    }
+
+    if touched == 0 {
+        anyhow::bail!("no matching exit nodes found in base .scn for reduced_demands");
+    }
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use std::path::Path;
+
+    #[test]
+    fn test_apply_reduced_demands_to_scn_xml() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<boundaryValue xmlns="http://gaslib.zib.de/Gas">
+  <scenario id="base">
+    <node type="entry" id="entry01">
+      <flow bound="lower" value="160.00" unit="1000m_cube_per_hour"/>
+      <flow bound="upper" value="160.00" unit="1000m_cube_per_hour"/>
+    </node>
+    <node type="exit" id="exit01">
+      <flow bound="lower" value="100.00" unit="1000m_cube_per_hour"/>
+      <flow bound="upper" value="100.00" unit="1000m_cube_per_hour"/>
+    </node>
+  </scenario>
+</boundaryValue>"#;
+        let mut reduced = HashMap::new();
+        // 25 Nm³/s → 90.0000 en 1000m³/h
+        reduced.insert("exit01".to_string(), -25.0);
+        let patched = apply_reduced_demands_to_scn_xml(xml, &reduced).expect("patch");
+        let parsed = parse_scenario_demands_from_str(&patched).expect("re-parse");
+        assert!((parsed.demands["exit01"] + 25.0).abs() < 1e-6);
+        assert!((parsed.demands["entry01"] - 44.444_444_444).abs() < 1e-6);
+        assert!(patched.contains(r#"value="90.0000""#));
+    }
 
     #[test]
     fn test_parse_scenario_scn() {

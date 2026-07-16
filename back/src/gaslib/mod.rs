@@ -25,7 +25,7 @@ pub use scenario::{
     contract_boundary_refinement_enabled, demands_without_pressure_slack,
     detect_shortpipe_boundary_pairs, effective_solver_demands,
     effective_solver_demands_for_network, enrich_scenario_with_balance_hub,
-    load_scenario_demands, network_with_scenario_boundaries,
+    apply_reduced_demands_to_scn_xml, load_scenario_demands, network_with_scenario_boundaries,
     network_with_scenario_boundaries_for_nova, parse_scenario_demands_from_str,
     prepare_transport_scenario,
     resolve_scenario_path,
