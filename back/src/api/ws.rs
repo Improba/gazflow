@@ -846,7 +846,12 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                 match compute_nova(&final_result) {
                     Some(d) => {
                         let converged = final_result.residual <= tol_m3s;
-                        let v = solver::nova_verdict(&d, converged, tol_m3s, &final_result);
+                        let v = super::nova_finalize::finalize_nova_verdict(
+                            &d,
+                            converged,
+                            tol_m3s,
+                            &final_result,
+                        );
                         (
                             d.pressure_slips,
                             d.pressure_margins,
@@ -902,7 +907,12 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                 match compute_nova(&final_result) {
                     Some(d) => {
                         let converged = final_result.residual <= tol_m3s;
-                        let v = solver::nova_verdict(&d, converged, tol_m3s, &final_result);
+                        let v = super::nova_finalize::finalize_nova_verdict(
+                            &d,
+                            converged,
+                            tol_m3s,
+                            &final_result,
+                        );
                         (
                             d.pressure_slips,
                             d.pressure_margins,
@@ -951,7 +961,12 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                 match compute_nova(&ws_result) {
                     Some(d) => {
                         let converged = ws_result.residual <= tol_m3s;
-                        let v = solver::nova_verdict(&d, converged, tol_m3s, &ws_result);
+                        let v = super::nova_finalize::finalize_nova_verdict(
+                            &d,
+                            converged,
+                            tol_m3s,
+                            &ws_result,
+                        );
                         (
                             d.pressure_slips,
                             d.pressure_margins,

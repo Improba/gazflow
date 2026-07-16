@@ -27,6 +27,7 @@ mod import;
 mod batch;
 mod network_edit;
 mod nova;
+mod nova_finalize;
 mod scenarios;
 mod ws;
 

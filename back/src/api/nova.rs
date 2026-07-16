@@ -357,7 +357,12 @@ fn run_nova_solve_for_compare(
 
     let diag = crate::solver::compute_nova_diagnostics(network, scenario, &result);
     let converged = result.residual <= preset.tolerance;
-    let verdict = crate::solver::nova_verdict(&diag, converged, preset.tolerance, &result);
+    let verdict = super::nova_finalize::finalize_nova_verdict(
+        &diag,
+        converged,
+        preset.tolerance,
+        &result,
+    );
     let cause = match verdict.cause {
         crate::solver::NovaCause::Feasible => "Feasible",
         crate::solver::NovaCause::PressureDeficit => "PressureDeficit",

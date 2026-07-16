@@ -164,8 +164,12 @@ fn run_one_case(
         Ok(result) => {
             let diag = crate::solver::compute_nova_diagnostics(&net, scenario, &result);
             let converged = result.residual <= preset.tolerance;
-            let verdict =
-                crate::solver::nova_verdict(&diag, converged, preset.tolerance, &result);
+            let verdict = super::nova_finalize::finalize_nova_verdict(
+                &diag,
+                converged,
+                preset.tolerance,
+                &result,
+            );
             let max_shortfall = diag
                 .pressure_slips
                 .iter()
