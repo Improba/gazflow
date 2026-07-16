@@ -168,6 +168,13 @@ export const useContingencyStore = defineStore('contingency', () => {
     return runContingencyRest(payload);
   }
 
+  async function runContingencyForScenario(
+    scenarioId: string,
+    scope: ContingencyScope = 'all',
+  ): Promise<ContingencyReport> {
+    return runContingency({ scope, scenario_id: scenarioId });
+  }
+
   async function runContingencyRest(payload: ContingencyRequest): Promise<ContingencyReport> {
     try {
       const nextReport = await api.runContingency(payload);
@@ -191,6 +198,7 @@ export const useContingencyStore = defineStore('contingency', () => {
         runId: currentRunId.value!,
         scope: payload.scope,
         demands: payload.demands,
+        scenarioId: payload.scenario_id,
         customCases: payload.custom_cases,
       });
     });
@@ -216,6 +224,7 @@ export const useContingencyStore = defineStore('contingency', () => {
     selectCase,
     reset,
     runContingency,
+    runContingencyForScenario,
     cancelContingency,
   };
 });

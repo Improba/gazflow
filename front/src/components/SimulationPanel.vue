@@ -276,6 +276,20 @@
         <MarginsByConstraint @select-node="onSelectSink" />
         <BoundarySupplyList @select-node="onSelectSink" />
         <CompressorMapPanel />
+        <q-btn
+          v-if="novaNominationId"
+          dense
+          outline
+          color="warning"
+          icon="warning_amber"
+          label="Analyser N-1 sur cette nomination"
+          class="full-width q-mt-sm"
+          :to="contingencyNominationLink"
+        >
+          <q-tooltip>
+            Ouvre l'analyse de contingence N-1 avec les demandes de la nomination active.
+          </q-tooltip>
+        </q-btn>
       </div>
 
       <div
@@ -342,6 +356,21 @@
           @click="showReport = true"
         >
           <q-tooltip>Verdict, points déficitaires et capacité — export PDF ou JSON.</q-tooltip>
+        </q-btn>
+
+        <q-btn
+          v-if="novaNominationId"
+          dense
+          outline
+          color="warning"
+          icon="warning_amber"
+          label="Analyser N-1 sur cette nomination"
+          class="full-width q-mt-sm"
+          :to="contingencyNominationLink"
+        >
+          <q-tooltip>
+            Ouvre l'analyse de contingence N-1 avec les demandes de la nomination active.
+          </q-tooltip>
         </q-btn>
       </div>
 
@@ -523,6 +552,13 @@ const comparePanelOpen = computed(() => route.query.compare === '1');
 const demandOverrides = ref<Record<string, number>>({});
 const equipmentOverrides = ref<Record<string, PipeEquipmentDto>>({});
 const novaScenarioId = computed(() => nominationStore.activeId);
+const novaNominationId = computed(
+  () => simulateStore.activeScenarioId ?? nominationStore.activeId,
+);
+const contingencyNominationLink = computed(() => ({
+  name: 'contingency' as const,
+  query: novaNominationId.value ? { scenario_id: novaNominationId.value } : {},
+}));
 const selectedNetwork = ref<string | null>(null);
 const simulationMode = ref<'free' | 'check' | 'optimize'>('free');
 const gasDraft = ref<GasCompositionDto>({ ...G20_NOMINAL });

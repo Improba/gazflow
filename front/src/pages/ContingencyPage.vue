@@ -1,6 +1,9 @@
 <template>
   <q-page class="q-pa-md contingency-page">
-    <ScenarioContextBanner show-map-action />
+    <ScenarioContextBanner
+      show-map-action
+      :nomination-scenario-id="nominationScenarioId"
+    />
     <q-card flat bordered class="bg-dark text-white">
       <q-card-section>
         <div class="text-h6">Analyse de contingence N-1</div>
@@ -162,12 +165,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { Notify } from 'quasar';
 import {
   api,
   type ContingencyCase,
   type ContingencyAction,
+  type ContingencyRequest,
   type ContingencyScope,
 } from 'src/services/api';
 import { useContingencyStore } from 'src/stores/contingency';
@@ -179,9 +184,16 @@ import { formatApiError } from 'src/utils/importError';
 const networkStore = useNetworkStore();
 const contingencyStore = useContingencyStore();
 const simulateStore = useSimulateStore();
+const route = useRoute();
 
 const scope = ref<ContingencyScope>('all');
 const exporting = ref(false);
+const nominationScenarioId = computed(() => {
+  const raw = route.query.scenario_id;
+  if (typeof raw === 'string' && raw.length > 0) return raw;
+  if (Array.isArray(raw) && typeof raw[0] === 'string' && raw[0].length > 0) return raw[0];
+  return null;
+});
 const report = computed(() => contingencyStore.report);
 const loading = computed(() => contingencyStore.loading);
 
@@ -253,10 +265,8 @@ function formatAction(action: ContingencyAction): string {
 
 async function runAnalysis() {
   try {
-    const nextReport = await contingencyStore.runContingency({
-      scope: scope.value,
-      demands: simulateStore.lastInputDemands(),
-    });
+    const payload = buildContingencyPayload();
+    const nextReport = await contingencyStore.runContingency(payload);
     Notify.create({
       type: nextReport.red_cases.length === 0 ? 'positive' : 'warning',
       message: `${nextReport.results.length} cas analysés - ${nextReport.red_cases.length} rouge(s)`,
@@ -268,6 +278,31 @@ async function runAnalysis() {
     });
   }
 }
+
+function buildContingencyPayload(): ContingencyRequest {
+  if (nominationScenarioId.value) {
+    return { scope: scope.value, scenario_id: nominationScenarioId.value };
+  }
+  return {
+    scope: scope.value,
+    demands: simulateStore.lastInputDemands(),
+  };
+}
+
+onMounted(() => {
+  if (nominationScenarioId.value && networkStore.nodes.length > 0) {
+    void runAnalysis();
+  }
+});
+
+watch(
+  () => nominationScenarioId.value,
+  (nextId, prevId) => {
+    if (nextId && nextId !== prevId && networkStore.nodes.length > 0) {
+      void runAnalysis();
+    }
+  },
+);
 
 function onRowClick(_evt: Event, row: { raw: { case: ContingencyCase } }) {
   const selected = contingencyStore.results.find(
@@ -281,10 +316,7 @@ function onRowClick(_evt: Event, row: { raw: { case: ContingencyCase } }) {
 async function exportReport(format: 'xlsx' | 'csv') {
   exporting.value = true;
   try {
-    const blob = await api.exportContingency(
-      { scope: scope.value, demands: simulateStore.lastInputDemands() },
-      format,
-    );
+    const blob = await api.exportContingency(buildContingencyPayload(), format);
     const href = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = href;

@@ -10,6 +10,10 @@
         {{ networkLabel }}
         <span v-if="topologyLine" class="text-grey-5"> — {{ topologyLine }}</span>
       </div>
+      <div v-if="nominationScenarioId" class="col-12 col-sm-auto">
+        <span class="text-weight-medium">Nomination N-1 :</span>
+        {{ nominationScenarioId }}
+      </div>
       <div v-if="scenarioLine" class="col-12 col-sm-auto">
         {{ scenarioLine }}
       </div>
@@ -35,8 +39,9 @@ import { useSimulateStore } from 'src/stores/simulate';
 withDefaults(
   defineProps<{
     showMapAction?: boolean;
+    nominationScenarioId?: string | null;
   }>(),
-  { showMapAction: false },
+  { showMapAction: false, nominationScenarioId: null },
 );
 
 const networkStore = useNetworkStore();

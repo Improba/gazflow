@@ -357,6 +357,8 @@ export interface ContingencyReport {
 export interface ContingencyRequest {
   scope: ContingencyScope;
   demands?: Record<string, number>;
+  /** Identifiant de nomination NoVa — charge les demandes du scénario sans modifier la topologie. */
+  scenario_id?: string;
   custom_cases?: ContingencyCase[];
 }
 

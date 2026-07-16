@@ -79,6 +79,7 @@ type WsClientMessage =
       run_id?: string;
       scope: ContingencyScope;
       demands?: Record<string, number>;
+      scenario_id?: string;
       custom_cases?: ContingencyCase[];
     };
 
@@ -260,6 +261,7 @@ export class SimulationWsClient {
     runId?: string;
     scope: ContingencyScope;
     demands?: Record<string, number>;
+    scenarioId?: string;
     customCases?: ContingencyCase[];
   }): void {
     this.send({
@@ -267,6 +269,7 @@ export class SimulationWsClient {
       run_id: payload.runId,
       scope: payload.scope,
       demands: payload.demands,
+      scenario_id: payload.scenarioId,
       custom_cases: payload.customCases,
     });
   }
