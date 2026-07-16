@@ -724,13 +724,12 @@ function focusFirstDeficit() {
 }
 
 function runCapacityStudy() {
-  if (simulateStore.sinkCapacity.length > 0) {
-    void simulateStore.runSinkCapacity([]);
-    return;
-  }
-  void simulateStore.runSinkCapacity(
-    deficitSinkIds(simulateStore.sinkDiagnostics, simulateStore.novaVerdict),
-  );
+  const fromTable = simulateStore.sinkCapacity.map((r) => r.sink_id);
+  const ids =
+    fromTable.length > 0
+      ? fromTable
+      : deficitSinkIds(simulateStore.sinkDiagnostics, simulateStore.novaVerdict);
+  void simulateStore.runSinkCapacity(ids.length > 0 ? ids : undefined);
 }
 
 function reduceScenarioId(): string | null {
