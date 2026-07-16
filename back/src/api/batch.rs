@@ -168,6 +168,7 @@ fn run_one_case(
             let converged = result.residual <= preset.tolerance;
             let verdict = super::nova_finalize::finalize_nova_verdict(
                 &net,
+                Some(scenario),
                 &demands,
                 gas,
                 &diag,

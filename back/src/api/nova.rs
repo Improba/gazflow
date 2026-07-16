@@ -479,6 +479,7 @@ fn run_nova_solve_for_compare(
     let converged = result.residual <= preset.tolerance;
     let verdict = super::nova_finalize::finalize_nova_verdict(
         network,
+        Some(scenario),
         &demands,
         gas,
         &diag,

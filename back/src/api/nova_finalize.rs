@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use crate::gaslib::ScenarioDemands;
 use crate::graph::GasNetwork;
 use crate::solver::{
     self, GasComposition, NovaCause, NovaDiagnostics, NovaSolverSignature, NovaVerdict,
@@ -60,21 +61,61 @@ fn should_attempt_ipopt_escalation(verdict: &NovaVerdict, mode: IpoptEscalationM
     }
 }
 
-fn ipopt_bound_violation_cause(diagnostics: &NovaDiagnostics) -> NovaCause {
-    let has_deficit = diagnostics
-        .pressure_slips
-        .iter()
-        .any(|s| s.shortfall_bar > 0.0);
-    let has_excess = diagnostics
-        .pressure_slips
-        .iter()
-        .any(|s| s.excess_bar > 0.0);
-    if has_deficit {
-        NovaCause::PressureDeficit
-    } else if has_excess {
-        NovaCause::PressureExcess
-    } else {
-        NovaCause::PressureDeficit
+fn solver_result_from_ipopt_pressures(
+    pressures_bar: HashMap<String, f64>,
+    base: &SolverResult,
+    residual_inf: f64,
+    iterations: i32,
+) -> SolverResult {
+    SolverResult {
+        pressures: pressures_bar,
+        flows: base.flows.clone(),
+        iterations: iterations.max(0) as usize,
+        residual: residual_inf,
+        equipment_states: base.equipment_states.clone(),
+        warnings: base.warnings.clone(),
+        demand_scale_achieved: base.demand_scale_achieved,
+    }
+}
+
+/// Verdict NoVa pour une escalade IPOPT en `BoundViolation` (testable sans IPOPT réel).
+fn ipopt_bound_violation_verdict(
+    network: &GasNetwork,
+    scenario: Option<&ScenarioDemands>,
+    pressures_bar: HashMap<String, f64>,
+    base: &NovaVerdict,
+    base_result: &SolverResult,
+    tol_m3s: f64,
+    residual_inf: f64,
+    iterations: i32,
+) -> NovaVerdict {
+    let ipopt_result = solver_result_from_ipopt_pressures(
+        pressures_bar,
+        base_result,
+        residual_inf,
+        iterations,
+    );
+
+    match scenario {
+        Some(sc) => {
+            let diagnostics = solver::compute_nova_diagnostics(network, sc, &ipopt_result);
+            let converged = residual_inf <= tol_m3s;
+            let mut verdict =
+                solver::nova_verdict(&diagnostics, converged, tol_m3s, &ipopt_result);
+            verdict.solver_signature = NovaSolverSignature::IpoptEscalation;
+            verdict.iterations = iterations.max(0) as usize;
+            verdict
+        }
+        None => NovaVerdict {
+            feasible: false,
+            deficit_sinks: Vec::new(),
+            cause: NovaCause::PressureDeficit,
+            converged: base.converged,
+            demand_scale_achieved: base_result.demand_scale_achieved,
+            residual_m3s: residual_inf,
+            iterations: iterations.max(0) as usize,
+            solver_signature: NovaSolverSignature::IpoptEscalation,
+        },
     }
 }
 
@@ -82,6 +123,7 @@ fn ipopt_bound_violation_cause(diagnostics: &NovaDiagnostics) -> NovaCause {
 /// Peut escalader vers IPOPT si activé déclarativement et signature `Unresolved`.
 pub(crate) fn finalize_nova_verdict(
     network: &GasNetwork,
+    scenario: Option<&ScenarioDemands>,
     demands: &HashMap<String, f64>,
     gas: GasComposition,
     diagnostics: &NovaDiagnostics,
@@ -99,7 +141,7 @@ pub(crate) fn finalize_nova_verdict(
     #[cfg(feature = "nlp-ipopt")]
     {
         if let Some(escalated) =
-            try_ipopt_escalation(network, demands, gas, diagnostics, &verdict, result)
+            try_ipopt_escalation(network, scenario, demands, gas, &verdict, result, tol_m3s)
         {
             return escalated;
         }
@@ -111,11 +153,12 @@ pub(crate) fn finalize_nova_verdict(
 #[cfg(feature = "nlp-ipopt")]
 fn try_ipopt_escalation(
     network: &GasNetwork,
+    scenario: Option<&ScenarioDemands>,
     demands: &HashMap<String, f64>,
     gas: GasComposition,
-    diagnostics: &NovaDiagnostics,
     base: &NovaVerdict,
     result: &SolverResult,
+    tol_m3s: f64,
 ) -> Option<NovaVerdict> {
     use solver::{NovaIpoptOptions, NovaIpoptVerdict, solve_nova_with_ipopt};
 
@@ -142,27 +185,20 @@ fn try_ipopt_escalation(
             solver_signature: NovaSolverSignature::IpoptEscalation,
         }),
         NovaIpoptVerdict::BoundViolation {
+            pressures_bar,
             residual_inf,
             iterations,
             ..
-        } => {
-            let deficit_sinks: Vec<String> = diagnostics
-                .pressure_slips
-                .iter()
-                .filter(|s| s.shortfall_bar > 0.0)
-                .map(|s| s.node_id.clone())
-                .collect();
-            Some(NovaVerdict {
-                feasible: false,
-                deficit_sinks,
-                cause: ipopt_bound_violation_cause(diagnostics),
-                converged: base.converged,
-                demand_scale_achieved: result.demand_scale_achieved,
-                residual_m3s: residual_inf,
-                iterations: iterations.max(0) as usize,
-                solver_signature: NovaSolverSignature::IpoptEscalation,
-            })
-        }
+        } => Some(ipopt_bound_violation_verdict(
+            network,
+            scenario,
+            pressures_bar,
+            base,
+            result,
+            tol_m3s,
+            residual_inf,
+            iterations,
+        )),
         NovaIpoptVerdict::NotSolvedLocal { .. } | NovaIpoptVerdict::Error { .. } => None,
     }
 }
@@ -170,25 +206,7 @@ fn try_ipopt_escalation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::solver::ScenarioPressureSlip;
     use serial_test::serial;
-
-    fn slip(
-        node_id: &str,
-        shortfall_bar: f64,
-        excess_bar: f64,
-    ) -> ScenarioPressureSlip {
-        ScenarioPressureSlip {
-            node_id: node_id.into(),
-            solved_pressure_bar: 40.0,
-            lower_bar: None,
-            upper_bar: None,
-            shortfall_bar,
-            excess_bar,
-            from_scenario_envelope: false,
-            shortpipe_partner_id: None,
-        }
-    }
 
     fn unresolved_verdict(cause: NovaCause) -> NovaVerdict {
         NovaVerdict {
@@ -281,6 +299,7 @@ mod tests {
         let result = SolverResult::from_core(HashMap::new(), HashMap::new(), 5, 1.0);
         let verdict = finalize_nova_verdict(
             &network,
+            None,
             &demands,
             gas,
             &diagnostics,
@@ -293,23 +312,114 @@ mod tests {
     }
 
     #[test]
-    fn bound_violation_cause_prefers_deficit_then_excess() {
-        let mixed = NovaDiagnostics {
-            pressure_slips: vec![slip("sink_a", 10.0, 0.0), slip("node_b", 0.0, 10.0)],
-            ..Default::default()
-        };
-        assert_eq!(
-            ipopt_bound_violation_cause(&mixed),
-            NovaCause::PressureDeficit
+    fn ipopt_bound_violation_without_scenario_is_pressure_deficit_no_deficits() {
+        let network = GasNetwork::new();
+        let base = unresolved_verdict(NovaCause::NotSolvedLocal);
+        let result = SolverResult::from_core(HashMap::new(), HashMap::new(), 5, 1.0);
+        let pressures = HashMap::from([("n1".to_string(), 10.0)]);
+        let verdict = ipopt_bound_violation_verdict(
+            &network,
+            None,
+            pressures,
+            &base,
+            &result,
+            1e-3,
+            1e-6,
+            42,
         );
+        assert_eq!(verdict.solver_signature, NovaSolverSignature::IpoptEscalation);
+        assert_eq!(verdict.cause, NovaCause::PressureDeficit);
+        assert!(verdict.deficit_sinks.is_empty());
+        assert_eq!(verdict.iterations, 42);
+    }
 
-        let excess_only = NovaDiagnostics {
-            pressure_slips: vec![slip("node_b", 0.0, 10.0)],
-            ..Default::default()
+    #[test]
+    fn ipopt_bound_violation_with_scenario_uses_ipopt_pressures() {
+        use crate::gaslib::ScenarioDemands;
+        use crate::graph::{ConnectionKind, EquipmentSpec, GasNetwork, Node, Pipe};
+
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "S".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: None,
+            lat: None,
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+        net.add_node(Node {
+            id: "T".into(),
+            x: 1.0,
+            y: 0.0,
+            lon: None,
+            lat: None,
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+        net.add_pipe(Pipe {
+            id: "P".into(),
+            from: "S".into(),
+            to: "T".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 5.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.05,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
+        });
+        let scenario = ScenarioDemands {
+            scenario_id: None,
+            demands: HashMap::from([("T".to_string(), -3.0)]),
+            pressure_slack: None,
+            balance_hubs: Vec::new(),
+            junction_anchors: Vec::new(),
+            boundary_spine_anchors: Vec::new(),
+            mass_balance_anchors: Vec::new(),
+            zero_flow_boundary_anchors: Vec::new(),
+            contract_flow_relaxed: Vec::new(),
+            contract_pressure_anchors: Vec::new(),
+            pressure_envelopes: vec![crate::gaslib::ScenarioPressureEnvelope {
+                node_id: "T".to_string(),
+                lower_bar: Some(80.0),
+                upper_bar: Some(120.0),
+            }],
         };
-        assert_eq!(
-            ipopt_bound_violation_cause(&excess_only),
-            NovaCause::PressureExcess
+        let newton_result = SolverResult::from_core(
+            HashMap::from([("S".to_string(), 70.0), ("T".to_string(), 75.0)]),
+            HashMap::new(),
+            5,
+            1.0,
         );
+        let base = unresolved_verdict(NovaCause::NotSolvedLocal);
+        let ipopt_pressures = HashMap::from([
+            ("S".to_string(), 70.0),
+            ("T".to_string(), 50.0),
+        ]);
+        let verdict = ipopt_bound_violation_verdict(
+            &net,
+            Some(&scenario),
+            ipopt_pressures,
+            &base,
+            &newton_result,
+            1e-3,
+            1e-6,
+            17,
+        );
+        assert_eq!(verdict.solver_signature, NovaSolverSignature::IpoptEscalation);
+        assert!(!verdict.feasible);
+        assert!(verdict.deficit_sinks.contains(&"T".to_string()));
+        assert_eq!(verdict.iterations, 17);
     }
 }

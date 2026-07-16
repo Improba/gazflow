@@ -873,6 +873,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                         let converged = final_result.residual <= tol_m3s;
                         let v = super::nova_finalize::finalize_nova_verdict(
                             &network_prepared,
+                            scenario.as_ref(),
                             &demands,
                             steady_config.gas_composition,
                             &d,
@@ -938,6 +939,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                         let converged = final_result.residual <= tol_m3s;
                         let v = super::nova_finalize::finalize_nova_verdict(
                             &network_prepared,
+                            scenario.as_ref(),
                             &demands,
                             steady_config.gas_composition,
                             &d,
@@ -996,6 +998,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                         let converged = ws_result.residual <= tol_m3s;
                         let v = super::nova_finalize::finalize_nova_verdict(
                             &network_prepared,
+                            scenario.as_ref(),
                             &demands,
                             steady_config.gas_composition,
                             &d,
