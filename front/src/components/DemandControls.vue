@@ -3,7 +3,7 @@
     dense
     dense-toggle
     icon="tune"
-    label="Demandes personnalisées (soutirage)"
+    label="Soutirages personnalisés"
     class="q-mb-sm"
   >
     <q-card flat bordered class="q-pa-sm bg-grey-10">

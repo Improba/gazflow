@@ -238,7 +238,7 @@
           flat
           dense
           color="white"
-          label="Mode robuste"
+          label="Mode continuation"
           :disable="simulateStore.loading || !simulateStore.hasLastRun || networkStore.nodes.length === 0"
           @click="simulateStore.rerunWithRobustMode()"
         />

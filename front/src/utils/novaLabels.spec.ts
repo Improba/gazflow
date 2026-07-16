@@ -20,7 +20,7 @@ describe('novaLabels', () => {
   });
 
   it('labels scale not achieved', () => {
-    expect(novaOutcomeBadgeLabel(false, 'ScaleNotAchieved')).toBe('Demandes non atteintes');
+    expect(novaOutcomeBadgeLabel(false, 'ScaleNotAchieved')).toBe('Soutirages non couverts');
   });
 
   it('maps solver signatures when feasible', () => {

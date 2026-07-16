@@ -328,10 +328,10 @@ export const useSimulateStore = defineStore('simulate', () => {
         continuationLabel.value = null;
         if (msg.reason === 'timeout') {
           errorMessage.value =
-            'Délai dépassé — activez le mode robuste ou réduisez le scénario.';
+            'Délai dépassé — activez le mode continuation ou réduisez le scénario.';
         } else if (msg.reason === 'diverged') {
           errorMessage.value =
-            'Non-convergence — essayez le mode robuste (continuation de charge).';
+            'Non-convergence — essayez le mode continuation.';
         } else {
           errorMessage.value = null;
         }

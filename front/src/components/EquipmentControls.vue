@@ -4,7 +4,7 @@
     dense
     dense-toggle
     icon="settings_input_component"
-    label="Organes (paramètres)"
+    label="Réglages équipements"
     class="q-mb-sm"
   >
     <q-card flat bordered class="q-pa-sm bg-grey-10">

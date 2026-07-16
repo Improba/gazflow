@@ -53,7 +53,7 @@
       >
         <div class="text-subtitle2 q-mb-xs">
           Convergence en {{ simulateStore.result.iterations }} itérations
-          (résidu : {{ simulateStore.result.residual.toExponential(2) }})
+          (écart de convergence : {{ simulateStore.result.residual.toExponential(2) }})
         </div>
 
         <div class="row q-col-gutter-sm q-mb-sm">

@@ -3,7 +3,7 @@ import type { NovaCause, NovaSolverSignature } from 'src/services/api';
 export function novaOutcomeBadgeLabel(feasible: boolean, cause: string | undefined): string {
   if (feasible) return 'Faisable';
   if (cause === 'NotSolvedLocal') return 'Verdict non établi';
-  if (cause === 'ScaleNotAchieved') return 'Demandes non atteintes';
+  if (cause === 'ScaleNotAchieved') return 'Soutirages non couverts';
   if (cause === 'PressureExcess') return 'Dépassement borne haute';
   return 'Tenue pression non tenue';
 }

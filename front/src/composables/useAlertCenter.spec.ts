@@ -91,7 +91,7 @@ describe('useAlertCenter', () => {
   it('creates info and warning alerts from solver warnings', () => {
     const simulateStore = useSimulateStore();
     simulateStore.warnings = [
-      'mode robuste activé',
+      'mode continuation activé',
       'attention: convergence partielle',
     ];
 

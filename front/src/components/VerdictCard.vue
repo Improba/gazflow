@@ -76,7 +76,7 @@ const bannerIcon = computed(() => {
 const title = computed(() => {
   if (verdict.value?.feasible) return 'Scénario NoVa : tenue pression OK';
   if (verdict.value?.cause === 'NotSolvedLocal') return 'Scénario NoVa : verdict non établi';
-  if (verdict.value?.cause === 'ScaleNotAchieved') return 'Scénario NoVa : demandes non atteintes';
+  if (verdict.value?.cause === 'ScaleNotAchieved') return 'Scénario NoVa : soutirages non couverts';
   if (verdict.value?.cause === 'PressureExcess') return 'Scénario NoVa : dépassement borne haute';
   return 'Scénario NoVa : tenue pression non tenue';
 });
@@ -92,7 +92,7 @@ const subtitle = computed(() => {
   if (verdict.value.cause === 'ScaleNotAchieved') {
     const scale = verdict.value.demand_scale_achieved;
     const pct = scale != null ? Math.round(scale * 100) : '?';
-    return `Les demandes nominales n'ont pas été atteintes (palier ${pct} %).`;
+    return `Les soutirages nominaux n'ont pas été couverts (palier ${pct} %).`;
   }
   if (verdict.value.cause === 'PressureExcess') {
     return 'Un ou plusieurs nœuds dépassent leur borne haute — voir marges par contrainte.';
