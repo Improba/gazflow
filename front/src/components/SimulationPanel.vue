@@ -766,10 +766,20 @@ function onReduceAll() {
   startSimulation();
 }
 
-function onSaveReduced(demands: Record<string, number>) {
+async function onSaveReduced(demands: Record<string, number>) {
   const baseId = novaScenarioId.value;
-  if (!baseId) return;
-  void nominationStore.saveReduced(baseId, demands);
+  if (!baseId) {
+    Notify.create({
+      type: 'warning',
+      message: 'Sélectionnez une nomination avant d\'enregistrer la version réduite.',
+    });
+    return;
+  }
+  try {
+    await nominationStore.saveReduced(baseId, demands);
+  } catch {
+    // Le store affiche déjà une notification négative.
+  }
 }
 
 function startSimulation() {

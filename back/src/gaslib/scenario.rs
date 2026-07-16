@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -1539,7 +1539,7 @@ pub fn apply_reduced_demands_to_scn_xml(
 
     let mut result = String::with_capacity(base_xml.len());
     let mut pos = 0;
-    let mut touched = 0usize;
+    let mut touched_ids = HashSet::new();
 
     while pos < base_xml.len() {
         let Some(node_start) = base_xml[pos..].find("<node") else {
@@ -1576,7 +1576,7 @@ pub fn apply_reduced_demands_to_scn_xml(
                 if let Some(&q_m3s) = reduced_demands.get(id) {
                     let flow_val = format_scn_flow_value(m3_per_s_to_1000m3_per_h(q_m3s));
                     node_block = replace_flow_values_in_node_block(&node_block, &flow_val);
-                    touched += 1;
+                    touched_ids.insert(id.clone());
                 }
             }
         }
@@ -1585,8 +1585,17 @@ pub fn apply_reduced_demands_to_scn_xml(
         pos = close_pos;
     }
 
-    if touched == 0 {
-        anyhow::bail!("no matching exit nodes found in base .scn for reduced_demands");
+    let missing: Vec<&String> = reduced_demands
+        .keys()
+        .filter(|id| !touched_ids.contains(*id))
+        .collect();
+    if !missing.is_empty() {
+        let mut ids: Vec<&str> = missing.iter().map(|s| s.as_str()).collect();
+        ids.sort_unstable();
+        anyhow::bail!(
+            "reduced_demands sink ids not found in base .scn: {}",
+            ids.join(", ")
+        );
     }
 
     Ok(result)
@@ -1621,6 +1630,26 @@ mod tests {
         assert!((parsed.demands["exit01"] + 25.0).abs() < 1e-6);
         assert!((parsed.demands["entry01"] - 44.444_444_444).abs() < 1e-6);
         assert!(patched.contains(r#"value="90.0000""#));
+    }
+
+    #[test]
+    fn test_apply_reduced_demands_to_scn_xml_missing_sink_ids() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<boundaryValue xmlns="http://gaslib.zib.de/Gas">
+  <scenario id="base">
+    <node type="exit" id="exit01">
+      <flow bound="lower" value="100.00" unit="1000m_cube_per_hour"/>
+      <flow bound="upper" value="100.00" unit="1000m_cube_per_hour"/>
+    </node>
+  </scenario>
+</boundaryValue>"#;
+        let mut reduced = HashMap::new();
+        reduced.insert("exit01".to_string(), -25.0);
+        reduced.insert("exit_missing".to_string(), -10.0);
+        let err = apply_reduced_demands_to_scn_xml(xml, &reduced).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("exit_missing"));
+        assert!(!msg.contains("exit01"));
     }
 
     #[test]

@@ -68,17 +68,25 @@ export const useNominationStore = defineStore('nomination', () => {
   }
 
   async function saveReduced(baseScenarioId: string, demands: Record<string, number>) {
-    const summary = await api.saveReducedNovaNomination({
-      base_scenario_id: baseScenarioId,
-      reduced_demands: demands,
-    });
-    await load(true);
-    selectById(summary.id);
-    Notify.create({
-      type: 'positive',
-      message: `Nomination réduite enregistrée (${summary.filename})`,
-    });
-    return summary;
+    try {
+      const summary = await api.saveReducedNovaNomination({
+        base_scenario_id: baseScenarioId,
+        reduced_demands: demands,
+      });
+      await load(true);
+      selectById(summary.id);
+      Notify.create({
+        type: 'positive',
+        message: `Nomination réduite enregistrée (${summary.filename})`,
+      });
+      return summary;
+    } catch (err) {
+      Notify.create({
+        type: 'negative',
+        message: err instanceof Error ? err.message : 'Impossible d\'enregistrer la nomination réduite',
+      });
+      throw err;
+    }
   }
 
   function selectById(id: string | null) {

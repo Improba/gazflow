@@ -34,6 +34,7 @@ vi.mock('src/stores/network', () => ({
 }));
 
 import { useNominationStore } from './nomination';
+import { Notify } from 'quasar';
 
 describe('useNominationStore', () => {
   beforeEach(() => {
@@ -117,5 +118,17 @@ describe('useNominationStore', () => {
     });
     expect(store.activeId).toBe('imported-nomination_mild_618_reduit-123');
     expect(store.activeFilename).toBe('nomination_mild_618_reduit.scn');
+  });
+
+  it('saveReduced notifies and rethrows on API failure', async () => {
+    const store = useNominationStore();
+    apiSpies.saveReducedNovaNomination.mockRejectedValueOnce(new Error('sink ids invalides'));
+
+    await expect(store.saveReduced('nomination_mild_618', { exit01: -1 })).rejects.toThrow(
+      'sink ids invalides',
+    );
+    expect(Notify.create).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'negative', message: 'sink ids invalides' }),
+    );
   });
 });

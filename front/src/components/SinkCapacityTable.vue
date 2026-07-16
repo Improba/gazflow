@@ -44,11 +44,16 @@
           color="primary"
           icon="save"
           label="Enregistrer la nomination réduite"
-          :disable="simulateStore.loading"
+          :disable="simulateStore.loading || !hasActiveNomination"
           @click="saveReduced"
         >
           <q-tooltip max-width="280px">
-            Sauvegarde les débits max faisables comme une nouvelle nomination .scn et la sélectionne.
+            <span v-if="hasActiveNomination">
+              Sauvegarde les débits max faisables comme une nouvelle nomination .scn et la sélectionne.
+            </span>
+            <span v-else>
+              Sélectionnez une nomination active pour enregistrer la version réduite.
+            </span>
           </q-tooltip>
         </q-btn>
       </div>
@@ -124,9 +129,11 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import { useNominationStore } from 'src/stores/nomination';
 import { useSimulateStore } from 'src/stores/simulate';
 
 const simulateStore = useSimulateStore();
+const nominationStore = useNominationStore();
 
 const emit = defineEmits<{
   (e: 'run-study'): void;
@@ -140,6 +147,8 @@ const visible = computed(() => simulateStore.activeScenarioId !== null);
 const hasReductions = computed(() =>
   simulateStore.sinkCapacity.some((r) => r.feasible_fraction < 1),
 );
+
+const hasActiveNomination = computed(() => nominationStore.activeId !== null);
 
 function reduceAll() {
   emit('reduce-all');

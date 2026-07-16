@@ -186,10 +186,20 @@ function onReduceAll(): void {
   notifyReduceFromMap();
 }
 
-function onSaveReduced(demands: Record<string, number>): void {
+async function onSaveReduced(demands: Record<string, number>): Promise<void> {
   const baseId = nominationStore.activeId;
-  if (!baseId) return;
-  void nominationStore.saveReduced(baseId, demands);
+  if (!baseId) {
+    $q.notify({
+      type: 'warning',
+      message: 'Sélectionnez une nomination avant d\'enregistrer la version réduite.',
+    });
+    return;
+  }
+  try {
+    await nominationStore.saveReduced(baseId, demands);
+  } catch {
+    // Le store affiche déjà une notification négative.
+  }
 }
 </script>
 
