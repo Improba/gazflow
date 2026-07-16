@@ -1288,10 +1288,12 @@ async fn compute_contingency_report(
         })?;
     let pool = state.rayon_pool.clone();
     let gas_composition = active_gas_composition(state);
+    let state_for_mode = state.clone();
 
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         pool.install(|| {
+            sync_compressor_map_mode_for_solve(&state_for_mode);
             solver::run_contingency_analysis(
                 &network_for_solve,
                 &demands,

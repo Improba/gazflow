@@ -49,7 +49,8 @@
         >
           <q-tooltip max-width="280px">
             <span v-if="hasActiveNomination">
-              Sauvegarde les débits max faisables comme une nouvelle nomination .scn et la sélectionne.
+              Sauvegarde les débits max faisables (exits) comme une nouvelle nomination .scn
+              et la sélectionne. Les entrées restent nominales : re-validez avant de certifier.
             </span>
             <span v-else>
               Sélectionnez une nomination active pour enregistrer la version réduite.

@@ -1202,9 +1202,11 @@ fn run_contingency_stream(ctx: ContingencyStreamContext) {
             return;
         }
 
-        let result = state
-            .rayon_pool
-            .install(|| solver::evaluate_contingency_case(&network, &demands, case, config));
+        let state_for_mode = state.clone();
+        let result = state.rayon_pool.install(|| {
+            super::sync_compressor_map_mode_for_solve(&state_for_mode);
+            solver::evaluate_contingency_case(&network, &demands, case, config)
+        });
         results.push(result.clone());
         let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
         let _ = tx.blocking_send(ServerMessage::ContingencyCase {

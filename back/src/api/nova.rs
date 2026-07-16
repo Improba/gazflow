@@ -274,9 +274,16 @@ pub(super) async fn post_import_nomination(
 }
 
 fn reduced_nomination_stem(base_scenario_id: &str) -> String {
-    let stem = file_stem(base_scenario_id);
+    let mut stem = file_stem(base_scenario_id);
     if stem.is_empty() {
-        base_scenario_id.to_string()
+        stem = base_scenario_id.to_string();
+    }
+    // Évite `imported-imported-…_reduit` quand la base est déjà une importée.
+    while let Some(stripped) = stem.strip_prefix("imported-") {
+        stem = stripped.to_string();
+    }
+    if stem.is_empty() {
+        "nomination".to_string()
     } else {
         stem
     }
@@ -687,6 +694,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn reduced_nomination_stem_strips_imported_prefix() {
+        assert_eq!(
+            reduced_nomination_stem("imported-custom-1234.scn"),
+            "custom-1234"
+        );
+        assert_eq!(
+            reduced_nomination_stem("nomination_mild_618"),
+            "nomination_mild_618"
+        );
+        assert_eq!(
+            reduced_nomination_stem("imported-imported-foo_reduit-1"),
+            "foo_reduit-1"
+        );
     }
 
     #[test]
