@@ -275,6 +275,7 @@
         <SinkDiagnosticsList @select-node="onSelectSink" />
         <MarginsByConstraint @select-node="onSelectSink" />
         <BoundarySupplyList @select-node="onSelectSink" />
+        <CompressorMapPanel />
       </div>
 
       <div
@@ -488,6 +489,7 @@ import ScenarioPanel from 'src/components/ScenarioPanel.vue';
 import SinkCapacityTable from 'src/components/SinkCapacityTable.vue';
 import SinkDiagnosticPopover from 'src/components/SinkDiagnosticPopover.vue';
 import SinkDiagnosticsList from 'src/components/SinkDiagnosticsList.vue';
+import CompressorMapPanel from 'src/components/workspace/CompressorMapPanel.vue';
 import MarginsByConstraint from 'src/components/MarginsByConstraint.vue';
 import BoundarySupplyList from 'src/components/BoundarySupplyList.vue';
 import NovaWorkflowStepper from 'src/components/workspace/NovaWorkflowStepper.vue';

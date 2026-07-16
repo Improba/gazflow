@@ -17,6 +17,7 @@
         <SinkDiagnosticsList @select-node="(id) => emit('select-node', id)" />
         <MarginsByConstraint @select-node="(id) => emit('select-node', id)" />
         <BoundarySupplyList @select-node="(id) => emit('select-node', id)" />
+        <CompressorMapPanel />
       </div>
 
       <div
@@ -116,6 +117,7 @@ import SinkCapacityTable from 'src/components/SinkCapacityTable.vue';
 import SinkDiagnosticsList from 'src/components/SinkDiagnosticsList.vue';
 import MarginsByConstraint from 'src/components/MarginsByConstraint.vue';
 import BoundarySupplyList from 'src/components/BoundarySupplyList.vue';
+import CompressorMapPanel from 'src/components/workspace/CompressorMapPanel.vue';
 import VerdictCard from 'src/components/VerdictCard.vue';
 import ResultValueList from 'src/components/ResultValueList.vue';
 import type { NovaWorkflowStep } from 'src/composables/useNovaWorkflow';

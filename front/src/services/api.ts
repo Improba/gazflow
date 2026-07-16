@@ -176,6 +176,24 @@ export interface SinkCapacityReport {
   feasible_at_nominal: boolean;
 }
 
+export type CompressorMapMode = 'legacy' | 'measurement' | 'biquadratic';
+
+export interface CompressorMapModeResponse {
+  mode: CompressorMapMode;
+}
+
+export interface CompressorOperatingPoint {
+  station_id: string;
+  q_m3s: number;
+  ratio: number;
+  p_in_bar: number;
+  p_out_bar: number;
+}
+
+export interface CompressorOperatingPointsResponse {
+  points: CompressorOperatingPoint[];
+}
+
 export interface NovaCapacityRequest {
   scenario_id: string;
   sink_ids?: string[];
@@ -792,5 +810,22 @@ export const api = {
 
   async deleteBatchRun(id: string): Promise<void> {
     await client.delete(`/batch/runs/${encodeURIComponent(id)}`);
+  },
+
+  async getCompressorMapMode(): Promise<CompressorMapModeResponse> {
+    const { data } = await client.get<CompressorMapModeResponse>('/compressor/map-mode');
+    return data;
+  },
+
+  async setCompressorMapMode(mode: CompressorMapMode): Promise<CompressorMapModeResponse> {
+    const { data } = await client.put<CompressorMapModeResponse>('/compressor/map-mode', { mode });
+    return data;
+  },
+
+  async getCompressorOperatingPoints(): Promise<CompressorOperatingPointsResponse> {
+    const { data } = await client.get<CompressorOperatingPointsResponse>(
+      '/compressor/operating-points',
+    );
+    return data;
   },
 };

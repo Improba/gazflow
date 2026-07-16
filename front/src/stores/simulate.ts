@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { api, type SimulationResult, type CapacityViolation, type EquipmentState, type PipeEquipmentDto, type ScenarioPressureSlip, type ScenarioPressureMargin, type BoundaryPressureSupplyReport, type SinkDiagnostic, type NovaVerdict, type SinkCapacityReport } from 'src/services/api';
+import { api, type SimulationResult, type CapacityViolation, type EquipmentState, type PipeEquipmentDto, type ScenarioPressureSlip, type ScenarioPressureMargin, type BoundaryPressureSupplyReport, type SinkDiagnostic, type NovaVerdict, type SinkCapacityReport, type CompressorMapMode, type CompressorOperatingPoint } from 'src/services/api';
 import {
   SimulationWsClient,
   mergeConvergedMessage,
@@ -72,6 +72,9 @@ export const useSimulateStore = defineStore('simulate', () => {
   const sinkCapacity = ref<SinkCapacityReport[]>([]);
   const capacityLoading = ref(false);
   const capacityError = ref<string | null>(null);
+
+  const compressorMapMode = ref<CompressorMapMode | null>(null);
+  const compressorOperatingPoints = ref<CompressorOperatingPoint[]>([]);
 
   let wsClient: SimulationWsClient | null = null;
   let lastSnapshotAt = 0;
@@ -228,6 +231,30 @@ export const useSimulateStore = defineStore('simulate', () => {
     }
   }
 
+  async function loadCompressorMapMode() {
+    try {
+      const { mode } = await api.getCompressorMapMode();
+      compressorMapMode.value = mode;
+    } catch {
+      compressorMapMode.value = 'legacy';
+    }
+  }
+
+  async function loadCompressorOperatingPoints() {
+    try {
+      const { points } = await api.getCompressorOperatingPoints();
+      compressorOperatingPoints.value = points;
+    } catch {
+      compressorOperatingPoints.value = [];
+    }
+  }
+
+  async function setCompressorMapMode(mode: CompressorMapMode) {
+    const { mode: confirmed } = await api.setCompressorMapMode(mode);
+    compressorMapMode.value = confirmed;
+    await rerunLastSimulation();
+  }
+
   function cancelSimulation() {
     if (!wsClient || !currentRunId.value || !loading.value) {
       return;
@@ -291,6 +318,7 @@ export const useSimulateStore = defineStore('simulate', () => {
         loading.value = false;
         continuationLabel.value = null;
         addLog(`converged in ${msg.total_ms}ms`);
+        void loadCompressorOperatingPoints();
         break;
       case 'cancelled':
         if (!isCurrentRun(msg.run_id)) return;
@@ -355,6 +383,7 @@ export const useSimulateStore = defineStore('simulate', () => {
     novaVerdict.value = null;
     sinkCapacity.value = [];
     capacityError.value = null;
+    compressorOperatingPoints.value = [];
     continuationLabel.value = null;
     previewStep.value = null;
   }
@@ -456,6 +485,11 @@ export const useSimulateStore = defineStore('simulate', () => {
     sinkCapacity,
     capacityLoading,
     capacityError,
+    compressorMapMode,
+    compressorOperatingPoints,
+    loadCompressorMapMode,
+    loadCompressorOperatingPoints,
+    setCompressorMapMode,
     runSinkCapacity,
     runSimulation,
     rerunLastSimulation,

@@ -23,6 +23,11 @@ const apiSpies = vi.hoisted(() => ({
       feasible_at_nominal: false,
     },
   ]),
+  getCompressorMapMode: vi.fn(async () => ({ mode: 'legacy' as const })),
+  setCompressorMapMode: vi.fn(async (mode: 'legacy' | 'measurement' | 'biquadratic') => ({
+    mode,
+  })),
+  getCompressorOperatingPoints: vi.fn(async () => ({ points: [] })),
 }));
 
 const networkStoreMock = vi.hoisted(() => ({
@@ -41,6 +46,9 @@ vi.mock('src/services/api', () => ({
   api: {
     exportSimulation: apiSpies.exportSimulation,
     runNovaCapacity: apiSpies.runNovaCapacity,
+    getCompressorMapMode: apiSpies.getCompressorMapMode,
+    setCompressorMapMode: apiSpies.setCompressorMapMode,
+    getCompressorOperatingPoints: apiSpies.getCompressorOperatingPoints,
   },
 }));
 
