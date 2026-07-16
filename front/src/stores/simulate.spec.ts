@@ -30,6 +30,12 @@ const apiSpies = vi.hoisted(() => ({
   getCompressorOperatingPoints: vi.fn(async () => ({ points: [] })),
 }));
 
+const notifySpy = vi.hoisted(() => vi.fn());
+
+vi.mock('quasar', () => ({
+  Notify: { create: notifySpy },
+}));
+
 const networkStoreMock = vi.hoisted(() => ({
   nodes: [{ id: 'N1' }, { id: 'N2' }] as { id: string }[],
 }));
@@ -67,6 +73,7 @@ describe('useSimulateStore', () => {
     wsSpies.cancelSimulation.mockClear();
     apiSpies.exportSimulation.mockClear();
     apiSpies.runNovaCapacity.mockClear();
+    notifySpy.mockClear();
   });
 
   it('passes warm-start pressures from previous result', async () => {
@@ -210,11 +217,54 @@ describe('useSimulateStore', () => {
     expect(store.capacityLoading).toBe(false);
   });
 
+  it('runSinkCapacity defaults to deficit sinks from diagnostics when ids omitted', async () => {
+    const store = useSimulateStore();
+    store.activeScenarioId = 'nomination_mild_618';
+    store.sinkDiagnostics = [
+      {
+        node_id: 'sink_42',
+        trace: [],
+        max_upstream_pressure_bar: 24.0,
+        required_lower_bar: 26.0,
+        supply_gap_bar: 2.0,
+      },
+    ];
+
+    await store.runSinkCapacity();
+
+    expect(apiSpies.runNovaCapacity).toHaveBeenCalledWith({
+      scenario_id: 'nomination_mild_618',
+      sink_ids: ['sink_42'],
+    });
+  });
+
+  it('runSinkCapacity warns and skips API when no deficit sinks and feasible', async () => {
+    const store = useSimulateStore();
+    store.activeScenarioId = 'nomination_mild_618';
+    store.novaVerdict = { feasible: true, deficit_sinks: [], cause: 'PressureReachability' };
+
+    await store.runSinkCapacity();
+
+    expect(apiSpies.runNovaCapacity).not.toHaveBeenCalled();
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning' }),
+    );
+  });
+
   it('runSinkCapacity sets capacityError when no scenario is active', async () => {
     const store = useSimulateStore();
     store.activeScenarioId = null;
     await store.runSinkCapacity();
     expect(apiSpies.runNovaCapacity).not.toHaveBeenCalled();
     expect(store.capacityError).not.toBeNull();
+  });
+
+  it('resetSimulation clears activeScenarioId and lastRunScenarioId', () => {
+    const store = useSimulateStore();
+    store.activeScenarioId = 'nomination_mild_618';
+    store.lastRunScenarioId = 'nomination_mild_618';
+    store.resetSimulation();
+    expect(store.activeScenarioId).toBeNull();
+    expect(store.lastRunScenarioId).toBeNull();
   });
 });

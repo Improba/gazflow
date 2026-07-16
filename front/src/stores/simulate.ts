@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
+import { Notify } from 'quasar';
 import { api, type SimulationResult, type CapacityViolation, type EquipmentState, type PipeEquipmentDto, type ScenarioPressureSlip, type ScenarioPressureMargin, type BoundaryPressureSupplyReport, type SinkDiagnostic, type NovaVerdict, type SinkCapacityReport, type CompressorMapMode, type CompressorOperatingPoint } from 'src/services/api';
 import {
   SimulationWsClient,
@@ -8,6 +9,7 @@ import {
   type WsStartOptions,
   type WsCapacityOptions,
 } from 'src/services/ws';
+import { deficitSinkIds } from 'src/utils/novaDeficitSinks';
 import { presetForNodeCount, presetRobust } from 'src/utils/solverPresets';
 import { useNetworkStore } from 'src/stores/network';
 import { useNominationStore } from 'src/stores/nomination';
@@ -218,6 +220,10 @@ export const useSimulateStore = defineStore('simulate', () => {
       : undefined;
   }
 
+  function lastRunOptions(): (WsStartOptions & WsCapacityOptions) | undefined {
+    return lastRunParams?.options ? { ...lastRunParams.options } : undefined;
+  }
+
   function setRunScenarioSummary(summary: RunScenarioSummary | null) {
     runScenarioSummary.value = summary;
   }
@@ -232,10 +238,27 @@ export const useSimulateStore = defineStore('simulate', () => {
       capacityError.value = "Aucun scénario NoVa actif — sélectionnez une nomination.";
       return;
     }
+
+    let ids: string[] | undefined;
+    if (sinkIds !== undefined) {
+      ids = sinkIds.length > 0 ? sinkIds : undefined;
+    } else {
+      const resolved = deficitSinkIds(sinkDiagnostics.value, novaVerdict.value);
+      if (resolved.length === 0) {
+        Notify.create({
+          type: 'warning',
+          message: novaVerdict.value?.feasible
+            ? 'Aucun point déficitaire — l\'étude capacité cible les sinks en déficit.'
+            : 'Aucun point déficitaire identifié pour l\'étude capacité.',
+        });
+        return;
+      }
+      ids = resolved;
+    }
+
     capacityLoading.value = true;
     capacityError.value = null;
     try {
-      const ids = sinkIds && sinkIds.length > 0 ? sinkIds : undefined;
       sinkCapacity.value = await api.runNovaCapacity({
         scenario_id: scenarioId,
         sink_ids: ids,
@@ -398,6 +421,8 @@ export const useSimulateStore = defineStore('simulate', () => {
     boundarySupply.value = [];
     sinkDiagnostics.value = [];
     novaVerdict.value = null;
+    activeScenarioId.value = null;
+    lastRunScenarioId.value = null;
     sinkCapacity.value = [];
     capacityError.value = null;
     compressorOperatingPoints.value = [];
@@ -514,6 +539,7 @@ export const useSimulateStore = defineStore('simulate', () => {
     hasLastRun,
     lastInputDemands,
     lastRunEquipmentOverrides,
+    lastRunOptions,
     lastRunScenarioId,
     scenarioDirty,
     setRunScenarioSummary,
