@@ -254,6 +254,11 @@
     </q-banner>
 
     <template v-if="simulateStore.result">
+      <NovaWorkflowStepper
+        v-if="novaWorkflowEnabled"
+        class="q-mb-sm"
+      />
+
       <div class="row q-mb-sm">
         <q-btn
           v-if="simulateStore.novaActive"
@@ -269,16 +274,38 @@
           <q-tooltip>Verdict, points déficitaires et capacité — export PDF ou JSON.</q-tooltip>
         </q-btn>
       </div>
-      <VerdictCard @focus-deficits="focusFirstDeficit" />
-      <SinkDiagnosticsList @select-node="onSelectSink" />
-      <MarginsByConstraint @select-node="onSelectSink" />
-      <BoundarySupplyList @select-node="onSelectSink" />
-      <SinkCapacityTable
-        @run-study="runCapacityStudy"
-        @reduce="onReduceSink"
-        @reduce-all="onReduceAll"
-      />
-      <SinkDiagnosticPopover @reduce="onReduceSink" @run-study="runCapacityStudy" />
+
+      <div
+        data-section="verdict"
+        class="nova-section q-mb-sm"
+        :class="{ 'nova-section--active': novaCurrentStep === 'verdict' }"
+      >
+        <VerdictCard @focus-deficits="focusFirstDeficit" />
+      </div>
+
+      <div
+        data-section="causes"
+        class="nova-section q-mb-sm"
+        :class="{ 'nova-section--active': novaCurrentStep === 'causes' }"
+      >
+        <SinkDiagnosticsList @select-node="onSelectSink" />
+        <MarginsByConstraint @select-node="onSelectSink" />
+        <BoundarySupplyList @select-node="onSelectSink" />
+      </div>
+
+      <div
+        data-section="capacity"
+        class="nova-section q-mb-sm"
+        :class="{ 'nova-section--active': novaCurrentStep === 'capacity' }"
+      >
+        <SinkCapacityTable
+          @run-study="runCapacityStudy"
+          @reduce="onReduceSink"
+          @reduce-all="onReduceAll"
+        />
+        <SinkDiagnosticPopover @reduce="onReduceSink" @run-study="runCapacityStudy" />
+      </div>
+
       <CertificationReportDialog v-model="showReport" />
 
       <q-banner
@@ -293,23 +320,29 @@
         {{ partialContinuationWarning }}
       </q-banner>
 
-      <div class="text-subtitle2 q-mb-xs">
-        Convergence en {{ simulateStore.result.iterations }} itérations
-        (résidu : {{ simulateStore.result.residual.toExponential(2) }})
-      </div>
+      <div
+        data-section="export"
+        class="nova-section q-mb-sm"
+        :class="{ 'nova-section--active': novaCurrentStep === 'export' }"
+      >
+        <div class="text-subtitle2 q-mb-xs">
+          Convergence en {{ simulateStore.result.iterations }} itérations
+          (résidu : {{ simulateStore.result.residual.toExponential(2) }})
+        </div>
 
-      <div class="row q-col-gutter-sm q-mb-sm">
-        <div v-for="fmt in exportFormats" :key="fmt.key" class="col-6">
-          <q-btn
-            dense
-            :label="fmt.label"
-            :icon="fmt.icon"
-            color="secondary"
-            class="full-width"
-            :loading="simulateStore.exporting"
-            :disable="simulateStore.status !== 'converged' || simulateStore.exporting"
-            @click="simulateStore.exportResult(fmt.key)"
-          />
+        <div class="row q-col-gutter-sm q-mb-sm">
+          <div v-for="fmt in exportFormats" :key="fmt.key" class="col-6">
+            <q-btn
+              dense
+              :label="fmt.label"
+              :icon="fmt.icon"
+              color="secondary"
+              class="full-width"
+              :loading="simulateStore.exporting"
+              :disable="simulateStore.status !== 'converged' || simulateStore.exporting"
+              @click="simulateStore.exportResult(fmt.key)"
+            />
+          </div>
         </div>
       </div>
 
@@ -459,10 +492,12 @@ import SinkDiagnosticPopover from 'src/components/SinkDiagnosticPopover.vue';
 import SinkDiagnosticsList from 'src/components/SinkDiagnosticsList.vue';
 import MarginsByConstraint from 'src/components/MarginsByConstraint.vue';
 import BoundarySupplyList from 'src/components/BoundarySupplyList.vue';
+import NovaWorkflowStepper from 'src/components/workspace/NovaWorkflowStepper.vue';
 import VerdictCard from 'src/components/VerdictCard.vue';
 import LogPanel from 'src/components/LogPanel.vue';
 import ProgressBar from 'src/components/ProgressBar.vue';
 import ResultValueList from 'src/components/ResultValueList.vue';
+import { useNovaWorkflow } from 'src/composables/useNovaWorkflow';
 import { useNetworkStore } from 'src/stores/network';
 import { useNominationStore } from 'src/stores/nomination';
 import { useSimulateStore } from 'src/stores/simulate';
@@ -480,6 +515,7 @@ const simulateStore = useSimulateStore();
 const editorStore = useEditorStore();
 const timeseriesStore = useTimeseriesStore();
 const nominationStore = useNominationStore();
+const { enabled: novaWorkflowEnabled, currentStep: novaCurrentStep } = useNovaWorkflow();
 
 const showReport = ref(false);
 const route = useRoute();
@@ -753,3 +789,17 @@ async function loadDemo() {
   }
 }
 </script>
+
+<style scoped>
+.nova-section {
+  border-left: 3px solid transparent;
+  padding-left: 8px;
+  margin-left: -4px;
+  border-radius: 2px;
+  transition: border-color 0.2s ease;
+}
+
+.nova-section--active {
+  border-left-color: var(--q-primary);
+}
+</style>

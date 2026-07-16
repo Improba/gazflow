@@ -84,6 +84,11 @@
       </template>
     </q-banner>
 
+    <NovaWorkflowStepper
+      v-if="hasNetwork && hasResult && novaWorkflowEnabled"
+      class="workspace-page__stepper q-mb-md"
+    />
+
     <div v-if="hasNetwork" class="workspace-page__body">
       <div class="workspace-page__main">
         <SchematicView v-if="activeView === 'schematic'" />
@@ -92,6 +97,7 @@
       </div>
       <aside class="workspace-page__rail">
         <ResultsRail
+          :active-section="novaWorkflowEnabled ? novaCurrentStep : null"
           @focus-deficits="onFocusDeficits"
           @select-node="onSelectNode"
           @run-study="onRunStudy"
@@ -110,8 +116,10 @@ import { useQuasar } from 'quasar';
 import SchematicView from 'src/components/workspace/SchematicView.vue';
 import PressureProfileView from 'src/components/workspace/PressureProfileView.vue';
 import ResultsTableView from 'src/components/workspace/ResultsTableView.vue';
+import NovaWorkflowStepper from 'src/components/workspace/NovaWorkflowStepper.vue';
 import ResultsRail from 'src/components/workspace/ResultsRail.vue';
 import { useDemo } from 'src/composables/useDemo';
+import { useNovaWorkflow } from 'src/composables/useNovaWorkflow';
 import { useNetworkStore } from 'src/stores/network';
 import { useSimulateStore } from 'src/stores/simulate';
 
@@ -122,6 +130,7 @@ const $q = useQuasar();
 const networkStore = useNetworkStore();
 const simulateStore = useSimulateStore();
 const { isLoadingDemo, launchDemo } = useDemo();
+const { enabled: novaWorkflowEnabled, currentStep: novaCurrentStep } = useNovaWorkflow();
 
 const activeView = ref<WorkspaceView>('schematic');
 const selectedNode = ref<string | null>(null);
@@ -184,6 +193,10 @@ function onReduceAll(): void {
 .workspace-page__switcher {
   border: 1px solid var(--scada-border);
   border-radius: 4px;
+}
+
+.workspace-page__stepper {
+  max-width: 100%;
 }
 
 .workspace-page__body {

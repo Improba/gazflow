@@ -17,36 +17,63 @@
         </q-btn>
       </div>
 
-      <VerdictCard @focus-deficits="emit('focus-deficits')" />
-      <SinkDiagnosticsList @select-node="(id) => emit('select-node', id)" />
-      <MarginsByConstraint @select-node="(id) => emit('select-node', id)" />
-      <BoundarySupplyList @select-node="(id) => emit('select-node', id)" />
-      <SinkCapacityTable
-        @run-study="emit('run-study')"
-        @reduce="(sinkId, maxFeasibleQ) => emit('reduce', sinkId, maxFeasibleQ)"
-        @reduce-all="emit('reduce-all')"
-      />
-      <CertificationReportDialog v-model="showReport" />
-
-      <div class="text-subtitle2 q-mb-xs">
-        Convergence en {{ simulateStore.result.iterations }} itérations
-        (résidu : {{ simulateStore.result.residual.toExponential(2) }})
+      <div
+        data-section="verdict"
+        class="nova-section q-mb-sm"
+        :class="{ 'nova-section--active': activeSection === 'verdict' }"
+      >
+        <VerdictCard @focus-deficits="emit('focus-deficits')" />
       </div>
 
-      <div class="row q-col-gutter-sm q-mb-sm">
-        <div v-for="fmt in exportFormats" :key="fmt.key" class="col-6">
-          <q-btn
-            dense
-            :label="fmt.label"
-            :icon="fmt.icon"
-            color="secondary"
-            class="full-width"
-            :loading="simulateStore.exporting"
-            :disable="simulateStore.status !== 'converged' || simulateStore.exporting"
-            @click="simulateStore.exportResult(fmt.key)"
-          />
+      <div
+        data-section="causes"
+        class="nova-section q-mb-sm"
+        :class="{ 'nova-section--active': activeSection === 'causes' }"
+      >
+        <SinkDiagnosticsList @select-node="(id) => emit('select-node', id)" />
+        <MarginsByConstraint @select-node="(id) => emit('select-node', id)" />
+        <BoundarySupplyList @select-node="(id) => emit('select-node', id)" />
+      </div>
+
+      <div
+        data-section="capacity"
+        class="nova-section q-mb-sm"
+        :class="{ 'nova-section--active': activeSection === 'capacity' }"
+      >
+        <SinkCapacityTable
+          @run-study="emit('run-study')"
+          @reduce="(sinkId, maxFeasibleQ) => emit('reduce', sinkId, maxFeasibleQ)"
+          @reduce-all="emit('reduce-all')"
+        />
+      </div>
+
+      <div
+        data-section="export"
+        class="nova-section q-mb-sm"
+        :class="{ 'nova-section--active': activeSection === 'export' }"
+      >
+        <div class="text-subtitle2 q-mb-xs">
+          Convergence en {{ simulateStore.result.iterations }} itérations
+          (résidu : {{ simulateStore.result.residual.toExponential(2) }})
+        </div>
+
+        <div class="row q-col-gutter-sm q-mb-sm">
+          <div v-for="fmt in exportFormats" :key="fmt.key" class="col-6">
+            <q-btn
+              dense
+              :label="fmt.label"
+              :icon="fmt.icon"
+              color="secondary"
+              class="full-width"
+              :loading="simulateStore.exporting"
+              :disable="simulateStore.status !== 'converged' || simulateStore.exporting"
+              @click="simulateStore.exportResult(fmt.key)"
+            />
+          </div>
         </div>
       </div>
+
+      <CertificationReportDialog v-model="showReport" />
 
       <q-expansion-item
         dense
@@ -93,10 +120,20 @@ import MarginsByConstraint from 'src/components/MarginsByConstraint.vue';
 import BoundarySupplyList from 'src/components/BoundarySupplyList.vue';
 import VerdictCard from 'src/components/VerdictCard.vue';
 import ResultValueList from 'src/components/ResultValueList.vue';
+import type { NovaWorkflowStep } from 'src/composables/useNovaWorkflow';
 import { useSimulateStore } from 'src/stores/simulate';
 
 const simulateStore = useSimulateStore();
 const showReport = ref(false);
+
+withDefaults(
+  defineProps<{
+    activeSection?: NovaWorkflowStep | null;
+  }>(),
+  {
+    activeSection: null,
+  },
+);
 
 const emit = defineEmits<{
   (e: 'focus-deficits'): void;
@@ -120,5 +157,17 @@ const flowCount = computed(() => Object.keys(simulateStore.result?.flows ?? {}).
 <style scoped>
 .results-rail {
   color: var(--scada-text);
+}
+
+.nova-section {
+  border-left: 3px solid transparent;
+  padding-left: 8px;
+  margin-left: -4px;
+  border-radius: 2px;
+  transition: border-color 0.2s ease;
+}
+
+.nova-section--active {
+  border-left-color: var(--q-primary);
 }
 </style>
