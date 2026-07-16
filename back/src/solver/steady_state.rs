@@ -1353,6 +1353,72 @@ pub fn scenario_pressure_slips(network: &GasNetwork, result: &SolverResult) -> V
     slips
 }
 
+/// Marge à la borne pression (basse / haute) sur un nœud libre — tous les nœuds contraints,
+/// pas seulement les violations.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScenarioPressureMargin {
+    pub node_id: String,
+    pub solved_pressure_bar: f64,
+    pub lower_bar: Option<f64>,
+    pub upper_bar: Option<f64>,
+    /// solved − lower (bar) ; positif = au-dessus du plancher.
+    pub margin_lower_bar: Option<f64>,
+    /// upper − solved (bar) ; positif = sous le plafond.
+    pub margin_upper_bar: Option<f64>,
+    /// Borne issue du `.scn` (Phase I-bis), vs `.net` seul.
+    pub from_scenario_envelope: bool,
+}
+
+fn margin_tightness(m: &ScenarioPressureMargin) -> f64 {
+    let mut tight = f64::INFINITY;
+    if let Some(ml) = m.margin_lower_bar {
+        tight = tight.min(ml);
+    }
+    if let Some(mu) = m.margin_upper_bar {
+        tight = tight.min(mu);
+    }
+    tight
+}
+
+/// Marges pression structurées (triées par marge la plus tendue ; jusqu'à 25 nœuds les plus tendus).
+pub fn scenario_pressure_margins(
+    network: &GasNetwork,
+    result: &SolverResult,
+) -> Vec<ScenarioPressureMargin> {
+    let mut margins = Vec::new();
+    for node in network.nodes() {
+        if node.pressure_fixed_bar.is_some() {
+            continue;
+        }
+        let solved = result.pressures.get(&node.id).copied().unwrap_or(0.0);
+        if !solved.is_finite() || solved <= 0.0 {
+            continue;
+        }
+        let lower = node.pressure_lower_bar;
+        let upper = node.pressure_upper_bar;
+        if lower.is_none() && upper.is_none() {
+            continue;
+        }
+        let from_scenario = network.scenario_pressure_envelope_nodes.contains(&node.id);
+        margins.push(ScenarioPressureMargin {
+            node_id: node.id.clone(),
+            solved_pressure_bar: solved,
+            lower_bar: lower,
+            upper_bar: upper,
+            margin_lower_bar: lower.map(|lo| solved - lo),
+            margin_upper_bar: upper.map(|hi| hi - solved),
+            from_scenario_envelope: from_scenario,
+        });
+    }
+    margins.sort_by(|a, b| {
+        margin_tightness(a)
+            .total_cmp(&margin_tightness(b))
+            .then_with(|| a.node_id.cmp(&b.node_id))
+    });
+    margins.truncate(25);
+    margins
+}
+
 /// Trace amont (BFS) des pressions résolues depuis un nœud frontière.
 pub fn upstream_pressure_trace(
     network: &GasNetwork,

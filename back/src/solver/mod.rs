@@ -26,9 +26,9 @@ pub mod transient;
 
 pub use nova_capacity::{SinkCapacityReport, study_default_marginal_sinks, study_sinks_capacity};
 pub use nova_diagnostics::{
-    NovaCause, NovaDiagnostics, NovaVerdict, SinkDiagnostic, UpstreamHop, compute_nova_diagnostics,
-    nova_verdict, NovaFeasibilityCause, NovaFeasibilityReport, NovaBoundViolation,
-    nova_feasibility_report,
+    NovaCause, NovaDiagnostics, NovaSolverSignature, NovaVerdict, SinkDiagnostic, UpstreamHop,
+    compute_nova_diagnostics, nova_verdict, NovaFeasibilityCause, NovaFeasibilityReport,
+    NovaBoundViolation, nova_feasibility_report,
 };
 pub use capacity::{CapacityBounds, CapacityViolation, ConstrainedSolverResult};
 pub use config::SteadyStateConfig;
@@ -62,9 +62,9 @@ pub use nlp_ipopt::{NovaIpoptOptions, NovaIpoptVerdict, solve_nova_with_ipopt};
 pub use regulator::{EquipmentState, RegulatorMode};
 pub use steady_state::{
     BoundaryNominationSlip, MassBalanceRefinementOutcome, MassBalanceReport, NodeMassImbalance,
-    ScenarioPressureSlip, SolverControl, SolverProgress, SolverResult, boundary_nomination_slips,
-    compressor_pressure_from_coeff, boundary_pressure_supply_reports, mass_balance_report,
-    scenario_pressure_slips, solve_steady_state,
+    ScenarioPressureMargin, ScenarioPressureSlip, SolverControl, SolverProgress, SolverResult,
+    boundary_nomination_slips, compressor_pressure_from_coeff, boundary_pressure_supply_reports,
+    mass_balance_report, scenario_pressure_margins, scenario_pressure_slips, solve_steady_state,
     solve_steady_state_jacobi, solve_steady_state_with_composition,
     solve_steady_state_with_initial_pressures, solve_steady_state_with_progress,
     solve_with_mass_balance_refinement, upstream_pressure_trace, BoundaryPressureSupplyReport,

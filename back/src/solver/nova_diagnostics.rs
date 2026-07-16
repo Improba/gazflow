@@ -4,15 +4,14 @@
 //! pression `.scn`), pas contre le plancher générique `.net`. Utilisé par l'API simulation
 //! pour produire le verdict NoVa (Phase VII-bis → interface Natran).
 
-use std::collections::HashMap;
-
 use serde::Serialize;
 
 use crate::gaslib::ScenarioDemands;
 use crate::graph::GasNetwork;
 use crate::solver::steady_state::{
-    BoundaryPressureSupplyReport, ScenarioPressureSlip, boundary_pressure_supply_reports,
-    scenario_pressure_slips, upstream_pressure_trace,
+    BoundaryPressureSupplyReport, ScenarioPressureMargin, ScenarioPressureSlip,
+    boundary_pressure_supply_reports, scenario_pressure_margins, scenario_pressure_slips,
+    upstream_pressure_trace,
 };
 use crate::solver::SolverResult;
 
@@ -37,6 +36,8 @@ pub struct SinkDiagnostic {
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct NovaDiagnostics {
     pub pressure_slips: Vec<ScenarioPressureSlip>,
+    #[serde(default)]
+    pub pressure_margins: Vec<ScenarioPressureMargin>,
     pub boundary_supply: Vec<BoundaryPressureSupplyReport>,
     pub sink_diagnostics: Vec<SinkDiagnostic>,
 }
@@ -57,6 +58,7 @@ pub fn compute_nova_diagnostics(
     crate::gaslib::apply_scenario_pressure_envelopes(&mut diag_net, scenario);
 
     let pressure_slips = scenario_pressure_slips(&diag_net, result);
+    let pressure_margins = scenario_pressure_margins(&diag_net, result);
     let boundary_supply =
         boundary_pressure_supply_reports(&diag_net, result, &pressure_slips, SINK_DIAGNOSTIC_MAX_HOPS);
 
@@ -92,22 +94,45 @@ pub fn compute_nova_diagnostics(
 
     NovaDiagnostics {
         pressure_slips,
+        pressure_margins,
         boundary_supply,
         sink_diagnostics,
     }
 }
 
-/// Verdict NoVa dérivé : faisable si aucun slip pression.
-pub fn nova_verdict(diagnostics: &NovaDiagnostics, demand_scale_achieved: Option<f64>) -> NovaVerdict {
+/// Verdict NoVa dérivé : faisable seulement si convergé, scale nominal atteint, aucun slip.
+pub fn nova_verdict(
+    diagnostics: &NovaDiagnostics,
+    converged: bool,
+    tol_m3s: f64,
+    result: &SolverResult,
+) -> NovaVerdict {
     let deficit_sinks: Vec<String> = diagnostics
         .pressure_slips
         .iter()
         .filter(|s| s.shortfall_bar > 0.0)
         .map(|s| s.node_id.clone())
         .collect();
-    let feasible = deficit_sinks.is_empty()
-        && demand_scale_achieved.map(|s| s >= 1.0).unwrap_or(true);
-    let cause = if !feasible
+    let excess_nodes: Vec<String> = diagnostics
+        .pressure_slips
+        .iter()
+        .filter(|s| s.excess_bar > 0.0)
+        .map(|s| s.node_id.clone())
+        .collect();
+    let effectively_converged = converged && result.residual <= tol_m3s;
+    let scale_ok = result
+        .demand_scale_achieved
+        .map(|s| s >= 1.0)
+        .unwrap_or(true);
+    let feasible = effectively_converged
+        && scale_ok
+        && deficit_sinks.is_empty()
+        && excess_nodes.is_empty();
+    let cause = if !effectively_converged {
+        NovaCause::NotSolvedLocal
+    } else if converged && !scale_ok {
+        NovaCause::ScaleNotAchieved
+    } else if !feasible
         && diagnostics
             .sink_diagnostics
             .iter()
@@ -115,15 +140,29 @@ pub fn nova_verdict(diagnostics: &NovaDiagnostics, demand_scale_achieved: Option
         && !diagnostics.sink_diagnostics.is_empty()
     {
         NovaCause::PressureReachability
+    } else if !feasible && !deficit_sinks.is_empty() {
+        NovaCause::PressureDeficit
+    } else if !feasible && !excess_nodes.is_empty() {
+        NovaCause::PressureExcess
     } else if !feasible {
         NovaCause::PressureDeficit
     } else {
         NovaCause::Feasible
     };
+    let solver_signature = if !effectively_converged {
+        NovaSolverSignature::Unresolved
+    } else {
+        NovaSolverSignature::NewtonPosthoc
+    };
     NovaVerdict {
         feasible,
         deficit_sinks,
         cause,
+        converged: effectively_converged,
+        demand_scale_achieved: result.demand_scale_achieved,
+        residual_m3s: result.residual,
+        iterations: result.iterations,
+        solver_signature,
     }
 }
 
@@ -131,7 +170,17 @@ pub fn nova_verdict(diagnostics: &NovaDiagnostics, demand_scale_achieved: Option
 pub enum NovaCause {
     Feasible,
     PressureDeficit,
+    PressureExcess,
     PressureReachability,
+    NotSolvedLocal,
+    ScaleNotAchieved,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub enum NovaSolverSignature {
+    NewtonPosthoc,
+    IpoptEscalation,
+    Unresolved,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +188,12 @@ pub struct NovaVerdict {
     pub feasible: bool,
     pub deficit_sinks: Vec<String>,
     pub cause: NovaCause,
+    pub converged: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demand_scale_achieved: Option<f64>,
+    pub residual_m3s: f64,
+    pub iterations: usize,
+    pub solver_signature: NovaSolverSignature,
 }
 
 /// Phase VIII — rapport de faisabilité NoVa borné (solveur local).
@@ -244,6 +299,8 @@ pub fn nova_feasibility_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
     use crate::graph::{ConnectionKind, EquipmentSpec, GasNetwork, Node, Pipe};
     use crate::solver::steady_state::ScenarioPressureSlip;
 
@@ -351,16 +408,79 @@ mod tests {
     }
 
     #[test]
+    fn verdict_infeasible_when_excess_only() {
+        let net = tiny_network();
+        let scenario = scenario_with_lower_bound("T", 40.0, 45.0);
+        let result = synthetic_result(50.0); // 50 > 45 → excess 5 bar, no shortfall
+        let diag = compute_nova_diagnostics(&net, &scenario, &result);
+
+        let verdict = nova_verdict(&diag, true, 1e-3, &result);
+        assert!(!verdict.feasible);
+        assert_eq!(verdict.cause, NovaCause::PressureExcess);
+        assert!(verdict.deficit_sinks.is_empty());
+        let slip = diag
+            .pressure_slips
+            .iter()
+            .find(|s| s.node_id == "T")
+            .expect("T should be in pressure_slips");
+        assert!((slip.excess_bar - 5.0).abs() < 1e-6, "excess={}", slip.excess_bar);
+    }
+
+    #[test]
     fn verdict_infeasible_when_deficit_present() {
         let net = tiny_network();
         let scenario = scenario_with_lower_bound("T", 80.0, 120.0);
         let result = synthetic_result(50.0);
         let diag = compute_nova_diagnostics(&net, &scenario, &result);
 
-        let verdict = nova_verdict(&diag, Some(1.0));
+        let verdict = nova_verdict(&diag, true, 1e-3, &result);
         assert!(!verdict.feasible);
         assert_eq!(verdict.cause, NovaCause::PressureReachability);
         assert_eq!(verdict.deficit_sinks, vec!["T".to_string()]);
+        assert_eq!(verdict.solver_signature, NovaSolverSignature::NewtonPosthoc);
+    }
+
+    #[test]
+    fn verdict_not_solved_when_non_converged() {
+        let net = tiny_network();
+        let scenario = scenario_with_lower_bound("T", 40.0, 120.0);
+        let mut result = synthetic_result(50.0);
+        result.residual = 5.0;
+        let diag = compute_nova_diagnostics(&net, &scenario, &result);
+
+        let verdict = nova_verdict(&diag, false, 1e-3, &result);
+        assert!(!verdict.feasible);
+        assert!(!verdict.converged);
+        assert_eq!(verdict.cause, NovaCause::NotSolvedLocal);
+        assert_eq!(verdict.solver_signature, NovaSolverSignature::Unresolved);
+    }
+
+    #[test]
+    fn verdict_scale_not_achieved_when_below_one() {
+        let net = tiny_network();
+        let scenario = scenario_with_lower_bound("T", 40.0, 120.0);
+        let mut result = synthetic_result(50.0);
+        result.demand_scale_achieved = Some(0.8);
+        let diag = compute_nova_diagnostics(&net, &scenario, &result);
+
+        let verdict = nova_verdict(&diag, true, 1e-3, &result);
+        assert!(!verdict.feasible);
+        assert_eq!(verdict.cause, NovaCause::ScaleNotAchieved);
+        assert_eq!(verdict.solver_signature, NovaSolverSignature::NewtonPosthoc);
+    }
+
+    #[test]
+    fn verdict_feasible_when_scale_none_and_converged() {
+        let net = tiny_network();
+        let scenario = scenario_with_lower_bound("T", 40.0, 120.0);
+        let mut result = synthetic_result(50.0);
+        result.demand_scale_achieved = None;
+        let diag = compute_nova_diagnostics(&net, &scenario, &result);
+
+        let verdict = nova_verdict(&diag, true, 1e-3, &result);
+        assert!(verdict.feasible);
+        assert_eq!(verdict.cause, NovaCause::Feasible);
+        assert_eq!(verdict.solver_signature, NovaSolverSignature::NewtonPosthoc);
     }
 
     #[test]
@@ -370,9 +490,42 @@ mod tests {
         let result = synthetic_result(50.0); // 50 >= 40 → OK
         let diag = compute_nova_diagnostics(&net, &scenario, &result);
 
-        let verdict = nova_verdict(&diag, Some(1.0));
+        let verdict = nova_verdict(&diag, true, 1e-3, &result);
         assert!(verdict.feasible);
         assert_eq!(verdict.cause, NovaCause::Feasible);
+        assert_eq!(verdict.solver_signature, NovaSolverSignature::NewtonPosthoc);
+    }
+
+    #[test]
+    fn pressure_margins_positive_when_feasible() {
+        let net = tiny_network();
+        let scenario = scenario_with_lower_bound("T", 40.0, 120.0);
+        let result = synthetic_result(50.0);
+        let diag = compute_nova_diagnostics(&net, &scenario, &result);
+
+        let margin = diag
+            .pressure_margins
+            .iter()
+            .find(|m| m.node_id == "T")
+            .expect("T should be in pressure_margins");
+        assert!(margin.margin_lower_bar.unwrap() > 0.0);
+        assert!(margin.margin_upper_bar.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn pressure_margins_negative_when_deficit() {
+        let net = tiny_network();
+        let scenario = scenario_with_lower_bound("T", 80.0, 120.0);
+        let result = synthetic_result(50.0);
+        let diag = compute_nova_diagnostics(&net, &scenario, &result);
+
+        let margin = diag
+            .pressure_margins
+            .iter()
+            .find(|m| m.node_id == "T")
+            .expect("T should be in pressure_margins");
+        assert!(margin.margin_lower_bar.unwrap() < 0.0);
+        assert!(margin.from_scenario_envelope);
     }
 
     #[test]
@@ -518,7 +671,7 @@ mod tests {
         );
 
         // Verdict infeasible (tous les sinks sous leur borne).
-        let verdict = nova_verdict(&diag, Some(1.0));
+        let verdict = nova_verdict(&diag, true, 1e-3, &result);
         assert!(!verdict.feasible);
     }
 }

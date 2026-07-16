@@ -73,6 +73,17 @@ describe('mergeConvergedMessage', () => {
           from_scenario_envelope: true,
         },
       ],
+      pressure_margins: [
+        {
+          node_id: 'sink_88',
+          solved_pressure_bar: 24.0,
+          lower_bar: 26.01325,
+          upper_bar: 80.0,
+          margin_lower_bar: -2.01325,
+          margin_upper_bar: 56.0,
+          from_scenario_envelope: true,
+        },
+      ],
       sink_diagnostics: [
         {
           node_id: 'sink_88',
@@ -86,6 +97,8 @@ describe('mergeConvergedMessage', () => {
     });
 
     expect(merged.pressure_slips).toHaveLength(1);
+    expect(merged.pressure_margins).toHaveLength(1);
+    expect(merged.pressure_margins?.[0].margin_lower_bar).toBeLessThan(0);
     expect(merged.pressure_slips?.[0].node_id).toBe('sink_88');
     expect(merged.sink_diagnostics).toHaveLength(1);
     expect(merged.nova_verdict?.feasible).toBe(false);

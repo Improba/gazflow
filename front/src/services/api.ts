@@ -102,6 +102,16 @@ export interface ScenarioPressureSlip {
   from_scenario_envelope: boolean;
 }
 
+export interface ScenarioPressureMargin {
+  node_id: string;
+  solved_pressure_bar: number;
+  lower_bar: number | null;
+  upper_bar: number | null;
+  margin_lower_bar: number | null;
+  margin_upper_bar: number | null;
+  from_scenario_envelope: boolean;
+}
+
 export interface BoundaryPressureSupplyReport {
   node_id: string;
   required_lower_bar: number | null;
@@ -124,12 +134,25 @@ export interface SinkDiagnostic {
   supply_gap_bar: number;
 }
 
-export type NovaCause = 'Feasible' | 'PressureDeficit' | 'PressureReachability';
+export type NovaCause =
+  | 'Feasible'
+  | 'PressureDeficit'
+  | 'PressureExcess'
+  | 'PressureReachability'
+  | 'NotSolvedLocal'
+  | 'ScaleNotAchieved';
+
+export type NovaSolverSignature = 'NewtonPosthoc' | 'IpoptEscalation' | 'Unresolved';
 
 export interface NovaVerdict {
   feasible: boolean;
   deficit_sinks: string[];
   cause: NovaCause;
+  converged?: boolean;
+  demand_scale_achieved?: number | null;
+  residual_m3s?: number;
+  iterations?: number;
+  solver_signature?: NovaSolverSignature;
 }
 
 export interface NovaScenarioSummary {
@@ -262,6 +285,7 @@ export interface SimulationResult {
   demand_scale_achieved?: number;
   // NoVa (présents si un scenario_id a été fourni au démarrage de la simulation)
   pressure_slips?: ScenarioPressureSlip[];
+  pressure_margins?: ScenarioPressureMargin[];
   boundary_supply?: BoundaryPressureSupplyReport[];
   sink_diagnostics?: SinkDiagnostic[];
   nova_verdict?: NovaVerdict;

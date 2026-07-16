@@ -84,10 +84,9 @@
                 <div class="text-caption text-grey-5">Nomination A</div>
                 <div class="row items-center q-mt-xs">
                   <q-badge
-                    :color="result.outcome_a.feasible ? 'positive' : 'negative'"
-                    :label="result.outcome_a.feasible ? 'Faisable' : 'Non faisable'"
+                    :color="outcomeBadgeColor(result.outcome_a.feasible, result.outcome_a.cause)"
+                    :label="outcomeBadgeLabel(result.outcome_a.feasible, result.outcome_a.cause)"
                   />
-                  <span class="text-caption text-grey-4 q-ml-sm">{{ result.outcome_a.cause }}</span>
                 </div>
                 <div class="text-caption text-grey-6 q-mt-xs">
                   {{ result.outcome_a.deficit_sinks.length }} déficit(s)
@@ -104,10 +103,9 @@
                 <div class="text-caption text-grey-5">Nomination B</div>
                 <div class="row items-center q-mt-xs">
                   <q-badge
-                    :color="result.outcome_b.feasible ? 'positive' : 'negative'"
-                    :label="result.outcome_b.feasible ? 'Faisable' : 'Non faisable'"
+                    :color="outcomeBadgeColor(result.outcome_b.feasible, result.outcome_b.cause)"
+                    :label="outcomeBadgeLabel(result.outcome_b.feasible, result.outcome_b.cause)"
                   />
-                  <span class="text-caption text-grey-4 q-ml-sm">{{ result.outcome_b.cause }}</span>
                 </div>
                 <div class="text-caption text-grey-6 q-mt-xs">
                   {{ result.outcome_b.deficit_sinks.length }} déficit(s)
@@ -166,6 +164,7 @@ import { api, type CompareNominationsResponse } from 'src/services/api';
 import { useNetworkStore } from 'src/stores/network';
 import { useNominationStore } from 'src/stores/nomination';
 import { formatApiError } from 'src/utils/importError';
+import { novaOutcomeBadgeColor, novaOutcomeBadgeLabel } from 'src/utils/novaLabels';
 
 const networkStore = useNetworkStore();
 const nominationStore = useNominationStore();
@@ -272,6 +271,14 @@ const columns = [
   },
   { name: 'delta_q', label: 'ΔQ (Nm³/s)', field: 'delta_q', align: 'right' as const },
 ];
+
+function outcomeBadgeLabel(feasible: boolean, cause: string): string {
+  return novaOutcomeBadgeLabel(feasible, cause);
+}
+
+function outcomeBadgeColor(feasible: boolean, cause: string): string {
+  return novaOutcomeBadgeColor(feasible, cause);
+}
 
 function formatDelta(value: number | null, decimals: number): string {
   if (value == null) return '—';

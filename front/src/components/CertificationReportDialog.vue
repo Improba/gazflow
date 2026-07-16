@@ -17,16 +17,17 @@
       <q-card-section class="report-body">
         <div class="row items-center q-mb-md">
           <q-badge
-            :color="verdict?.feasible ? 'green-8' : 'red-9'"
+            :color="verdictBadgeColor"
             class="text-bold q-pa-sm"
           >
             <q-icon
               :name="verdict?.feasible ? 'check_circle' : 'error'"
               class="q-mr-xs"
             />
-            {{ verdict?.feasible ? 'Faisable' : 'Non faisable' }}
+            {{ verdictBadgeLabel }}
           </q-badge>
           <span class="text-caption text-grey-5 q-ml-md">{{ causeText }}</span>
+          <span v-if="methodText" class="text-caption text-grey-6 q-ml-md">{{ methodText }}</span>
         </div>
 
         <div class="row q-gutter-md q-mb-md text-caption">
@@ -56,8 +57,35 @@
             </tr>
           </tbody>
         </q-markup-table>
+        <div v-else class="text-caption q-mb-md" :class="deficitEmptyClass">
+          {{ deficitEmptyText }}
+        </div>
+
+        <div class="text-subtitle2 q-mb-xs">Marges par contrainte (top {{ reportMargins.length }})</div>
+        <q-markup-table v-if="reportMargins.length > 0" dense flat dark class="bg-transparent q-mb-md">
+          <thead>
+            <tr>
+              <th class="text-left">Nœud</th>
+              <th class="text-right">P résolue</th>
+              <th class="text-right">Borne basse</th>
+              <th class="text-right">Borne haute</th>
+              <th class="text-right">Marge basse</th>
+              <th class="text-right">Marge haute</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="m in reportMargins" :key="m.node_id">
+              <td class="text-bold">{{ m.node_id }}</td>
+              <td class="text-right">{{ m.solved_pressure_bar.toFixed(2) }}</td>
+              <td class="text-right">{{ formatBar(m.lower_bar) }}</td>
+              <td class="text-right">{{ formatBar(m.upper_bar) }}</td>
+              <td class="text-right" :class="marginClass(m.margin_lower_bar)">{{ formatMargin(m.margin_lower_bar) }}</td>
+              <td class="text-right" :class="marginClass(m.margin_upper_bar)">{{ formatMargin(m.margin_upper_bar) }}</td>
+            </tr>
+          </tbody>
+        </q-markup-table>
         <div v-else class="text-caption text-grey-5 q-mb-md">
-          Aucun point de livraison sous sa borne contractuelle.
+          Aucune marge pression disponible pour cette simulation.
         </div>
 
         <div class="text-subtitle2 q-mb-xs">Capacité par point de livraison ({{ simulateStore.sinkCapacity.length }})</div>
@@ -115,7 +143,8 @@ import { computed } from 'vue';
 import { useNetworkStore } from 'src/stores/network';
 import { useNominationStore } from 'src/stores/nomination';
 import { useSimulateStore } from 'src/stores/simulate';
-import type { SinkCapacityReport, SinkDiagnostic } from 'src/services/api';
+import type { SinkCapacityReport, SinkDiagnostic, ScenarioPressureMargin } from 'src/services/api';
+import { novaOutcomeBadgeLabel } from 'src/utils/novaLabels';
 
 const props = defineProps<{ modelValue: boolean }>();
 const emit = defineEmits<{ (e: 'update:modelValue', value: boolean): void }>();
@@ -126,14 +155,63 @@ const simulateStore = useSimulateStore();
 
 const verdict = computed(() => simulateStore.novaVerdict);
 const deficitCount = computed(() => simulateStore.sinkDiagnostics.length);
+const reportMargins = computed(() => simulateStore.pressureMargins.slice(0, 25));
 const reportDate = computed(() => new Date().toLocaleString('fr-FR'));
+
+const deficitEmptyText = computed(() => {
+  if (verdict.value?.feasible !== false) {
+    return 'Aucun point de livraison sous sa borne contractuelle.';
+  }
+  if ((verdict.value.deficit_sinks?.length ?? 0) === 0) {
+    return 'Aucun déficit basse — voir marges / dépassements.';
+  }
+  return 'Aucun point de livraison sous sa borne contractuelle.';
+});
+
+const deficitEmptyClass = computed(() =>
+  verdict.value?.feasible === false && (verdict.value.deficit_sinks?.length ?? 0) === 0
+    ? 'text-orange-4'
+    : 'text-grey-5',
+);
+
+const verdictBadgeLabel = computed(() =>
+  novaOutcomeBadgeLabel(verdict.value?.feasible ?? false, verdict.value?.cause),
+);
+
+const verdictBadgeColor = computed(() => {
+  if (verdict.value?.feasible) return 'green-8';
+  if (verdict.value?.cause === 'NotSolvedLocal') return 'orange-9';
+  return 'red-9';
+});
 
 const causeText = computed(() => {
   if (!verdict.value) return '';
   if (verdict.value.feasible) return 'Tenue pression OK sur tous les points de livraison.';
+  if (verdict.value.cause === 'NotSolvedLocal') {
+    return 'Le solveur local n\'a pas convergé : la faisabilité pression n\'est pas certifiée.';
+  }
+  if (verdict.value.cause === 'ScaleNotAchieved') {
+    const scale = verdict.value.demand_scale_achieved;
+    const pct = scale != null ? Math.round(scale * 100) : '?';
+    return `Les demandes nominales n'ont pas été atteintes (palier ${pct} %).`;
+  }
+  if (verdict.value.cause === 'PressureExcess') {
+    return 'Un ou plusieurs nœuds dépassent leur borne haute contractuelle.';
+  }
   return verdict.value.cause === 'PressureReachability'
     ? 'La pression amont n\'atteint pas le besoin d\'un ou plusieurs points de livraison.'
     : 'Un ou plusieurs points de livraison sont sous leur borne contractuelle.';
+});
+
+const methodText = computed(() => {
+  const sig = verdict.value?.solver_signature;
+  if (!sig) return '';
+  const labels: Record<string, string> = {
+    NewtonPosthoc: 'Newton post-hoc',
+    IpoptEscalation: 'IPOPT (escalade)',
+    Unresolved: 'non résolu',
+  };
+  return `Méthode : ${labels[sig] ?? sig}`;
 });
 
 function close() {
@@ -142,6 +220,24 @@ function close() {
 
 function formatBar(value: number | null | undefined): string {
   return value == null ? '—' : value.toFixed(2);
+}
+
+function formatMargin(value: number | null | undefined): string {
+  return value == null ? '—' : value.toFixed(2);
+}
+
+function marginClass(value: number | null | undefined): string {
+  if (value == null) return '';
+  if (value < 0) return 'text-red-4';
+  if (value < 1.0) return 'text-orange-4';
+  return '';
+}
+
+function marginHtmlClass(value: number | null | undefined): string {
+  if (value == null) return '';
+  if (value < 0) return 'neg';
+  if (value < 1.0) return 'warn';
+  return '';
 }
 
 function traceText(trace: SinkDiagnostic['trace']): string {
@@ -156,8 +252,18 @@ interface CertificationReport {
   run_id: string | null;
   network: string | null;
   nomination: { id: string | null; filename: string | null };
-  verdict: { feasible: boolean; cause: string; deficit_sinks: string[] };
+  verdict: {
+    feasible: boolean;
+    cause: string;
+    deficit_sinks: string[];
+    converged?: boolean;
+    demand_scale_achieved?: number | null;
+    residual_m3s?: number;
+    iterations?: number;
+    solver_signature?: string;
+  };
   deficit_sinks: SinkDiagnostic[];
+  pressure_margins: ScenarioPressureMargin[];
   capacity: SinkCapacityReport[];
 }
 
@@ -175,9 +281,15 @@ function buildReport(): CertificationReport {
           feasible: verdict.value.feasible,
           cause: verdict.value.cause,
           deficit_sinks: verdict.value.deficit_sinks,
+          converged: verdict.value.converged,
+          demand_scale_achieved: verdict.value.demand_scale_achieved,
+          residual_m3s: verdict.value.residual_m3s,
+          iterations: verdict.value.iterations,
+          solver_signature: verdict.value.solver_signature,
         }
       : { feasible: false, cause: 'NoVerdict', deficit_sinks: [] },
     deficit_sinks: simulateStore.sinkDiagnostics,
+    pressure_margins: reportMargins.value,
     capacity: simulateStore.sinkCapacity,
   };
 }
@@ -204,8 +316,12 @@ function escapeHtml(s: string): string {
 
 function printReport() {
   const report = buildReport();
-  const verdictLabel = report.verdict.feasible ? 'Faisable' : 'Non faisable';
-  const verdictColor = report.verdict.feasible ? '#2e7d32' : '#c62828';
+  const verdictLabel = novaOutcomeBadgeLabel(report.verdict.feasible, report.verdict.cause);
+  const verdictColor = report.verdict.feasible
+    ? '#2e7d32'
+    : report.verdict.cause === 'NotSolvedLocal'
+      ? '#ef6c00'
+      : '#c62828';
 
   const deficitRows = report.deficit_sinks
     .map(
@@ -215,6 +331,27 @@ function printReport() {
         <td class="r">${d.max_upstream_pressure_bar.toFixed(2)}</td>
         <td class="r">${d.supply_gap_bar.toFixed(2)}</td>
         <td>${escapeHtml(traceText(d.trace))}</td>
+      </tr>`,
+    )
+    .join('');
+
+  const deficitEmpty = report.deficit_sinks.length === 0
+    ? (report.verdict.feasible
+      ? '<p class="empty">Aucun point de livraison sous sa borne contractuelle.</p>'
+      : (report.verdict.deficit_sinks.length === 0
+        ? '<p class="empty warn-text">Aucun déficit basse — voir marges / dépassements.</p>'
+        : '<p class="empty">Aucun point de livraison sous sa borne contractuelle.</p>'))
+    : '';
+
+  const marginRows = report.pressure_margins
+    .map(
+      (m) => `<tr>
+        <td>${escapeHtml(m.node_id)}</td>
+        <td class="r">${m.solved_pressure_bar.toFixed(2)}</td>
+        <td class="r">${formatBar(m.lower_bar)}</td>
+        <td class="r">${formatBar(m.upper_bar)}</td>
+        <td class="r ${marginHtmlClass(m.margin_lower_bar)}">${formatMargin(m.margin_lower_bar)}</td>
+        <td class="r ${marginHtmlClass(m.margin_upper_bar)}">${formatMargin(m.margin_upper_bar)}</td>
       </tr>`,
     )
     .join('');
@@ -246,6 +383,9 @@ function printReport() {
   th { background: #f0f0f0; }
   td.r, th.r { text-align: right; }
   .empty { color: #777; font-size: 12px; font-style: italic; }
+  .warn-text { color: #e65100; font-style: normal; }
+  td.neg, td.r.neg { color: #c62828; font-weight: 700; }
+  td.warn, td.r.warn { color: #ef6c00; }
 </style></head><body>
 <h1>Rapport de certification NoVa</h1>
 <div class="meta">
@@ -256,11 +396,17 @@ function printReport() {
 </div>
 <div class="verdict">${verdictLabel}</div>
 <div class="cause">${escapeHtml(causeText.value)}</div>
+${methodText.value ? `<div class="cause" style="color:#777;font-size:11px">${escapeHtml(methodText.value)}</div>` : ''}
 
 <h2>Points de livraison en déficit (${report.deficit_sinks.length})</h2>
 ${report.deficit_sinks.length > 0
   ? `<table><thead><tr><th>Point</th><th class="r">Borne contractuelle (bar)</th><th class="r">Pression résolue (bar)</th><th class="r">Manque amont (bar)</th><th>Trace amont</th></tr></thead><tbody>${deficitRows}</tbody></table>`
-  : '<p class="empty">Aucun point de livraison sous sa borne contractuelle.</p>'}
+  : deficitEmpty}
+
+<h2>Marges par contrainte (top ${report.pressure_margins.length})</h2>
+${report.pressure_margins.length > 0
+  ? `<table><thead><tr><th>Nœud</th><th class="r">P résolue (bar)</th><th class="r">Borne basse (bar)</th><th class="r">Borne haute (bar)</th><th class="r">Marge basse (bar)</th><th class="r">Marge haute (bar)</th></tr></thead><tbody>${marginRows}</tbody></table>`
+  : '<p class="empty">Aucune marge pression disponible pour cette simulation.</p>'}
 
 <h2>Capacité par point de livraison (${report.capacity.length})</h2>
 ${report.capacity.length > 0

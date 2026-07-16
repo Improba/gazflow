@@ -271,6 +271,7 @@
       </div>
       <VerdictCard @focus-deficits="focusFirstDeficit" />
       <SinkDiagnosticsList @select-node="onSelectSink" />
+      <MarginsByConstraint @select-node="onSelectSink" />
       <BoundarySupplyList @select-node="onSelectSink" />
       <SinkCapacityTable
         @run-study="runCapacityStudy"
@@ -456,6 +457,7 @@ import ScenarioPanel from 'src/components/ScenarioPanel.vue';
 import SinkCapacityTable from 'src/components/SinkCapacityTable.vue';
 import SinkDiagnosticPopover from 'src/components/SinkDiagnosticPopover.vue';
 import SinkDiagnosticsList from 'src/components/SinkDiagnosticsList.vue';
+import MarginsByConstraint from 'src/components/MarginsByConstraint.vue';
 import BoundarySupplyList from 'src/components/BoundarySupplyList.vue';
 import VerdictCard from 'src/components/VerdictCard.vue';
 import LogPanel from 'src/components/LogPanel.vue';

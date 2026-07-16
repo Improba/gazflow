@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { api, type SimulationResult, type CapacityViolation, type EquipmentState, type PipeEquipmentDto, type ScenarioPressureSlip, type BoundaryPressureSupplyReport, type SinkDiagnostic, type NovaVerdict, type SinkCapacityReport } from 'src/services/api';
+import { api, type SimulationResult, type CapacityViolation, type EquipmentState, type PipeEquipmentDto, type ScenarioPressureSlip, type ScenarioPressureMargin, type BoundaryPressureSupplyReport, type SinkDiagnostic, type NovaVerdict, type SinkCapacityReport } from 'src/services/api';
 import {
   SimulationWsClient,
   mergeConvergedMessage,
@@ -57,6 +57,7 @@ export const useSimulateStore = defineStore('simulate', () => {
 
   // NoVa : diagnostics pression (présents si un scenario_id a été fourni au démarrage).
   const pressureSlips = ref<ScenarioPressureSlip[]>([]);
+  const pressureMargins = ref<ScenarioPressureMargin[]>([]);
   const boundarySupply = ref<BoundaryPressureSupplyReport[]>([]);
   const sinkDiagnostics = ref<SinkDiagnostic[]>([]);
   const novaVerdict = ref<NovaVerdict | null>(null);
@@ -275,6 +276,7 @@ export const useSimulateStore = defineStore('simulate', () => {
           equipmentStates.value = merged.equipment_states ?? [];
           warnings.value = merged.warnings ?? [];
           pressureSlips.value = merged.pressure_slips ?? [];
+          pressureMargins.value = merged.pressure_margins ?? [];
           boundarySupply.value = merged.boundary_supply ?? [];
           sinkDiagnostics.value = merged.sink_diagnostics ?? [];
           novaVerdict.value = merged.nova_verdict ?? null;
@@ -347,6 +349,7 @@ export const useSimulateStore = defineStore('simulate', () => {
     equipmentStates.value = [];
     warnings.value = [];
     pressureSlips.value = [];
+    pressureMargins.value = [];
     boundarySupply.value = [];
     sinkDiagnostics.value = [];
     novaVerdict.value = null;
@@ -444,6 +447,7 @@ export const useSimulateStore = defineStore('simulate', () => {
     continuationLabel,
     previewStep,
     pressureSlips,
+    pressureMargins,
     boundarySupply,
     sinkDiagnostics,
     novaVerdict,

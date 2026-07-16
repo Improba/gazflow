@@ -375,6 +375,10 @@ mod tests {
         assert_eq!(r.pressure_lower_bar, Some(80.0));
         assert!(!r.feasible_at_nominal, "nominal should be infeasible");
         assert!(
+            r.max_feasible_q_m3s <= r.nominal_q_m3s,
+            "Q max faisable doit être borné par l'enveloppe scénario"
+        );
+        assert!(
             r.feasible_fraction <= 1e-6,
             "fraction should be ~0 (unreachable bound), got {}",
             r.feasible_fraction

@@ -8,6 +8,7 @@ import type {
   ContingencyResult,
   ContingencyScope,
   ScenarioPressureSlip,
+  ScenarioPressureMargin,
   BoundaryPressureSupplyReport,
   SinkDiagnostic,
   NovaVerdict,
@@ -122,6 +123,7 @@ export type WsServerMessage =
       infeasibility_diagnostic?: string | null;
       /** Diagnostics NoVa (présents si options.scenario_id a été fourni). */
       pressure_slips?: ScenarioPressureSlip[];
+      pressure_margins?: ScenarioPressureMargin[];
       boundary_supply?: BoundaryPressureSupplyReport[];
       sink_diagnostics?: SinkDiagnostic[];
       nova_verdict?: NovaVerdict;
@@ -330,6 +332,7 @@ export function mergeConvergedMessage(
     infeasibility_diagnostic:
       msg.infeasibility_diagnostic ?? base.infeasibility_diagnostic ?? null,
     pressure_slips: msg.pressure_slips ?? base.pressure_slips ?? [],
+    pressure_margins: msg.pressure_margins ?? base.pressure_margins ?? [],
     boundary_supply: msg.boundary_supply ?? base.boundary_supply ?? [],
     sink_diagnostics: msg.sink_diagnostics ?? base.sink_diagnostics ?? [],
     nova_verdict: msg.nova_verdict ?? base.nova_verdict,

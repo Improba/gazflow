@@ -88,7 +88,10 @@ fn cause_str(c: crate::solver::NovaCause) -> &'static str {
     match c {
         crate::solver::NovaCause::Feasible => "Feasible",
         crate::solver::NovaCause::PressureDeficit => "PressureDeficit",
+        crate::solver::NovaCause::PressureExcess => "PressureExcess",
         crate::solver::NovaCause::PressureReachability => "PressureReachability",
+        crate::solver::NovaCause::NotSolvedLocal => "NotSolvedLocal",
+        crate::solver::NovaCause::ScaleNotAchieved => "ScaleNotAchieved",
     }
 }
 
@@ -160,7 +163,9 @@ fn run_one_case(
     match solve {
         Ok(result) => {
             let diag = crate::solver::compute_nova_diagnostics(&net, scenario, &result);
-            let verdict = crate::solver::nova_verdict(&diag, result.demand_scale_achieved);
+            let converged = result.residual <= preset.tolerance;
+            let verdict =
+                crate::solver::nova_verdict(&diag, converged, preset.tolerance, &result);
             let max_shortfall = diag
                 .pressure_slips
                 .iter()

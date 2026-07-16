@@ -6,11 +6,22 @@
       :class="bannerClass"
     >
       <template #avatar>
-        <q-icon :name="verdict?.feasible ? 'check_circle' : 'error'" />
+        <q-icon :name="bannerIcon" />
       </template>
-      <div class="text-bold">{{ title }}</div>
-      <div class="text-caption">
-        {{ subtitle }}
+      <div class="row items-center no-wrap">
+        <div class="col">
+          <div class="text-bold">{{ title }}</div>
+          <div class="text-caption">
+            {{ subtitle }}
+          </div>
+        </div>
+        <q-badge
+          v-if="signatureLabel"
+          outline
+          color="grey-5"
+          class="q-ml-sm text-caption"
+          :label="signatureLabel"
+        />
       </div>
       <template #action v-if="!verdict?.feasible && deficitSinks.length > 0">
         <q-btn
@@ -28,6 +39,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useSimulateStore } from 'src/stores/simulate';
+import { solverSignatureBadgeLabel } from 'src/utils/novaLabels';
 
 const simulateStore = useSimulateStore();
 
@@ -40,12 +52,32 @@ const visible = computed(
   () => simulateStore.activeScenarioId !== null && verdict.value !== null,
 );
 
-const bannerClass = computed(() =>
-  verdict.value?.feasible ? 'bg-green-9 text-green-2' : 'bg-red-10 text-red-2',
-);
+const signatureLabel = computed(() => {
+  if (!verdict.value) return null;
+  const { feasible, solver_signature: sig } = verdict.value;
+  if (!feasible && sig !== 'Unresolved') {
+    return solverSignatureBadgeLabel(sig, false);
+  }
+  return solverSignatureBadgeLabel(sig, feasible);
+});
+
+const bannerClass = computed(() => {
+  if (verdict.value?.feasible) return 'bg-green-9 text-green-2';
+  if (verdict.value?.cause === 'NotSolvedLocal') return 'bg-orange-9 text-orange-1';
+  return 'bg-red-10 text-red-2';
+});
+
+const bannerIcon = computed(() => {
+  if (verdict.value?.feasible) return 'check_circle';
+  if (verdict.value?.cause === 'NotSolvedLocal') return 'help';
+  return 'error';
+});
 
 const title = computed(() => {
   if (verdict.value?.feasible) return 'Scénario NoVa : tenue pression OK';
+  if (verdict.value?.cause === 'NotSolvedLocal') return 'Scénario NoVa : verdict non établi';
+  if (verdict.value?.cause === 'ScaleNotAchieved') return 'Scénario NoVa : demandes non atteintes';
+  if (verdict.value?.cause === 'PressureExcess') return 'Scénario NoVa : dépassement borne haute';
   return 'Scénario NoVa : tenue pression non tenue';
 });
 
@@ -53,6 +85,17 @@ const subtitle = computed(() => {
   if (!verdict.value) return '';
   if (verdict.value.feasible) {
     return `Aucun point de livraison sous sa borne contractuelle (${simulateStore.activeScenarioId}).`;
+  }
+  if (verdict.value.cause === 'NotSolvedLocal') {
+    return 'Le solveur local n\'a pas convergé : la faisabilité pression n\'est pas certifiée.';
+  }
+  if (verdict.value.cause === 'ScaleNotAchieved') {
+    const scale = verdict.value.demand_scale_achieved;
+    const pct = scale != null ? Math.round(scale * 100) : '?';
+    return `Les demandes nominales n'ont pas été atteintes (palier ${pct} %).`;
+  }
+  if (verdict.value.cause === 'PressureExcess') {
+    return 'Un ou plusieurs nœuds dépassent leur borne haute — voir marges par contrainte.';
   }
   const cause =
     verdict.value.cause === 'PressureReachability'

@@ -214,6 +214,8 @@ enum ServerMessage {
         #[serde(skip_serializing_if = "Vec::is_empty")]
         pressure_slips: Vec<solver::ScenarioPressureSlip>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
+        pressure_margins: Vec<solver::ScenarioPressureMargin>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         boundary_supply: Vec<solver::BoundaryPressureSupplyReport>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         sink_diagnostics: Vec<solver::SinkDiagnostic>,
@@ -839,13 +841,21 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                     started.elapsed().as_millis() as u64,
                 ),
             );
-            let (pressure_slips, boundary_supply, sink_diagnostics, nova_verdict) =
+            let tol_m3s = options.tolerance;
+            let (pressure_slips, pressure_margins, boundary_supply, sink_diagnostics, nova_verdict) =
                 match compute_nova(&final_result) {
                     Some(d) => {
-                        let v = solver::nova_verdict(&d, final_result.demand_scale_achieved);
-                        (d.pressure_slips, d.boundary_supply, d.sink_diagnostics, Some(v))
+                        let converged = final_result.residual <= tol_m3s;
+                        let v = solver::nova_verdict(&d, converged, tol_m3s, &final_result);
+                        (
+                            d.pressure_slips,
+                            d.pressure_margins,
+                            d.boundary_supply,
+                            d.sink_diagnostics,
+                            Some(v),
+                        )
                     }
-                    None => (Vec::new(), Vec::new(), Vec::new(), None),
+                    None => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), None),
                 };
             let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
             let _ = tx.blocking_send(ServerMessage::Converged {
@@ -860,6 +870,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                 outer_iterations: None,
                 infeasibility_diagnostic: None,
                 pressure_slips,
+                pressure_margins,
                 boundary_supply,
                 sink_diagnostics,
                 nova_verdict,
@@ -886,13 +897,21 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                     started.elapsed().as_millis() as u64,
                 ),
             );
-            let (pressure_slips, boundary_supply, sink_diagnostics, nova_verdict) =
+            let tol_m3s = options.tolerance;
+            let (pressure_slips, pressure_margins, boundary_supply, sink_diagnostics, nova_verdict) =
                 match compute_nova(&final_result) {
                     Some(d) => {
-                        let v = solver::nova_verdict(&d, final_result.demand_scale_achieved);
-                        (d.pressure_slips, d.boundary_supply, d.sink_diagnostics, Some(v))
+                        let converged = final_result.residual <= tol_m3s;
+                        let v = solver::nova_verdict(&d, converged, tol_m3s, &final_result);
+                        (
+                            d.pressure_slips,
+                            d.pressure_margins,
+                            d.boundary_supply,
+                            d.sink_diagnostics,
+                            Some(v),
+                        )
                     }
-                    None => (Vec::new(), Vec::new(), Vec::new(), None),
+                    None => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), None),
                 };
             let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
             let _ = tx.blocking_send(ServerMessage::Converged {
@@ -907,6 +926,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                 outer_iterations: None,
                 infeasibility_diagnostic: None,
                 pressure_slips,
+                pressure_margins,
                 boundary_supply,
                 sink_diagnostics,
                 nova_verdict,
@@ -926,13 +946,21 @@ fn run_solver_stream(ctx: SolverStreamContext) {
             let ws_obj = constrained.objective_value;
             let ws_outer = constrained.outer_iterations;
             let ws_diag = constrained.infeasibility_diagnostic.clone();
-            let (pressure_slips, boundary_supply, sink_diagnostics, nova_verdict) =
+            let tol_m3s = options.tolerance;
+            let (pressure_slips, pressure_margins, boundary_supply, sink_diagnostics, nova_verdict) =
                 match compute_nova(&ws_result) {
                     Some(d) => {
-                        let v = solver::nova_verdict(&d, ws_result.demand_scale_achieved);
-                        (d.pressure_slips, d.boundary_supply, d.sink_diagnostics, Some(v))
+                        let converged = ws_result.residual <= tol_m3s;
+                        let v = solver::nova_verdict(&d, converged, tol_m3s, &ws_result);
+                        (
+                            d.pressure_slips,
+                            d.pressure_margins,
+                            d.boundary_supply,
+                            d.sink_diagnostics,
+                            Some(v),
+                        )
                     }
-                    None => (Vec::new(), Vec::new(), Vec::new(), None),
+                    None => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), None),
                 };
             super::export::store_export_record(
                 &state,
@@ -958,6 +986,7 @@ fn run_solver_stream(ctx: SolverStreamContext) {
                 outer_iterations: Some(ws_outer),
                 infeasibility_diagnostic: ws_diag,
                 pressure_slips,
+                pressure_margins,
                 boundary_supply,
                 sink_diagnostics,
                 nova_verdict,
