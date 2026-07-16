@@ -131,4 +131,21 @@ describe('useNominationStore', () => {
       expect.objectContaining({ type: 'negative', message: 'sink ids invalides' }),
     );
   });
+
+  it('saveReduced surfaces backend 422 detail via formatApiError', async () => {
+    const store = useNominationStore();
+    const axiosLike = Object.assign(new Error('Request failed with status code 422'), {
+      isAxiosError: true,
+      response: { data: { error: 'reduced_demands sink ids not found: exit99' }, status: 422 },
+    });
+    apiSpies.saveReducedNovaNomination.mockRejectedValueOnce(axiosLike);
+
+    await expect(store.saveReduced('nomination_mild_618', { exit99: -1 })).rejects.toBe(axiosLike);
+    expect(Notify.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'negative',
+        message: 'reduced_demands sink ids not found: exit99',
+      }),
+    );
+  });
 });

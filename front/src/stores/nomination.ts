@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 import { Notify } from 'quasar';
 import { api, type NovaScenarioSummary } from 'src/services/api';
 import { useNetworkStore } from 'src/stores/network';
+import { formatApiError } from 'src/utils/importError';
 
 /**
  * Objet « Nomination » first-class (Phase WS4-fin). Porte la nomination NoVa active
@@ -83,7 +84,7 @@ export const useNominationStore = defineStore('nomination', () => {
     } catch (err) {
       Notify.create({
         type: 'negative',
-        message: err instanceof Error ? err.message : 'Impossible d\'enregistrer la nomination réduite',
+        message: formatApiError(err),
       });
       throw err;
     }
