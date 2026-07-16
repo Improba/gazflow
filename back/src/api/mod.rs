@@ -479,6 +479,10 @@ enum ContingencyScope {
 struct ContingencyRequest {
     #[serde(default)]
     demands: Option<HashMap<String, f64>>,
+    /// Identifiant de nomination NoVa (ex. `nomination_mild_618`) : charge les demandes du
+    /// scénario sans modifier la topologie active.
+    #[serde(default)]
+    scenario_id: Option<String>,
     scope: ContingencyScope,
     #[serde(default)]
     custom_cases: Option<Vec<solver::ContingencyCase>>,
@@ -1191,14 +1195,46 @@ fn resolve_contingency_cases(
     Ok(cases)
 }
 
+pub(crate) fn resolve_contingency_demands(
+    state: &SharedState,
+    network: &GasNetwork,
+    scenario_id: Option<&str>,
+    body_demands: Option<&HashMap<String, f64>>,
+) -> Result<HashMap<String, f64>, (StatusCode, Json<ApiError>)> {
+    if let Some(scenario_id) = scenario_id {
+        let dataset_id = active_dataset_id(state);
+        let mut scenario = load_scenario_demands_by_id(state, &dataset_id, scenario_id).map_err(
+            |err| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError { error: err }),
+                )
+            },
+        )?;
+        gaslib::enrich_scenario_with_balance_hub(network, &mut scenario);
+        return Ok(gaslib::effective_solver_demands_for_network(
+            network,
+            &scenario.demands,
+            &scenario,
+        ));
+    }
+    if let Some(demands) = body_demands {
+        return Ok(demands.clone());
+    }
+    Ok((*active_default_demands(state)).clone())
+}
+
 async fn compute_contingency_report(
     state: &SharedState,
     payload: ContingencyRequest,
 ) -> Result<solver::ContingencyReport, (StatusCode, Json<ApiError>)> {
-    let demands = payload
-        .demands
-        .unwrap_or_else(|| (*active_default_demands(state)).clone());
     let network = active_network(state);
+    let demands = resolve_contingency_demands(
+        state,
+        &network,
+        payload.scenario_id.as_deref(),
+        payload.demands.as_ref(),
+    )?;
     let network_for_solve = network.clone();
     let cases = resolve_contingency_cases(&network, payload.scope, payload.custom_cases)?;
 
@@ -1829,5 +1865,177 @@ mod tests {
             json.get("green_cases").is_some(),
             "green_cases field missing"
         );
+    }
+
+    fn contingency_scratch_dir(suffix: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gazflow-contingency-test-{suffix}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn contingency_test_network() -> GasNetwork {
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "source".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: Some(10.0),
+            lat: Some(50.0),
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+        net.add_node(Node {
+            id: "sink".into(),
+            x: 1.0,
+            y: 0.0,
+            lon: Some(11.0),
+            lat: Some(50.0),
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+        net.add_pipe(Pipe {
+            id: "p1".into(),
+            from: "source".into(),
+            to: "sink".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 10.0,
+            diameter_mm: 500.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
+        });
+        net
+    }
+
+    fn contingency_test_state(
+        network: GasNetwork,
+        defaults: HashMap<String, f64>,
+        data_dir: PathBuf,
+    ) -> SharedState {
+        Arc::new(AppState {
+            network: Arc::new(RwLock::new(Arc::new(network))),
+            default_demands: Arc::new(RwLock::new(Arc::new(defaults))),
+            active_dataset: Arc::new(RwLock::new("test".to_string())),
+            available_datasets: Arc::new(RwLock::new(vec!["test".to_string()])),
+            imported: Arc::new(RwLock::new(HashMap::new())),
+            gas_composition: Arc::new(RwLock::new(solver::GasComposition::default())),
+            data_dir: Arc::new(data_dir),
+            simulation_slots: Arc::new(Semaphore::new(2)),
+            simulation_capacity: 2,
+            rayon_pool: Arc::new(
+                ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .build()
+                    .expect("pool"),
+            ),
+            exports: Arc::new(RwLock::new(HashMap::new())),
+            scenario_repo: ScenarioRepo::open(None).expect("repo"),
+            scenario_baselines: Arc::new(RwLock::new(HashMap::new())),
+            compressor_map_mode_override: Arc::new(RwLock::new(None)),
+            last_simulation: Arc::new(RwLock::new(None)),
+        })
+    }
+
+    #[test]
+    fn resolve_contingency_demands_without_scenario_id_uses_body_or_defaults() {
+        let tmp = contingency_scratch_dir("defaults");
+        let mut defaults = HashMap::new();
+        defaults.insert("sink".to_string(), -5.0);
+        let network = contingency_test_network();
+        let state = contingency_test_state(network.clone(), defaults, tmp.clone());
+
+        let resolved = resolve_contingency_demands(&state, &network, None, None)
+            .expect("defaults");
+        assert_eq!(resolved.get("sink").copied(), Some(-5.0));
+
+        let mut body = HashMap::new();
+        body.insert("sink".to_string(), -12.0);
+        let resolved = resolve_contingency_demands(&state, &network, None, Some(&body))
+            .expect("body demands");
+        assert_eq!(resolved.get("sink").copied(), Some(-12.0));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_contingency_demands_with_scenario_id_loads_scenario() {
+        let tmp = contingency_scratch_dir("scenario");
+        let scenario_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<boundaryValue>
+  <scenario id="ct_nom">
+    <node type="sink" id="sink">
+      <flow value="-42.0"/>
+    </node>
+  </scenario>
+</boundaryValue>"#;
+        std::fs::write(tmp.join("ct_nom.scn"), scenario_xml).unwrap();
+
+        let mut defaults = HashMap::new();
+        defaults.insert("sink".to_string(), -5.0);
+        let network = contingency_test_network();
+        let state = contingency_test_state(network.clone(), defaults, tmp.clone());
+
+        let resolved =
+            resolve_contingency_demands(&state, &network, Some("ct_nom"), None).expect("scenario");
+        assert_eq!(resolved.get("sink").copied(), Some(-42.0));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_api_contingency_scenario_id_uses_scenario_demands() {
+        let tmp = contingency_scratch_dir("http");
+        let scenario_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<boundaryValue>
+  <scenario id="ct_nom">
+    <node type="sink" id="sink">
+      <flow value="-42.0"/>
+    </node>
+  </scenario>
+</boundaryValue>"#;
+        std::fs::write(tmp.join("ct_nom.scn"), scenario_xml).unwrap();
+
+        let mut defaults = HashMap::new();
+        defaults.insert("sink".to_string(), -5.0);
+        let app = create_router_with_runtime_limits_and_datasets(
+            contingency_test_network(),
+            defaults,
+            "test".to_string(),
+            vec!["test".to_string()],
+            tmp.clone(),
+            4,
+            2,
+        );
+
+        let payload = serde_json::json!({
+            "scope": "all",
+            "scenario_id": "ct_nom"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/contingency")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("request");
+
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

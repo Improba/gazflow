@@ -49,6 +49,8 @@ enum ClientMessage {
         #[serde(default)]
         demands: Option<HashMap<String, f64>>,
         #[serde(default)]
+        scenario_id: Option<String>,
+        #[serde(default)]
         custom_cases: Option<Vec<solver::ContingencyCase>>,
     },
     CancelSimulation {
@@ -494,6 +496,7 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                 run_id,
                                 scope,
                                 demands,
+                                scenario_id,
                                 custom_cases,
                             }) => {
                                 if active_run_id.is_some() {
@@ -519,12 +522,26 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                         .as_ref()
                                         .clone()
                                 };
-                                let default_demands = state
-                                    .default_demands
-                                    .read()
-                                    .expect("default demands lock should not be poisoned")
-                                    .clone();
-                                let demands = demands.unwrap_or_else(|| (*default_demands).clone());
+                                let resolved_demands = match super::resolve_contingency_demands(
+                                    &state,
+                                    &network,
+                                    scenario_id.as_deref(),
+                                    demands.as_ref(),
+                                ) {
+                                    Ok(demands) => demands,
+                                    Err((_, api_error)) => {
+                                        let _ = tx
+                                            .send(ServerMessage::Error {
+                                                run_id: run_id.clone(),
+                                                seq: 0,
+                                                message: api_error.0.error,
+                                                fatal: false,
+                                            })
+                                            .await;
+                                        continue;
+                                    }
+                                };
+                                let demands = resolved_demands;
                                 let cases =
                                     match super::resolve_contingency_cases(&network, scope, custom_cases)
                                     {
@@ -1721,6 +1738,7 @@ mod tests {
             "type": "start_contingency_simulation",
             "run_id": "ct-1",
             "scope": "sources_only",
+            "scenario_id": "nomination_mild_618",
             "demands": { "sink": -8.0 }
         });
         let msg: ClientMessage =
@@ -1730,10 +1748,12 @@ mod tests {
                 run_id,
                 scope,
                 demands,
+                scenario_id,
                 custom_cases,
             } => {
                 assert_eq!(run_id.as_deref(), Some("ct-1"));
                 assert!(matches!(scope, super::ContingencyScope::SourcesOnly));
+                assert_eq!(scenario_id.as_deref(), Some("nomination_mild_618"));
                 assert_eq!(
                     demands.as_ref().and_then(|d| d.get("sink")).copied(),
                     Some(-8.0)
