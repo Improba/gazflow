@@ -18,20 +18,6 @@
         <MarginsByConstraint @select-node="(id) => emit('select-node', id)" />
         <BoundarySupplyList @select-node="(id) => emit('select-node', id)" />
         <CompressorMapPanel />
-        <q-btn
-          v-if="novaNominationId"
-          dense
-          outline
-          color="warning"
-          icon="warning_amber"
-          label="Analyser N-1 sur cette nomination"
-          class="full-width q-mt-sm"
-          :to="contingencyNominationLink"
-        >
-          <q-tooltip>
-            Ouvre l'analyse de contingence N-1 avec les demandes de la nomination active.
-          </q-tooltip>
-        </q-btn>
       </div>
 
       <div
@@ -94,11 +80,10 @@
           icon="warning_amber"
           label="Analyser N-1 sur cette nomination"
           class="full-width q-mt-sm"
-          :to="contingencyNominationLink"
+          :disable="contingencyCtaDisabled"
+          :to="contingencyCtaDisabled ? undefined : contingencyNominationLink"
         >
-          <q-tooltip>
-            Ouvre l'analyse de contingence N-1 avec les demandes de la nomination active.
-          </q-tooltip>
+          <q-tooltip>{{ contingencyCtaTooltip }}</q-tooltip>
         </q-btn>
       </div>
 
@@ -151,19 +136,18 @@ import CompressorMapPanel from 'src/components/workspace/CompressorMapPanel.vue'
 import VerdictCard from 'src/components/VerdictCard.vue';
 import ResultValueList from 'src/components/ResultValueList.vue';
 import type { NovaWorkflowStep } from 'src/composables/useNovaWorkflow';
-import { useNominationStore } from 'src/stores/nomination';
+import { useContingencyNominationCta } from 'src/composables/useContingencyNominationCta';
 import { useSimulateStore } from 'src/stores/simulate';
 
 const simulateStore = useSimulateStore();
-const nominationStore = useNominationStore();
 const showReport = ref(false);
 
-const novaNominationId = computed(() => nominationStore.activeId);
-
-const contingencyNominationLink = computed(() => ({
-  name: 'contingency' as const,
-  query: novaNominationId.value ? { scenario_id: novaNominationId.value } : {},
-}));
+const {
+  novaNominationId,
+  contingencyNominationLink,
+  disabled: contingencyCtaDisabled,
+  disabledTooltip: contingencyCtaTooltip,
+} = useContingencyNominationCta();
 
 withDefaults(
   defineProps<{

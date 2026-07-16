@@ -161,29 +161,29 @@ function onFocusDeficits(): void {
   });
 }
 
-function notifyReduceFromMap(): void {
-  $q.notify({
-    type: 'warning',
-    message: 'Réduction de demande : à appliquer depuis la vue Carte (panneau Simulation).',
-    timeout: 3000,
-    actions: [
-      {
-        label: 'Ouvrir la carte',
-        color: 'white',
-        handler: () => {
-          void router.push({ name: 'map' });
-        },
-      },
-    ],
-  });
-}
-
-function onReduce(_sinkId: string, _maxFeasibleQ: number): void {
-  notifyReduceFromMap();
+function onReduce(sinkId: string, maxFeasibleQ: number): void {
+  const base = simulateStore.lastInputDemands() ?? {};
+  const demands = { ...base, [sinkId]: -Math.abs(maxFeasibleQ) };
+  const scenarioId = simulateStore.activeScenarioId ?? nominationStore.activeId;
+  void simulateStore.runSimulation(
+    demands,
+    scenarioId ? { scenario_id: scenarioId } : undefined,
+  );
 }
 
 function onReduceAll(): void {
-  notifyReduceFromMap();
+  const base = simulateStore.lastInputDemands() ?? {};
+  const demands = { ...base };
+  for (const r of simulateStore.sinkCapacity) {
+    if (r.feasible_fraction < 1) {
+      demands[r.sink_id] = -Math.abs(r.max_feasible_q_m3s);
+    }
+  }
+  const scenarioId = simulateStore.activeScenarioId ?? nominationStore.activeId;
+  void simulateStore.runSimulation(
+    Object.keys(demands).length > 0 ? demands : undefined,
+    scenarioId ? { scenario_id: scenarioId } : undefined,
+  );
 }
 
 async function onSaveReduced(demands: Record<string, number>): Promise<void> {

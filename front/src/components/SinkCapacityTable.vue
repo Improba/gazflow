@@ -44,17 +44,17 @@
           color="primary"
           icon="save"
           label="Enregistrer la nomination réduite"
-          :disable="simulateStore.loading || !hasActiveNomination"
+          :disable="simulateStore.loading || !hasActiveScenario"
           @click="saveReduced"
         >
           <q-tooltip max-width="280px">
-            <span v-if="hasActiveNomination">
+            <span v-if="hasActiveScenario">
               Sauvegarde les débits max faisables (exits) comme une nouvelle nomination .scn
               et la sélectionne. Nomination réduite mass-balancée (exits + entries) :
               re-validez avant de certifier.
             </span>
             <span v-else>
-              Sélectionnez une nomination active pour enregistrer la version réduite.
+              Validez d'abord une nomination (simulation NoVa) pour enregistrer la version réduite.
             </span>
           </q-tooltip>
         </q-btn>
@@ -131,11 +131,9 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { useNominationStore } from 'src/stores/nomination';
 import { useSimulateStore } from 'src/stores/simulate';
 
 const simulateStore = useSimulateStore();
-const nominationStore = useNominationStore();
 
 const emit = defineEmits<{
   (e: 'run-study'): void;
@@ -150,13 +148,16 @@ const hasReductions = computed(() =>
   simulateStore.sinkCapacity.some((r) => r.feasible_fraction < 1),
 );
 
-const hasActiveNomination = computed(() => nominationStore.activeId !== null);
+const hasActiveScenario = computed(() => simulateStore.activeScenarioId !== null);
 
 function reduceAll() {
   emit('reduce-all');
 }
 
 function saveReduced() {
+  if (!simulateStore.activeScenarioId) {
+    return;
+  }
   const demands: Record<string, number> = {};
   for (const r of simulateStore.sinkCapacity) {
     if (r.feasible_fraction < 1) {

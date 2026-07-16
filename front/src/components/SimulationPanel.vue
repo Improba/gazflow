@@ -276,20 +276,6 @@
         <MarginsByConstraint @select-node="onSelectSink" />
         <BoundarySupplyList @select-node="onSelectSink" />
         <CompressorMapPanel />
-        <q-btn
-          v-if="novaNominationId"
-          dense
-          outline
-          color="warning"
-          icon="warning_amber"
-          label="Analyser N-1 sur cette nomination"
-          class="full-width q-mt-sm"
-          :to="contingencyNominationLink"
-        >
-          <q-tooltip>
-            Ouvre l'analyse de contingence N-1 avec les demandes de la nomination active.
-          </q-tooltip>
-        </q-btn>
       </div>
 
       <div
@@ -367,11 +353,10 @@
           icon="warning_amber"
           label="Analyser N-1 sur cette nomination"
           class="full-width q-mt-sm"
-          :to="contingencyNominationLink"
+          :disable="contingencyCtaDisabled"
+          :to="contingencyCtaDisabled ? undefined : contingencyNominationLink"
         >
-          <q-tooltip>
-            Ouvre l'analyse de contingence N-1 avec les demandes de la nomination active.
-          </q-tooltip>
+          <q-tooltip>{{ contingencyCtaTooltip }}</q-tooltip>
         </q-btn>
       </div>
 
@@ -528,6 +513,7 @@ import LogPanel from 'src/components/LogPanel.vue';
 import ProgressBar from 'src/components/ProgressBar.vue';
 import ResultValueList from 'src/components/ResultValueList.vue';
 import { useNovaWorkflow } from 'src/composables/useNovaWorkflow';
+import { useContingencyNominationCta } from 'src/composables/useContingencyNominationCta';
 import { useNetworkStore } from 'src/stores/network';
 import { useNominationStore } from 'src/stores/nomination';
 import { useSimulateStore } from 'src/stores/simulate';
@@ -558,11 +544,6 @@ const comparePanelOpen = computed(() => route.query.compare === '1');
 const demandOverrides = ref<Record<string, number>>({});
 const equipmentOverrides = ref<Record<string, PipeEquipmentDto>>({});
 const novaScenarioId = computed(() => nominationStore.activeId);
-const novaNominationId = computed(() => nominationStore.activeId);
-const contingencyNominationLink = computed(() => ({
-  name: 'contingency' as const,
-  query: novaNominationId.value ? { scenario_id: novaNominationId.value } : {},
-}));
 const selectedNetwork = ref<string | null>(null);
 const simulationMode = ref<'free' | 'check' | 'optimize'>('free');
 const gasDraft = ref<GasCompositionDto>({ ...G20_NOMINAL });
@@ -643,6 +624,13 @@ const scenarioDirty = computed(() => {
   }
   return novaScenarioId.value !== lastRunScenarioId.value;
 });
+
+const {
+  novaNominationId,
+  contingencyNominationLink,
+  disabled: contingencyCtaDisabled,
+  disabledTooltip: contingencyCtaTooltip,
+} = useContingencyNominationCta(scenarioDirty);
 
 const launchLabel = computed(() =>
   novaScenarioId.value ? 'Valider la nomination' : 'Lancer',

@@ -41,9 +41,11 @@
             icon="play_arrow"
             label="Lancer l'analyse"
             :loading="contingencyStore.loading"
-            :disable="networkStore.nodes.length === 0"
+            :disable="launchDisabled"
             @click="runAnalysis"
-          />
+          >
+            <q-tooltip v-if="launchDisabledTooltip">{{ launchDisabledTooltip }}</q-tooltip>
+          </q-btn>
         </div>
         <div v-if="contingencyStore.selectedCase" class="col-12 col-sm-auto">
           <q-btn
@@ -176,6 +178,7 @@ import {
   type ContingencyScope,
 } from 'src/services/api';
 import { useContingencyStore } from 'src/stores/contingency';
+import { useEditorStore } from 'src/stores/editor';
 import { useNetworkStore } from 'src/stores/network';
 import { useSimulateStore } from 'src/stores/simulate';
 import ScenarioContextBanner from 'src/components/ScenarioContextBanner.vue';
@@ -184,6 +187,7 @@ import { formatApiError } from 'src/utils/importError';
 const networkStore = useNetworkStore();
 const contingencyStore = useContingencyStore();
 const simulateStore = useSimulateStore();
+const editorStore = useEditorStore();
 const route = useRoute();
 
 const scope = ref<ContingencyScope>('all');
@@ -196,6 +200,30 @@ const nominationScenarioId = computed(() => {
 });
 const report = computed(() => contingencyStore.report);
 const loading = computed(() => contingencyStore.loading);
+
+const launchDisabled = computed(
+  () =>
+    networkStore.nodes.length === 0
+    || contingencyStore.loading
+    || editorStore.dirty
+    || editorStore.saving,
+);
+
+const launchDisabledTooltip = computed(() => {
+  if (networkStore.nodes.length === 0) {
+    return 'Chargez un réseau avant de lancer l\'analyse N-1.';
+  }
+  if (contingencyStore.loading) {
+    return 'Analyse N-1 en cours.';
+  }
+  if (editorStore.saving) {
+    return 'Enregistrement du réseau en cours — patientez avant de lancer l\'analyse.';
+  }
+  if (editorStore.dirty) {
+    return 'Modifications réseau non enregistrées — enregistrez ou annulez avant de lancer l\'analyse.';
+  }
+  return '';
+});
 
 const scopeOptions = [
   { label: 'Tous les éléments', value: 'all' as const },
