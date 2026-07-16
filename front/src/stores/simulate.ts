@@ -10,6 +10,7 @@ import {
 } from 'src/services/ws';
 import { presetForNodeCount, presetRobust } from 'src/utils/solverPresets';
 import { useNetworkStore } from 'src/stores/network';
+import { useNominationStore } from 'src/stores/nomination';
 
 type SimulationStatus = 'idle' | 'running' | 'converged' | 'cancelled' | 'error';
 
@@ -81,6 +82,15 @@ export const useSimulateStore = defineStore('simulate', () => {
   let pendingSnapshot: Extract<WsServerMessage, { type: 'snapshot' }> | null = null;
   let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
   let lastRunParams: LastRunParams | null = null;
+  const lastRunScenarioId = ref<string | null>(null);
+
+  const scenarioDirty = computed(() => {
+    if (status.value !== 'converged' && status.value !== 'idle') {
+      return false;
+    }
+    const nominationStore = useNominationStore();
+    return nominationStore.activeId !== lastRunScenarioId.value;
+  });
 
   async function ensureConnectedWs() {
     if (!wsClient) {
@@ -147,6 +157,7 @@ export const useSimulateStore = defineStore('simulate', () => {
       currentRunId.value = `run-${Date.now()}`;
       status.value = 'running';
       activeScenarioId.value = options?.scenario_id ?? null;
+      lastRunScenarioId.value = options?.scenario_id ?? null;
 
       const { capacity_bounds, mode, ...solverOpts } = options ?? {};
       const mergedEquipment = equipmentOverrides;
@@ -199,6 +210,12 @@ export const useSimulateStore = defineStore('simulate', () => {
 
   function lastInputDemands(): Record<string, number> | undefined {
     return lastRunParams?.demands ? { ...lastRunParams.demands } : undefined;
+  }
+
+  function lastRunEquipmentOverrides(): Record<string, PipeEquipmentDto> | undefined {
+    return lastRunParams?.equipmentOverrides
+      ? { ...lastRunParams.equipmentOverrides }
+      : undefined;
   }
 
   function setRunScenarioSummary(summary: RunScenarioSummary | null) {
@@ -496,6 +513,9 @@ export const useSimulateStore = defineStore('simulate', () => {
     rerunWithRobustMode,
     hasLastRun,
     lastInputDemands,
+    lastRunEquipmentOverrides,
+    lastRunScenarioId,
+    scenarioDirty,
     setRunScenarioSummary,
     setPreviewStep,
     cancelSimulation,

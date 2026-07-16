@@ -50,7 +50,7 @@
           <q-tooltip max-width="280px">
             <span v-if="hasActiveScenario">
               Sauvegarde les débits max faisables (exits) comme une nouvelle nomination .scn
-              et la sélectionne. Nomination réduite mass-balancée (exits + entries) :
+              et la sélectionne. Nomination réduite mass-balancée sur entries à débit fixe :
               re-validez avant de certifier.
             </span>
             <span v-else>

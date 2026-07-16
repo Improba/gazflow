@@ -321,7 +321,9 @@ function maybeAutoRunAnalysis() {
   if (
     contingencyStore.loading ||
     !nominationScenarioId.value ||
-    networkStore.nodes.length === 0
+    networkStore.nodes.length === 0 ||
+    editorStore.dirty ||
+    editorStore.saving
   ) {
     return;
   }

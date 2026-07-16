@@ -141,13 +141,14 @@ import { useSimulateStore } from 'src/stores/simulate';
 
 const simulateStore = useSimulateStore();
 const showReport = ref(false);
+const scenarioDirty = computed(() => simulateStore.scenarioDirty);
 
 const {
   novaNominationId,
   contingencyNominationLink,
   disabled: contingencyCtaDisabled,
   disabledTooltip: contingencyCtaTooltip,
-} = useContingencyNominationCta();
+} = useContingencyNominationCta(scenarioDirty);
 
 withDefaults(
   defineProps<{

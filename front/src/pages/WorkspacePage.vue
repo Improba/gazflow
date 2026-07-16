@@ -168,6 +168,7 @@ function onReduce(sinkId: string, maxFeasibleQ: number): void {
   void simulateStore.runSimulation(
     demands,
     scenarioId ? { scenario_id: scenarioId } : undefined,
+    simulateStore.lastRunEquipmentOverrides(),
   );
 }
 
@@ -183,6 +184,7 @@ function onReduceAll(): void {
   void simulateStore.runSimulation(
     Object.keys(demands).length > 0 ? demands : undefined,
     scenarioId ? { scenario_id: scenarioId } : undefined,
+    simulateStore.lastRunEquipmentOverrides(),
   );
 }
 

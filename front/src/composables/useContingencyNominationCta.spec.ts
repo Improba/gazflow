@@ -5,6 +5,7 @@ import { useContingencyNominationCta } from './useContingencyNominationCta';
 import { useEditorStore } from 'src/stores/editor';
 import { useNetworkStore } from 'src/stores/network';
 import { useNominationStore } from 'src/stores/nomination';
+import { useSimulateStore } from 'src/stores/simulate';
 
 describe('useContingencyNominationCta', () => {
   beforeEach(() => {
@@ -41,6 +42,22 @@ describe('useContingencyNominationCta', () => {
     networkStore.nodes = [{ id: 'N1' } as never];
 
     const scenarioDirty = computed(() => true);
+    const { disabled, disabledTooltip } = useContingencyNominationCta(scenarioDirty);
+
+    expect(disabled.value).toBe(true);
+    expect(disabledTooltip.value).toContain('dernière validation');
+  });
+
+  it('is disabled when scenario is dirty on Workspace', () => {
+    const nominationStore = useNominationStore();
+    const networkStore = useNetworkStore();
+    const simulateStore = useSimulateStore();
+
+    nominationStore.selectById('nomination_mild_618');
+    networkStore.nodes = [{ id: 'N1' } as never];
+    simulateStore.status = 'converged';
+
+    const scenarioDirty = computed(() => simulateStore.scenarioDirty);
     const { disabled, disabledTooltip } = useContingencyNominationCta(scenarioDirty);
 
     expect(disabled.value).toBe(true);

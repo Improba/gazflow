@@ -617,13 +617,7 @@ const equipmentDirty = computed(() => {
 
 // Nomination (scénario NoVa) modifiée depuis le dernier run → les diagnostics affichés
 // sont potentiellement stale ; on pousse Camille à re-valider.
-const lastRunScenarioId = ref<string | null>(null);
-const scenarioDirty = computed(() => {
-  if (simulateStore.status !== 'converged' && simulateStore.status !== 'idle') {
-    return false;
-  }
-  return novaScenarioId.value !== lastRunScenarioId.value;
-});
+const scenarioDirty = computed(() => simulateStore.scenarioDirty);
 
 const {
   novaNominationId,
@@ -779,7 +773,6 @@ function startSimulation() {
 
   lastRunDemandKey.value = demandKey(demandOverrides.value);
   lastRunEquipmentKey.value = equipmentKey(equipmentOverrides.value);
-  lastRunScenarioId.value = novaScenarioId.value;
 
   simulateStore.setRunScenarioSummary(
     demands
