@@ -431,17 +431,12 @@ struct TimeseriesRequest {
     warm_start: bool,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-enum TransientApiMode {
+pub(super) enum TransientApiMode {
+    #[default]
     QuasiSteady,
     Pde,
-}
-
-impl Default for TransientApiMode {
-    fn default() -> Self {
-        Self::QuasiSteady
-    }
 }
 
 impl From<TransientApiMode> for solver::TransientMode {
@@ -469,6 +464,8 @@ struct TransientRequest {
     mode: TransientApiMode,
     #[serde(default)]
     n_cells_per_pipe: Option<usize>,
+    #[serde(default)]
+    adaptive_dt: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1110,6 +1107,7 @@ async fn run_transient_simulation(
             .gas_composition
             .unwrap_or_else(|| active_gas_composition(&state)),
         n_cells_per_pipe: payload.n_cells_per_pipe,
+        adaptive_dt: payload.adaptive_dt,
     };
     let mode = solver::TransientMode::from(payload.mode);
 

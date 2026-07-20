@@ -37,7 +37,7 @@ pub(crate) fn ipopt_escalation_mode() -> IpoptEscalationMode {
             });
             IpoptEscalationMode::On
         }
-        Some(v) if v.eq_ignore_ascii_case("on-notsolved") => {
+        Some(v) if v.eq_ignore_ascii_case("on-notsolved") || v.eq_ignore_ascii_case("maybe") => {
             #[cfg(not(feature = "nlp-ipopt"))]
             IPOPT_ENV_WITHOUT_FEATURE.call_once(|| {
                 eprintln!(
@@ -120,7 +120,7 @@ fn ipopt_bound_violation_verdict(
 }
 
 /// Dérive le verdict NoVa à partir des diagnostics et du résultat solveur local.
-/// Peut escalader vers IPOPT si activé déclarativement et signature `Unresolved`.
+/// Peut tenter des redémarrages locaux (pressions scalées) puis escalader vers IPOPT.
 pub(crate) fn finalize_nova_verdict(
     network: &GasNetwork,
     scenario: Option<&ScenarioDemands>,
@@ -131,7 +131,16 @@ pub(crate) fn finalize_nova_verdict(
     tol_m3s: f64,
     result: &SolverResult,
 ) -> NovaVerdict {
-    let verdict = solver::nova_verdict(diagnostics, converged, tol_m3s, result);
+    let mut verdict = solver::nova_verdict(diagnostics, converged, tol_m3s, result);
+    let mut working = result.clone();
+
+    if verdict.cause == NovaCause::NotSolvedLocal
+        && let Some((improved_verdict, improved_result)) =
+            try_local_pressure_restarts(network, scenario, demands, gas, tol_m3s, &working)
+    {
+        verdict = improved_verdict;
+        working = improved_result;
+    }
 
     let mode = ipopt_escalation_mode();
     if !should_attempt_ipopt_escalation(&verdict, mode) {
@@ -141,13 +150,96 @@ pub(crate) fn finalize_nova_verdict(
     #[cfg(feature = "nlp-ipopt")]
     {
         if let Some(escalated) =
-            try_ipopt_escalation(network, scenario, demands, gas, &verdict, result, tol_m3s)
+            try_ipopt_escalation(network, scenario, demands, gas, &verdict, &working, tol_m3s)
         {
             return escalated;
         }
     }
 
+    #[cfg(not(feature = "nlp-ipopt"))]
+    {
+        let _ = (network, scenario, demands, gas, &working);
+        if mode != IpoptEscalationMode::Off {
+            // Documente honnêtement que l'escalade a été demandée mais absente du binaire.
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!(
+                    "warning: NoVa IPOPT escalation requested but nlp-ipopt feature is not enabled"
+                );
+            });
+        }
+    }
+
     verdict
+}
+
+/// Nombre de redémarrages locaux (pressions scalées) si `NotSolvedLocal`.
+/// `GAZFLOW_NOVA_LOCAL_RESTARTS` : entier ≥ 0 (défaut **2**).
+fn local_restart_count() -> usize {
+    std::env::var("GAZFLOW_NOVA_LOCAL_RESTARTS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(2)
+}
+
+fn try_local_pressure_restarts(
+    network: &GasNetwork,
+    scenario: Option<&ScenarioDemands>,
+    demands: &HashMap<String, f64>,
+    gas: GasComposition,
+    tol_m3s: f64,
+    base: &SolverResult,
+) -> Option<(NovaVerdict, SolverResult)> {
+    let n_restarts = local_restart_count();
+    if n_restarts == 0 || base.pressures.is_empty() {
+        return None;
+    }
+
+    let scales: Vec<f64> = match n_restarts {
+        1 => vec![0.92],
+        2 => vec![0.90, 1.10],
+        _ => {
+            let mut s = vec![0.85, 0.92, 1.08, 1.15];
+            s.truncate(n_restarts);
+            s
+        }
+    };
+
+    let cfg = solver::SteadyStateConfig {
+        gas_composition: gas,
+        max_iter: 800,
+        tolerance: tol_m3s,
+        ..solver::SteadyStateConfig::default()
+    };
+
+    for scale in scales {
+        let mut init = HashMap::new();
+        for (id, &p) in &base.pressures {
+            init.insert(id.clone(), (p * scale).clamp(5.0, 150.0));
+        }
+        let Ok(candidate) = solver::solve_steady_state_with_progress(
+            network,
+            demands,
+            Some(&init),
+            cfg,
+            |_| solver::SolverControl::Continue,
+        ) else {
+            continue;
+        };
+        if candidate.residual > tol_m3s {
+            continue;
+        }
+        let Some(sc) = scenario else {
+            continue;
+        };
+        let diagnostics = solver::compute_nova_diagnostics(network, sc, &candidate);
+        let mut v = solver::nova_verdict(&diagnostics, true, tol_m3s, &candidate);
+        if v.feasible || v.cause != NovaCause::NotSolvedLocal {
+            v.solver_signature = NovaSolverSignature::NewtonPosthoc;
+            return Some((v, candidate));
+        }
+    }
+    None
 }
 
 #[cfg(feature = "nlp-ipopt")]
@@ -162,45 +254,64 @@ fn try_ipopt_escalation(
 ) -> Option<NovaVerdict> {
     use solver::{NovaIpoptOptions, NovaIpoptVerdict, solve_nova_with_ipopt};
 
-    let opts = NovaIpoptOptions {
-        initial_pressures_bar: Some(result.pressures.clone()),
-        ..NovaIpoptOptions::default()
-    };
+    let starts: Vec<Option<HashMap<String, f64>>> = vec![
+        Some(result.pressures.clone()),
+        None, // cold uniform start inside IPOPT defaults
+        {
+            let mut uniform = HashMap::new();
+            for id in result.pressures.keys() {
+                uniform.insert(id.clone(), 70.0);
+            }
+            Some(uniform)
+        },
+    ];
 
-    let ipopt = solve_nova_with_ipopt(network, demands, gas, &opts).ok()?;
-
-    match ipopt {
-        NovaIpoptVerdict::Feasible {
-            residual_inf,
-            iterations,
-            ..
-        } => Some(NovaVerdict {
-            feasible: true,
-            deficit_sinks: Vec::new(),
-            cause: NovaCause::Feasible,
-            converged: true,
-            demand_scale_achieved: result.demand_scale_achieved,
-            residual_m3s: residual_inf,
-            iterations: iterations.max(0) as usize,
-            solver_signature: NovaSolverSignature::IpoptEscalation,
-        }),
-        NovaIpoptVerdict::BoundViolation {
-            pressures_bar,
-            residual_inf,
-            iterations,
-            ..
-        } => Some(ipopt_bound_violation_verdict(
-            network,
-            scenario,
-            pressures_bar,
-            base,
-            result,
-            tol_m3s,
-            residual_inf,
-            iterations,
-        )),
-        NovaIpoptVerdict::NotSolvedLocal { .. } | NovaIpoptVerdict::Error { .. } => None,
+    for initial in starts {
+        let opts = NovaIpoptOptions {
+            initial_pressures_bar: initial,
+            ..NovaIpoptOptions::default()
+        };
+        let Ok(ipopt) = solve_nova_with_ipopt(network, demands, gas, &opts) else {
+            continue;
+        };
+        match ipopt {
+            NovaIpoptVerdict::Feasible {
+                residual_inf,
+                iterations,
+                ..
+            } => {
+                return Some(NovaVerdict {
+                    feasible: true,
+                    deficit_sinks: Vec::new(),
+                    cause: NovaCause::Feasible,
+                    converged: true,
+                    demand_scale_achieved: result.demand_scale_achieved,
+                    residual_m3s: residual_inf,
+                    iterations: iterations.max(0) as usize,
+                    solver_signature: NovaSolverSignature::IpoptEscalation,
+                });
+            }
+            NovaIpoptVerdict::BoundViolation {
+                pressures_bar,
+                residual_inf,
+                iterations,
+                ..
+            } => {
+                return Some(ipopt_bound_violation_verdict(
+                    network,
+                    scenario,
+                    pressures_bar,
+                    base,
+                    result,
+                    tol_m3s,
+                    residual_inf,
+                    iterations,
+                ));
+            }
+            NovaIpoptVerdict::NotSolvedLocal { .. } | NovaIpoptVerdict::Error { .. } => continue,
+        }
     }
+    None
 }
 
 #[cfg(test)]
@@ -246,8 +357,16 @@ mod tests {
 
     #[test]
     #[serial]
-    fn ipopt_escalation_mode_unknown_value_is_off() {
+    fn ipopt_escalation_mode_maybe_is_on_notsolved() {
         unsafe { std::env::set_var("GAZFLOW_NOVA_IPOPT_ESCALATION", "maybe") };
+        assert_eq!(ipopt_escalation_mode(), IpoptEscalationMode::OnNotSolved);
+        unsafe { std::env::remove_var("GAZFLOW_NOVA_IPOPT_ESCALATION") };
+    }
+
+    #[test]
+    #[serial]
+    fn ipopt_escalation_mode_unknown_value_is_off() {
+        unsafe { std::env::set_var("GAZFLOW_NOVA_IPOPT_ESCALATION", "whatever") };
         assert_eq!(ipopt_escalation_mode(), IpoptEscalationMode::Off);
         unsafe { std::env::remove_var("GAZFLOW_NOVA_IPOPT_ESCALATION") };
     }

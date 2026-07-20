@@ -11,6 +11,9 @@ pub struct TransientConfig {
     /// Nombre de cellules par conduite en mode PDE (défaut : adaptatif selon longueur).
     #[serde(default)]
     pub n_cells_per_pipe: Option<usize>,
+    /// Si vrai, réduit `dt` selon C/G et un hint CFL (précision ; schéma déjà implicite).
+    #[serde(default)]
+    pub adaptive_dt: bool,
 }
 
 impl Default for TransientConfig {
@@ -20,6 +23,7 @@ impl Default for TransientConfig {
             dt_s: 300.0,
             gas_composition: GasComposition::default(),
             n_cells_per_pipe: None,
+            adaptive_dt: false,
         }
     }
 }

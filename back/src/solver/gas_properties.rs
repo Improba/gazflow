@@ -181,17 +181,23 @@ impl GasComposition {
             .max(1e-6)
     }
 
-    /// EOS effective (auto PR-78 si H₂ > 20 %).
+    /// EOS effective (auto GERG si H₂ > 50 %, PR-78 si H₂ > 20 %).
     pub fn effective_eos(&self) -> super::eos::EosModel {
         super::eos::EosModel::auto_for_composition(self.h2)
     }
 
-    /// Facteur Z selon EOS effective (Papay+Kay ou PR-78).
+    /// Facteur Z selon EOS effective (Papay+Kay, PR-78 ou GERG-2008).
     pub fn compressibility(&self, pressure_bar: f64, temperature_k: f64) -> f64 {
         match self.effective_eos() {
             super::eos::EosModel::PapayKay => self.compressibility_papay(pressure_bar, temperature_k),
             super::eos::EosModel::Pr78 => {
                 super::eos::pr78::compressibility_pr78(*self, pressure_bar, temperature_k)
+            }
+            super::eos::EosModel::Gerg2008 => {
+                super::eos::gerg::compressibility_gerg2008(*self, pressure_bar, temperature_k)
+                    .unwrap_or_else(|| {
+                        super::eos::pr78::compressibility_pr78(*self, pressure_bar, temperature_k)
+                    })
             }
         }
     }
@@ -209,7 +215,12 @@ impl GasComposition {
     /// Avertissements physiques (EOS, domaine de validité).
     pub fn physics_warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
-        if self.h2 > 0.20 + 1e-9 {
+        if self.h2 > 0.50 + 1e-9 {
+            out.push(
+                "Fraction H₂ > 50 % : EOS GERG-2008 activée (fallback PR-78 si itération densité échoue)."
+                    .to_string(),
+            );
+        } else if self.h2 > 0.20 + 1e-9 {
             out.push(
                 "Fraction H₂ > 20 % : EOS PR-78 activée automatiquement (remplace Papay + Kay)."
                     .to_string(),

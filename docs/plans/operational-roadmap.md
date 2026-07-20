@@ -8,18 +8,18 @@
 |-------|--------|-------------|
 | MVP (P0–P5) | ✅ | Steady-state, Cesium, WS, export, capacités |
 | **P6** Import | ✅ **~100 %** | GeoJSON/CSV/Shapefile, mapping, validation, UI + aperçu carte |
-| **P7** Physique | 🟨 **~88 %** | + PR-78 auto H₂>20 % ; thermique conduites restant |
+| **P7** Physique | 🟨 **~95 %** | + PR-78 (H₂>20 %) + GERG-2008 (H₂>50 %, `aga8`) ; thermique conduites restant |
 | **P8** Régulation | 🟨 **~92 %** | Cv MVP ; Jacobien analytique restant |
 | **P9** Profils demande | ✅ **~98 %** | Météo CSV, week-end, persistance, WS timeseries |
 | **P10** N-1 | ✅ **~100 %** | WS, export, overlay carte — code complet |
-| **P11** Transitoire | 🟨 **~70–75 %** | FV conservatif mono-pipe/chaîne + UI TransientPlayer ; réseaux branchés → fallback |
+| **P11** Transitoire | 🟨 **~90 %** | FV arbres + cycles (arbre couvrant) + régulateur/compresseur algébriques + WS + adaptive_dt |
 | **P12** Édition | 🟨 **~85 %** | Scénarios diffs, compare ΔP/ΔQ, export GeoJSON restant |
-| **P13** Calage SCADA | 🟨 **~90 %** | LM multi-param (≤5), demand scale ; GERG calage restant |
+| **P13** Calage SCADA | 🟨 **~90 %** | LM multi-param (≤5), demand scale |
 | Corpus tests | ✅ | `docs/testing/corpus/` + CI ; **~420+** tests back lib, front : vitest |
 
 Plan complétion : `docs/plans/completion-plan.md`.
 
-**Note (juillet 2026)** : parcours NoVa Camille livré sur `main` (verdict, nomination, capacité, nomination réduite, N-1, rapport) — voir [plan interface NoVa](../temp/plan-interface-natran-nova.md) et [persona Camille](../personas/ingenieur-natran.md). **P11** : endurcissement scientifique juillet 2026 (schéma volumes finis conservatif, bilan masse `flows_in`/`flows_out`, UI TransientPlayer) — ~70–75 %. P7 (physique) inchangé.
+**Note (juillet 2026)** : parcours NoVa Camille livré sur `main`. **P11** : arbres + cycles PDE, organes algébriques, WS, adaptive_dt (~90 %). **P7** : GERG-2008 auto H₂>50 %.
 
 ## Contexte
 
@@ -603,7 +603,7 @@ Le transitoire (P11) et le calage SCADA (P13) sont les plus complexes et bénéf
 | Régulateurs créent des non-linéarités fortes (commutation actif/bypass) | Newton diverge | P8 | Hystérésis + sous-relaxation + continuation |
 | Solveur transitoire instable (CFL, chocs) | P11 inutilisable | P11 | Schéma implicite (inconditionnellement stable), pas adaptatif, TVD limiter si explicite |
 | Problème inverse mal conditionné (calage) | Calage ne converge pas | P13 | Régularisation Tikhonov, bornes physiques, données redondantes |
-| Composition H₂ élevée (>20%) invalide Papay | Résultats physiquement faux | P7 | PR-78 auto au-delà de 20 % H₂ (✅) ; GERG-2008 pour précision maximale si besoin |
+| Composition H₂ élevée (>20%) invalide Papay | Résultats physiquement faux | P7 | PR-78 auto au-delà de 20 % H₂ (✅) ; GERG-2008 auto au-delà de 50 % H₂ (✅, fallback PR-78) |
 | Maillage transitoire trop fin → temps de calcul prohibitif | P11 inutilisable en interactif | P11 | Maillage adaptatif + parallélisme Rayon + option « résolution rapide » (maillage grossier) |
 | Absence de données SCADA pour le calage (confidentialité opérateur) | P13 non testable | P13 | Données synthétiques pour les tests, architecture « apportez vos données » |
 

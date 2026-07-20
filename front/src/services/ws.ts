@@ -81,6 +81,18 @@ type WsClientMessage =
       demands?: Record<string, number>;
       scenario_id?: string;
       custom_cases?: ContingencyCase[];
+    }
+  | {
+      type: 'start_transient_simulation';
+      run_id?: string;
+      initial_demands?: Record<string, number>;
+      events?: import('src/services/api').TransientEventDto[];
+      duration_s?: number;
+      dt_s?: number;
+      mode?: import('src/services/api').TransientMode;
+      n_cells_per_pipe?: number;
+      adaptive_dt?: boolean;
+      gas_composition?: GasCompositionDto;
     };
 
 export type WsServerMessage =
@@ -179,6 +191,26 @@ export type WsServerMessage =
       run_id: string;
       seq: number;
       report: ContingencyReport;
+    }
+  | {
+      type: 'transient_started';
+      run_id: string;
+      seq: number;
+      total_steps: number;
+      mode: string;
+    }
+  | {
+      type: 'transient_step';
+      run_id: string;
+      seq: number;
+      step: import('src/services/api').TransientStepDto;
+    }
+  | {
+      type: 'transient_finished';
+      run_id: string;
+      seq: number;
+      result: import('src/services/api').TransientResultDto;
+      total_ms: number;
     };
 
 export class SimulationWsClient {
@@ -271,6 +303,31 @@ export class SimulationWsClient {
       demands: payload.demands,
       scenario_id: payload.scenarioId,
       custom_cases: payload.customCases,
+    });
+  }
+
+  startTransientSimulation(payload: {
+    runId?: string;
+    initialDemands?: Record<string, number>;
+    events?: import('src/services/api').TransientEventDto[];
+    durationS?: number;
+    dtS?: number;
+    mode?: import('src/services/api').TransientMode;
+    nCellsPerPipe?: number;
+    adaptiveDt?: boolean;
+    gasComposition?: GasCompositionDto;
+  }): void {
+    this.send({
+      type: 'start_transient_simulation',
+      run_id: payload.runId,
+      initial_demands: payload.initialDemands,
+      events: payload.events ?? [],
+      duration_s: payload.durationS,
+      dt_s: payload.dtS,
+      mode: payload.mode,
+      n_cells_per_pipe: payload.nCellsPerPipe,
+      adaptive_dt: payload.adaptiveDt,
+      gas_composition: payload.gasComposition,
     });
   }
 

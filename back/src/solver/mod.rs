@@ -76,7 +76,8 @@ pub use timeseries::{
     simulate_timeseries, simulate_timeseries_with_progress,
 };
 pub use transient::{
-    TransientConfig, TransientEvent, TransientMode, TransientResult, TransientStepResult,
-    compute_linepack, simulate_transient, simulate_transient_pde, simulate_transient_quasi_steady,
-    simulate_transient_with_mode,
+    TransientConfig, TransientControl, TransientEvent, TransientMode, TransientResult,
+    TransientStepResult, compute_linepack, simulate_transient, simulate_transient_pde,
+    simulate_transient_quasi_steady, simulate_transient_with_mode,
+    simulate_transient_with_mode_progress,
 };

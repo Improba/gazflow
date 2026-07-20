@@ -6,8 +6,8 @@
         <div class="text-h6">Simulation transitoire</div>
         <div class="text-caption text-grey-5">
           Quasi-stationnaire : chaque pas résout un régime permanent et suit le linepack agrégé.
-          Mode PDE : propagation d'ondes simplifiée sur conduites en série (réseaux ramifiés :
-          repli quasi-stationnaire).
+          Mode PDE : volumes finis 1D (arbres, cycles via arbre couvrant, régulateurs/compresseurs
+          algébriques). Streaming WebSocket et dt adaptatif optionnels.
         </div>
         <div v-if="networkStore.activeNetwork" class="text-caption text-grey-4 q-mt-xs">
           Réseau actif : {{ networkStore.activeNetwork }}
@@ -96,6 +96,32 @@
             @click="run"
           />
         </div>
+        <div class="col-12 col-sm-auto">
+          <q-checkbox
+            v-model="useWebSocket"
+            dense
+            dark
+            label="WebSocket (streaming)"
+          />
+        </div>
+        <div v-if="mode === 'pde'" class="col-12 col-sm-auto">
+          <q-checkbox
+            v-model="adaptiveDt"
+            dense
+            dark
+            label="dt adaptatif"
+          />
+        </div>
+        <div v-if="loading && useWebSocket" class="col-12 col-sm-auto">
+          <q-btn
+            flat
+            dense
+            color="negative"
+            icon="cancel"
+            label="Annuler"
+            @click="cancelRun"
+          />
+        </div>
       </q-card-section>
 
       <q-card-section class="q-pt-none">
@@ -148,8 +174,21 @@
           Mode PDE demandé mais le solveur a utilisé un repli : {{ result.limitation }}
         </q-banner>
 
+        <q-banner
+          v-if="hasNonConvergedStep"
+          dense
+          rounded
+          class="bg-orange-10 text-orange-2 q-mb-sm"
+        >
+          <template #avatar>
+            <q-icon name="warning" />
+          </template>
+          Au moins un pas n'a pas convergé (Picard / bilan). Les pressions de ces pas sont
+          dégradées — voir la colonne « Conv. ».
+        </q-banner>
+
         <div class="text-caption text-grey-4 q-mb-sm">
-          {{ result.steps.length }} pas — {{ result.total_iterations }} itérations Newton —
+          {{ result.steps.length }} pas — {{ result.total_iterations }} itérations —
           {{ result.limitation }}
         </div>
 
@@ -170,9 +209,9 @@
             dense
             flat
             dark
-            :rows="result.steps"
+            :rows="tableRows"
             :columns="columns"
-            row-key="time_s"
+            row-key="_idx"
             :pagination="{ rowsPerPage: 12 }"
           />
         </q-expansion-item>
@@ -190,9 +229,11 @@ import {
   api,
   type TransientEventDto,
   type TransientMode,
+  type TransientRequest,
   type TransientResultDto,
   type TransientStepDto,
 } from 'src/services/api';
+import { SimulationWsClient, type WsServerMessage } from 'src/services/ws';
 import { useNetworkStore } from 'src/stores/network';
 import { useSimulateStore } from 'src/stores/simulate';
 import { formatApiError } from 'src/utils/importError';
@@ -208,8 +249,15 @@ const demandStepEnabled = ref(false);
 const demandStepSink = ref<string | null>(null);
 const demandStepFactor = ref(2);
 const loading = ref(false);
+const useWebSocket = ref(false);
+const adaptiveDt = ref(false);
 const result = ref<TransientResultDto | null>(null);
 const requestedMode = ref<TransientMode>('quasi_steady');
+const currentRunId = ref<string | null>(null);
+
+let wsClient: SimulationWsClient | null = null;
+let wsResolve: ((result: TransientResultDto) => void) | null = null;
+let wsReject: ((err: Error) => void) | null = null;
 
 const modeOptions = [
   { label: 'Quasi-stationnaire', value: 'quasi_steady' as const },
@@ -242,6 +290,14 @@ const showPdeFallbackBanner = computed(() => {
   return result.value.limitation.toLowerCase().includes('fallback');
 });
 
+const hasNonConvergedStep = computed(
+  () => result.value?.steps.some((s) => s.converged === false) ?? false,
+);
+
+const tableRows = computed(() =>
+  (result.value?.steps ?? []).map((step, idx) => ({ ...step, _idx: idx })),
+);
+
 function maxOutflow(step: TransientStepDto): number {
   const flows = step.flows_out ?? step.flows;
   return Object.values(flows).reduce((max, q) => Math.max(max, Math.abs(q)), 0);
@@ -269,6 +325,12 @@ const columns = computed(() => {
   const cols = [
     { name: 'time_s', label: 't (s)', field: 'time_s', align: 'left' as const },
     {
+      name: 'converged',
+      label: 'Conv.',
+      field: (r: TransientStepDto) => (r.converged === false ? 'non' : 'oui'),
+      align: 'center' as const,
+    },
+    {
       name: 'q_out',
       label: 'max |Q_out| (Nm³/s)',
       field: (r: TransientStepDto) => maxOutflow(r).toFixed(3),
@@ -279,7 +341,7 @@ const columns = computed(() => {
     { name: 'iterations', label: 'Iter.', field: 'iterations', align: 'right' as const },
   ];
   if (hasImbalance) {
-    cols.splice(2, 0, {
+    cols.splice(3, 0, {
       name: 'imbalance',
       label: 'max |Qin−Qout|',
       field: (r: TransientStepDto) => {
@@ -298,13 +360,14 @@ function onStepChange(step: TransientStepDto) {
   });
 }
 
-onBeforeUnmount(() => {
-  simulateStore.setPreviewStep(null);
-});
+/** Demandes alignées sur la dernière simu steady (sinon le backend utilise ses défauts). */
+function resolveInitialDemands(): Record<string, number> | undefined {
+  return simulateStore.lastInputDemands();
+}
 
 function buildEvents(): TransientEventDto[] {
   if (!demandStepEnabled.value || !demandStepSink.value) return [];
-  const demands = simulateStore.lastInputDemands() ?? {};
+  const demands = resolveInitialDemands() ?? {};
   const baseDemand = demands[demandStepSink.value] ?? -5;
   const newDemand = baseDemand * demandStepFactor.value;
   return [
@@ -317,6 +380,20 @@ function buildEvents(): TransientEventDto[] {
   ];
 }
 
+function buildTransientRequest(): TransientRequest {
+  const initial = resolveInitialDemands();
+  return {
+    duration_s: durationS.value,
+    dt_s: dtS.value,
+    events: buildEvents(),
+    mode: mode.value,
+    gas_composition: { ...networkStore.gas.composition },
+    adaptive_dt: mode.value === 'pde' ? adaptiveDt.value : false,
+    ...(mode.value === 'pde' ? { n_cells_per_pipe: nCellsPerPipe.value } : {}),
+    ...(initial ? { initial_demands: initial } : {}),
+  };
+}
+
 async function run() {
   if (networkStore.nodes.length === 0) {
     Notify.create({ type: 'warning', message: 'Chargez un réseau avant de lancer le transitoire' });
@@ -327,15 +404,24 @@ async function run() {
   requestedMode.value = mode.value;
   simulateStore.setPreviewStep(null);
   try {
-    result.value = await api.simulateTransient({
-      duration_s: durationS.value,
-      dt_s: dtS.value,
-      events: buildEvents(),
-      mode: mode.value,
-      gas_composition: { ...networkStore.gas.composition },
-      ...(mode.value === 'pde' ? { n_cells_per_pipe: nCellsPerPipe.value } : {}),
-    });
-    Notify.create({ type: 'positive', message: 'Transitoire terminé' });
+    if (useWebSocket.value) {
+      result.value = await runTransientWs();
+    } else {
+      result.value = await api.simulateTransient(buildTransientRequest());
+    }
+    if (showPdeFallbackBanner.value) {
+      Notify.create({
+        type: 'warning',
+        message: 'Transitoire terminé avec repli (voir limitation)',
+      });
+    } else if (hasNonConvergedStep.value) {
+      Notify.create({
+        type: 'warning',
+        message: 'Transitoire terminé : certains pas n’ont pas convergé',
+      });
+    } else {
+      Notify.create({ type: 'positive', message: 'Transitoire terminé' });
+    }
   } catch (err) {
     Notify.create({
       type: 'negative',
@@ -343,6 +429,101 @@ async function run() {
     });
   } finally {
     loading.value = false;
+    currentRunId.value = null;
   }
 }
+
+async function ensureWs() {
+  if (!wsClient) {
+    wsClient = new SimulationWsClient({
+      onMessage: handleWsMessage,
+      onClosed: () => {
+        if (loading.value && currentRunId.value) {
+          rejectWs('connexion websocket fermée');
+        }
+      },
+      onError: (message: string) => {
+        if (loading.value && currentRunId.value) {
+          rejectWs(message);
+        }
+      },
+    });
+  }
+  await wsClient.connect();
+}
+
+function handleWsMessage(msg: WsServerMessage) {
+  if (!currentRunId.value || msg.run_id !== currentRunId.value) return;
+  switch (msg.type) {
+    case 'transient_started':
+      result.value = { steps: [], total_iterations: 0, limitation: '' };
+      break;
+    case 'transient_step':
+      if (result.value) {
+        result.value = {
+          ...result.value,
+          steps: [...result.value.steps, msg.step],
+        };
+        onStepChange(msg.step);
+      }
+      break;
+    case 'transient_finished':
+      result.value = msg.result;
+      wsResolve?.(msg.result);
+      wsResolve = null;
+      wsReject = null;
+      break;
+    case 'cancelled':
+      rejectWs('transitoire annulé');
+      break;
+    case 'error':
+      rejectWs(msg.message);
+      break;
+    default:
+      break;
+  }
+}
+
+function rejectWs(message: string) {
+  wsReject?.(new Error(message));
+  wsResolve = null;
+  wsReject = null;
+}
+
+async function runTransientWs(): Promise<TransientResultDto> {
+  await ensureWs();
+  const runId = `tr-${Date.now()}`;
+  currentRunId.value = runId;
+  const req = buildTransientRequest();
+  return new Promise((resolve, reject) => {
+    wsResolve = resolve;
+    wsReject = reject;
+    wsClient!.startTransientSimulation({
+      runId,
+      initialDemands: req.initial_demands,
+      events: req.events,
+      durationS: req.duration_s,
+      dtS: req.dt_s,
+      mode: req.mode,
+      nCellsPerPipe: req.n_cells_per_pipe,
+      adaptiveDt: req.adaptive_dt,
+      gasComposition: req.gas_composition,
+    });
+  });
+}
+
+function cancelRun() {
+  if (wsClient && currentRunId.value) {
+    wsClient.cancelSimulation(currentRunId.value);
+  }
+}
+
+onBeforeUnmount(() => {
+  simulateStore.setPreviewStep(null);
+  if (wsClient && currentRunId.value && loading.value) {
+    wsClient.cancelSimulation(currentRunId.value);
+  }
+  wsClient?.close();
+  wsClient = null;
+});
 </script>

@@ -54,6 +54,12 @@
         <span class="text-grey-5">Résidu</span>
         {{ currentStep.residual.toExponential(2) }}
       </div>
+      <div class="col-6 col-sm-3">
+        <span class="text-grey-5">Picard</span>
+        <span :class="currentStep.converged === false ? 'text-orange-4' : 'text-positive'">
+          {{ currentStep.converged === false ? 'non convergé' : 'ok' }}
+        </span>
+      </div>
     </div>
   </div>
 </template>

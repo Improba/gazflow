@@ -165,7 +165,7 @@ Two reference states coexist in the solver; they must not be conflated:
 
 Hydraulic and calorific quantities are therefore reported at different standard temperatures by design. Comparing PCS (0 °C basis) with a volumetric delivery forecast (15 °C basis) requires an explicit conversion if energy balances are needed.
 
-**H₂ blends:** Papay + Kay is validated for classical natural gas (H₂ ≲ 10–20 %). Above ~20 % H₂, the solver **automatically switches to PR-78** for $Z$ and $\rho$ (`GasComposition::compressibility()`); the API still returns an informational warning. GERG-2008 remains a future upgrade for highest accuracy.
+**H₂ blends:** Papay + Kay is validated for classical natural gas (H₂ ≲ 10–20 %). Above ~20 % H₂, the solver **automatically switches to PR-78** for $Z$ and $\rho$; above ~50 % H₂ it switches to **GERG-2008** (`aga8` / NIST port, 5 GazFlow components mapped into the 21-component mixture, unused species at 0) with PR-78 fallback if the density iteration fails. The API returns an informational warning on the active EOS.
 
 At fixed normal flow $Q_n$, Reynolds based on $\rho_{\mathrm{std}}$ and $\mu(P_{\mathrm{ligne}})$ **decreases** when H₂ is added (lower standard density dominates over lower viscosity); turbulent regime is nevertheless maintained and total $\Delta P_{\mathrm{friction}}$ still drops because $\rho(P_{\mathrm{moy}})$ in the resistance term decreases faster than $f(Re)$ adjusts.
 
@@ -508,7 +508,7 @@ investigation (see `docs/science/validation.md`).
 | Multi-component gas (G20 default) | ✅ implemented | `GasComposition` |
 | Compressors (MVP uplift)          | ✅ implemented | Enthalpic model ⬜ |
 | Steady state                      | ✅ implemented | — |
-| Transient PDE (1D isothermal)     | 🟨 MVP         | Capacitance $C=A\Delta x(\partial\rho/\partial P)/\rho_n$ ; branched → quasi-steady |
+| Transient PDE (1D isothermal)     | 🟨 MVP         | Capacitance $C=A\Delta x(\partial\rho/\partial P)/\rho_n$ ; trees+cycles FV ; algebraic equipment |
 | Hybrid Newton + Jacobi fallback   | ✅ implemented | `newton.rs` |
 | Régulateurs / détendeurs (P8)     | ✅ MVP         | Boucle externe + slack aval |
 | Vannes Cv (P8)                    | 🟨 MVP         | $D_{\text{eff}} \propto \sqrt{C_v \cdot \text{ouverture}}$ |

@@ -53,6 +53,25 @@ enum ClientMessage {
         #[serde(default)]
         custom_cases: Option<Vec<solver::ContingencyCase>>,
     },
+    StartTransientSimulation {
+        run_id: Option<String>,
+        #[serde(default)]
+        initial_demands: Option<HashMap<String, f64>>,
+        #[serde(default)]
+        events: Vec<solver::TransientEvent>,
+        #[serde(default = "default_ws_transient_duration_s")]
+        duration_s: f64,
+        #[serde(default = "default_ws_transient_dt_s")]
+        dt_s: f64,
+        #[serde(default)]
+        mode: Option<super::TransientApiMode>,
+        #[serde(default)]
+        n_cells_per_pipe: Option<usize>,
+        #[serde(default)]
+        adaptive_dt: bool,
+        #[serde(default)]
+        gas_composition: Option<solver::GasComposition>,
+    },
     CancelSimulation {
         run_id: Option<String>,
     },
@@ -266,6 +285,23 @@ enum ServerMessage {
         run_id: String,
         seq: u64,
         report: solver::ContingencyReport,
+    },
+    TransientStarted {
+        run_id: String,
+        seq: u64,
+        total_steps: usize,
+        mode: String,
+    },
+    TransientStep {
+        run_id: String,
+        seq: u64,
+        step: solver::TransientStepResult,
+    },
+    TransientFinished {
+        run_id: String,
+        seq: u64,
+        result: solver::TransientResult,
+        total_ms: u64,
     },
 }
 
@@ -606,6 +642,113 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                     });
                                 });
                             }
+                            Ok(ClientMessage::StartTransientSimulation {
+                                run_id,
+                                initial_demands,
+                                events,
+                                duration_s,
+                                dt_s,
+                                mode,
+                                n_cells_per_pipe,
+                                adaptive_dt,
+                                gas_composition,
+                            }) => {
+                                if active_run_id.is_some() {
+                                    let run_id_for_error =
+                                        run_id.unwrap_or_else(|| "active-run".to_string());
+                                    let _ = tx
+                                        .send(ServerMessage::Error {
+                                            run_id: run_id_for_error,
+                                            seq: 0,
+                                            message: "a simulation is already running".to_string(),
+                                            fatal: false,
+                                        })
+                                        .await;
+                                    continue;
+                                }
+
+                                let run_id = run_id.unwrap_or_else(default_run_id);
+                                let network = {
+                                    state
+                                        .network
+                                        .read()
+                                        .expect("network lock should not be poisoned")
+                                        .as_ref()
+                                        .clone()
+                                };
+                                let network = Arc::new(network);
+                                let demands = initial_demands.unwrap_or_else(|| {
+                                    (*super::active_default_demands(&state)).clone()
+                                });
+                                let gas = gas_composition
+                                    .unwrap_or_else(|| super::active_gas_composition(&state));
+                                let mode = solver::TransientMode::from(
+                                    mode.unwrap_or_default(),
+                                );
+                                let mut total_steps = (duration_s / dt_s).ceil().max(0.0) as usize + 1;
+                                if adaptive_dt {
+                                    // Borne haute alignée sur la garde max_steps PDE (estimation UI).
+                                    total_steps = total_steps.saturating_mul(40).max(total_steps);
+                                }
+                                let permit = match state.simulation_slots.clone().try_acquire_owned()
+                                {
+                                    Ok(permit) => permit,
+                                    Err(_) => {
+                                        let _ = tx
+                                            .send(ServerMessage::Error {
+                                                run_id: run_id.clone(),
+                                                seq: 0,
+                                                message:
+                                                    "simulation capacity reached, retry later"
+                                                        .to_string(),
+                                                fatal: false,
+                                            })
+                                            .await;
+                                        continue;
+                                    }
+                                };
+                                let run_cancel = Arc::new(AtomicBool::new(false));
+                                let run_cancel_reason = Arc::new(AtomicU8::new(CANCEL_NONE));
+
+                                active_run_id = Some(run_id.clone());
+                                cancel_flag = Some(run_cancel.clone());
+                                cancel_reason = Some(run_cancel_reason.clone());
+
+                                let mode_label = match mode {
+                                    solver::TransientMode::QuasiSteady => "quasi_steady",
+                                    solver::TransientMode::Pde => "pde",
+                                };
+                                let _ = tx
+                                    .send(ServerMessage::TransientStarted {
+                                        run_id: run_id.clone(),
+                                        seq: 1,
+                                        total_steps,
+                                        mode: mode_label.to_string(),
+                                    })
+                                    .await;
+
+                                let tx_for_solver = tx.clone();
+                                let state_for_solver = state.clone();
+                                task::spawn_blocking(move || {
+                                    let _permit = permit;
+                                    run_transient_stream(TransientStreamContext {
+                                        state: state_for_solver,
+                                        network,
+                                        demands,
+                                        events,
+                                        duration_s,
+                                        dt_s,
+                                        mode,
+                                        n_cells_per_pipe,
+                                        adaptive_dt,
+                                        gas_composition: gas,
+                                        run_id,
+                                        cancel_flag: run_cancel,
+                                        cancel_reason: run_cancel_reason,
+                                        tx: tx_for_solver,
+                                    });
+                                });
+                            }
                             Ok(ClientMessage::CancelSimulation { run_id }) => {
                                 if let (Some(active_id), Some(flag), Some(reason)) =
                                     (&active_run_id, &cancel_flag, &cancel_reason)
@@ -643,6 +786,7 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                         | ServerMessage::Error { fatal: true, .. }
                         | ServerMessage::TimeseriesFinished { .. }
                         | ServerMessage::ContingencyFinished { .. }
+                        | ServerMessage::TransientFinished { .. }
                 );
 
                 let Ok(text) = serde_json::to_string(&outbound) else {
@@ -1167,6 +1311,109 @@ fn run_timeseries_stream(ctx: TimeseriesStreamContext) {
     }
 }
 
+struct TransientStreamContext {
+    state: super::SharedState,
+    network: Arc<crate::graph::GasNetwork>,
+    demands: HashMap<String, f64>,
+    events: Vec<solver::TransientEvent>,
+    duration_s: f64,
+    dt_s: f64,
+    mode: solver::TransientMode,
+    n_cells_per_pipe: Option<usize>,
+    adaptive_dt: bool,
+    gas_composition: solver::GasComposition,
+    run_id: String,
+    cancel_flag: Arc<AtomicBool>,
+    cancel_reason: Arc<AtomicU8>,
+    tx: mpsc::Sender<ServerMessage>,
+}
+
+fn run_transient_stream(ctx: TransientStreamContext) {
+    let TransientStreamContext {
+        state,
+        network,
+        demands,
+        events,
+        duration_s,
+        dt_s,
+        mode,
+        n_cells_per_pipe,
+        adaptive_dt,
+        gas_composition,
+        run_id,
+        cancel_flag,
+        cancel_reason,
+        tx,
+    } = ctx;
+    let started = Instant::now();
+    let seq = std::sync::atomic::AtomicU64::new(1);
+    let config = solver::TransientConfig {
+        duration_s,
+        dt_s,
+        gas_composition,
+        n_cells_per_pipe,
+        adaptive_dt,
+    };
+
+    let progress_cb = |step: &solver::TransientStepResult| -> solver::TransientControl {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return solver::TransientControl::Cancel;
+        }
+        let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = tx.blocking_send(ServerMessage::TransientStep {
+            run_id: run_id.clone(),
+            seq: s,
+            step: step.clone(),
+        });
+        solver::TransientControl::Continue
+    };
+
+    let result = state.rayon_pool.install(|| {
+        solver::simulate_transient_with_mode_progress(
+            &network,
+            &demands,
+            &events,
+            &config,
+            mode,
+            Some(&progress_cb),
+        )
+    });
+
+    match result {
+        Ok(final_result) => {
+            let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
+            let _ = tx.blocking_send(ServerMessage::TransientFinished {
+                run_id,
+                seq: s,
+                result: final_result,
+                total_ms: started.elapsed().as_millis() as u64,
+            });
+        }
+        Err(err) => {
+            let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
+            if cancel_flag.load(Ordering::Relaxed) {
+                let reason = match cancel_reason.load(Ordering::Relaxed) {
+                    CANCEL_CLIENT_REQUEST => "client_request",
+                    CANCEL_TIMEOUT => "timeout",
+                    _ => "cancelled",
+                };
+                let _ = tx.blocking_send(ServerMessage::Cancelled {
+                    run_id,
+                    seq: s,
+                    reason: reason.to_string(),
+                });
+            } else {
+                let _ = tx.blocking_send(ServerMessage::Error {
+                    run_id,
+                    seq: s,
+                    message: err.to_string(),
+                    fatal: true,
+                });
+            }
+        }
+    }
+}
+
 struct ContingencyStreamContext {
     state: super::SharedState,
     network: Arc<crate::graph::GasNetwork>,
@@ -1260,6 +1507,14 @@ fn default_timeout_ms() -> u64 {
 
 fn default_ts_warm_start() -> bool {
     true
+}
+
+fn default_ws_transient_duration_s() -> f64 {
+    3600.0
+}
+
+fn default_ws_transient_dt_s() -> f64 {
+    300.0
 }
 
 fn default_ts_max_iter() -> usize {
@@ -1876,5 +2131,52 @@ mod tests {
             }
         }
         assert!(got_cancelled, "should receive cancelled(client_request)");
+    }
+
+    #[tokio::test]
+    async fn test_ws_start_transient_simulation() {
+        let (addr, _server) = spawn_test_server(test_router()).await;
+        let url = format!("ws://{addr}/api/ws/sim");
+        let (mut ws, _) = connect_async(url).await.expect("connect ws");
+
+        let start = serde_json::json!({
+            "type": "start_transient_simulation",
+            "run_id": "tr-ws-1",
+            "duration_s": 600.0,
+            "dt_s": 300.0,
+            "mode": "quasi_steady",
+            "events": []
+        });
+        ws.send(WsMessage::Text(start.to_string()))
+            .await
+            .expect("send start");
+
+        let mut got_started = false;
+        let mut step_count = 0;
+        let mut got_finished = false;
+        for _ in 0..100 {
+            let Some(Ok(WsMessage::Text(txt))) = ws.next().await else {
+                continue;
+            };
+            let v: serde_json::Value = serde_json::from_str(&txt).expect("json");
+            match v.get("type").and_then(|x| x.as_str()) {
+                Some("transient_started") => {
+                    got_started = true;
+                    assert!(v.get("total_steps").and_then(|x| x.as_u64()).unwrap_or(0) >= 2);
+                }
+                Some("transient_step") => step_count += 1,
+                Some("transient_finished") => {
+                    got_finished = true;
+                    break;
+                }
+                Some("error") => {
+                    panic!("unexpected error: {txt}");
+                }
+                _ => {}
+            }
+        }
+        assert!(got_started, "expected transient_started");
+        assert!(step_count >= 2, "expected streamed steps, got {step_count}");
+        assert!(got_finished, "expected transient_finished");
     }
 }

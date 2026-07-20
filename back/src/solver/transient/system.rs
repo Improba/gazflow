@@ -112,8 +112,21 @@ pub(crate) fn build_tridiagonal_step(
     let alpha0 = dt_s * inv_c0 * g0;
 
     if n == 1 {
-        diag[0] = 1.0 + alpha0;
-        rhs[0] = p0 + alpha0 * source.pressure_bar + dt_s * inv_c0 * sink.flow_m3s;
+        if let Some(p_sink) = sink.pressure_bar {
+            let g_out = segment_conductance(
+                pipe,
+                0.5 * (p0 + p_sink),
+                mesh.dx * 1e-3,
+                composition,
+                state.flows[1].abs().max(state.flows[0].abs()),
+            );
+            let alpha_out = dt_s * inv_c0 * g_out;
+            diag[0] = 1.0 + alpha0 + alpha_out;
+            rhs[0] = p0 + alpha0 * source.pressure_bar + alpha_out * p_sink;
+        } else {
+            diag[0] = 1.0 + alpha0;
+            rhs[0] = p0 + alpha0 * source.pressure_bar + dt_s * inv_c0 * sink.flow_m3s;
+        }
         return TridiagonalStep {
             lower,
             diag,
@@ -159,7 +172,7 @@ pub(crate) fn build_tridiagonal_step(
         rhs[i] = p_i;
     }
 
-    // Dernière cellule : Q_out = −sink.flow_m3s (fixe).
+    // Dernière cellule : débit fixe, ou Dirichlet aval (jonction).
     let i = n - 1;
     let p_i = state.pressures[i];
     let inv_c_i = inv_storage(p_i);
@@ -172,8 +185,23 @@ pub(crate) fn build_tridiagonal_step(
     );
     let alpha_left = dt_s * inv_c_i * g_left;
     lower[i - 1] = -alpha_left;
-    diag[i] = 1.0 + alpha_left;
-    rhs[i] = p_i + dt_s * inv_c_i * sink.flow_m3s;
+
+    if let Some(p_sink) = sink.pressure_bar {
+        let q_out_prev = state.flows[n];
+        let g_out = segment_conductance(
+            pipe,
+            0.5 * (p_i + p_sink),
+            mesh.dx * 1e-3,
+            composition,
+            q_out_prev,
+        );
+        let alpha_out = dt_s * inv_c_i * g_out;
+        diag[i] = 1.0 + alpha_left + alpha_out;
+        rhs[i] = p_i + alpha_out * p_sink;
+    } else {
+        diag[i] = 1.0 + alpha_left;
+        rhs[i] = p_i + dt_s * inv_c_i * sink.flow_m3s;
+    }
 
     TridiagonalStep {
         lower,
@@ -283,7 +311,20 @@ pub(crate) fn update_flows(
         );
         state.flows[i] = g * (state.pressures[i - 1] - state.pressures[i]);
     }
-    state.flows[n] = -sink.flow_m3s;
+
+    if let Some(p_sink) = sink.pressure_bar {
+        let q_prev = state.flows[n];
+        let g_out = segment_conductance(
+            pipe,
+            0.5 * (state.pressures[n - 1] + p_sink),
+            mesh.dx * 1e-3,
+            composition,
+            q_prev,
+        );
+        state.flows[n] = g_out * (state.pressures[n - 1] - p_sink);
+    } else {
+        state.flows[n] = -sink.flow_m3s;
+    }
 }
 
 #[cfg(test)]

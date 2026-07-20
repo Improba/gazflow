@@ -38,6 +38,8 @@ paths:
         - `flows` : débit aval par conduite (affichage carte / Cesium)
         - `flows_in` : débit amont [Nm³/s] (PDE : flows[0] ; quasi-steady : = flows)
         - `flows_out` : débit aval [Nm³/s] (PDE : flows[n] ; quasi-steady : = flows)
+        - `converged` : false si le pas Picard PDE n'a pas convergé (défaut true en QS)
+        - requête : `mode` (`quasi_steady`|`pde`), `adaptive_dt`, `n_cells_per_pipe`, `initial_demands`
   /api/simulate/compare:
     post:
       summary: Compare deux scénarios topologiques (ΔP, ΔQ)
@@ -72,7 +74,9 @@ paths:
         - `start_simulation` : `options.robust_mode` (bool), `options.continuation_scales` (number[])
         - `start_timeseries_simulation` : `options.robust_mode` (bool)
         - `start_contingency_simulation`, `cancel_simulation`
+        - `start_transient_simulation` : `mode`, `adaptive_dt`, `n_cells_per_pipe`, `events`, `initial_demands`
 
         Messages serveur :
         - `started`, `iteration`, `snapshot`, `converged`, `cancelled`, `error`, …
         - `continuation_step` : `{ run_id, seq, step, total_steps, scale }` — palier de continuation de charge
+        - `transient_started` / `transient_step` / `transient_finished` — streaming transitoire

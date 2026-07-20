@@ -6,9 +6,9 @@ This document describes the known limits of the solver in its current state. It 
 
 - **Steady state** is the default operational mode; **transient** supports two modes:
   - `quasi_steady`: re-solves steady-state at each step (MVP, no wave propagation between steps).
-  - `pde`: 1D isothermal implicit Euler on **series pipes**; **branched networks fall back** to quasi-steady.
+  - `pde`: 1D isothermal implicit Euler on meshable pipes (Pipe/ShortPipe/Valve/Resistor); **trees** use leaf→root flow sweep; **cycles** use spanning-tree + chord Dirichlet; **regulators/compressors** are algebraic links (P_set / r·P_in). Fallback to quasi-steady only if disconnected / no pressure anchor.
 - Isothermal assumption (uniform gas temperature 288.15 K in pipes; outdoor $T_{\mathrm{ext}}$ affects demand only).
-- **EOS**: Kay pseudo-criticals + Papay Z by default; **PR-78 auto-selected** when H₂ > 20 % (`solver/eos/pr78.rs`). GERG-2008 not implemented.
+- **EOS**: Kay pseudo-criticals + Papay Z by default; **PR-78 auto-selected** when H₂ > 20 % (`solver/eos/pr78.rs`); **GERG-2008 auto** when H₂ > 50 % (`solver/eos/gerg.rs`, crate `aga8` / NIST), with PR-78 fallback if density iteration fails.
 - Lee-Gonzalez-Eakin viscosity; G20 or custom composition via `PATCH /api/network/gas-composition`.
 - Gravity included (`ρ g Δz` in the P² equation); altitude from import/GasLib.
 - Reynolds dynamic in `pipe_resistance_hydraulic` when $|Q|>0$; Newton Jacobian uses $Re=10^7$ for stability (optional Re–Q coupling not enabled).
@@ -17,7 +17,7 @@ This document describes the known limits of the solver in its current state. It 
 - **P8 regulators**: outer loop + downstream slack; bypass with hysteresis; isothermal expansion (no Joule–Thomson). Hydrostatic threshold uses $\rho(P_{\text{consigne}}, T_{\text{défaut}})$ from gas composition (not a fixed $\rho = 50\ \text{kg/m}^3$). Control valves: **effective diameter** from $C_v$ and opening (not full ISA gas choking). Regulator Jacobian: finite-difference row coupling (not fully analytic).
 - **P9 demand**: quasi-steady hourly timeseries (no linepack coupling between hourly steps); scalar $T_{\mathrm{ext}}$ per step; weather CSV with unique hours; weekday/weekend profiles; $\bar m_h = 1$ when all $w_h \ge 0$.
 - **P13 calibration**: residuals $r_i = y_i - \hat y_i$; LM on global roughness and up to **5 parameters** (roughness + `DemandScale`); per-pipe strategy uses grid search for many pipes.
-- **P11 linepack**: $M = \sum \rho(P_{\mathrm{moy}})\, A\, L$ on active pipes (aggregated, not spatially resolved except PDE MVP on single pipe / chain).
+- **P11 linepack**: $M = \sum \rho(P_{\mathrm{moy}})\, A\, L$ on active pipes (aggregated, not spatially resolved except PDE MVP on trees+cycles with algebraic equipment).
 
 ## 2. Numerical limits
 
@@ -26,7 +26,12 @@ This document describes the known limits of the solver in its current state. It 
 - **Partial continuation**: when charge ramping stops before 100 % demand, the solver may return a converged state at a lower scale (`demand_scale_achieved` < 1); results are valid only for that fraction of nominal demand.
 - **Continuation tiers**: intermediate demand scales use a relaxed residual tolerance (max(0.05, 100× final tolerance)); only the final scale at 100 % demand uses the preset tolerance. Compressor pressure uplift is ramped with the current continuation scale (`network_with_scaled_compressor_lift`).
 - **Floating connected components**: if the hydraulically active subgraph splits into several components without a fixed-pressure node, the Newton solver anchors **one numerical pressure reference per component** (largest |demand| node at the current iterate, else lowest index, else 70 bar). This is a **Jacobian regularisation**, not a GasLib boundary condition; `pressureMin`/`pressureMax` from `.net` are operational bounds, not used as anchors. Distribution networks with a single connected active graph are unaffected.
-- PDE transient: fixed time step; no adaptive CFL yet; junction coupling simplified.
+- PDE transient: optional `adaptive_dt` (`α·C/G` + wave hint; floor `max(1s, 5% dt_max)`; scheme remains implicit). Trees: leaf→root FixedFlow with `sink = demande − ΣQin_enfants − Q_organes`. Cycles: spanning-tree + chord Dirichlet. Regulators/compressors: P constraint + **flow transmission** (demand fold + `equipment_outflow_from`).
+- **PDE event snap**: transient events are applied at the **end** of the time step whose `dt` is snapped so the step boundary lands on `t_event` (BC stable during the step; topology rebuild after integration). Events at the current time are applied before integration without advancing `time_s`. Reported `linepack_kg` is post-rebuild (consistent with step pressures/flows). A PDE step that lands on a disconnecting event is still recorded before the QS fallback.
+- **PDE rebuild**: after each successful event, `fixed_pressure_nodes` is rebuilt from network anchors only, then equipment outlets are synced (no accumulation of stale fixed nodes). `build_pipe_contexts` reuses prior pipe state when geometry (`length_km`, `diameter_mm`, `roughness_mm`, `n_cells`) is unchanged, preserving linepack on surviving pipes.
+- **PDE `flows` / `flows_in` / `flows_out`**: keys = meshable pipes still hydraulically active only (a closed pipe disappears from the maps; clients must not assume `Q=0` ghost entries). Picard non-convergence inflates step `residual` (≥ 1) and sets `converged: false`; reported `residual` on trees is the nodal mass imbalance [Nm³/s], not pressure delta. `total_iterations` sums Picard effort. One automatic `dt/2` Picard retry is attempted on non-convergence before keeping the original step with `converged: false`.
+- If an event (e.g. disconnecting `ValveClose`) makes the network PDE-ineligible mid-run, the remainder of the horizon falls back to quasi-steady (`limitation` mentions `PDE→quasi-steady fallback`).
+- **Transient WebSocket**: `start_transient_simulation` streams `transient_step` / `transient_finished` (same pattern as timeseries).
 - **PDE boundary mass balance (transient)**: schéma volumes finis conservatif (BC pression amont sur le bord, pas Dirichlet sur cellule 0) ; bilan cumulatif $|ΔM − ρ_n ∫(Q_{in}−Q_{out})\\,dt| / |ΔM|$ vérifié à **5 %** par `test_pde_mass_balance_integrated` ; régime stationnaire : $|Q_{in} − Q_{out}| < 10^{-4}$ Nm³/s et $|ΔM| < 10^{-3}$ kg/pas.
 - **PDE segment conductance**: $G = 2 P_{\mathrm{ref}} / (R \sqrt{Q_{\mathrm{prev}}^2 + \varepsilon^2})$ with $\varepsilon = 10^{-3}$ Nm³/s. Chord consistent with $P_1^2 - P_2^2 = R Q|Q|$ and $\Delta\pi \approx 2 P_{\mathrm{ref}} \Delta P$ ($\Delta P = R Q^2 / (2 P_{\mathrm{ref}})$), regularized at zero flow. Coupling $Q \approx G\,\Delta P$ (bar) in the implicit Euler step. **$G$ is lagged** at $Q_{\mathrm{prev}}$ (previous-step interface flow), not the implicit $Q$ of the current step: quasi-Newton chord linearization. The factor **2** in $2 P_{\mathrm{ref}}$ is intentional to recover steady $\Delta P = R Q^2 / (2 P_{\mathrm{ref}})$.
 - **PDE storage capacitance** (corrected): $C = A L\, (\partial\rho/\partial P) / \rho_n$ in Nm³/bar, consistent with $Q$ in Nm³/s and linepack $M = \rho A L$ aggregated in Nm³ via $\rho_n$.
@@ -46,7 +51,7 @@ This document describes the known limits of the solver in its current state. It 
 
 - **Solve with `scenario_id`** uses `resolve_simulation_demands`: nominal Q from the `.scn` plus partial client overrides merged before the WS solve.
 - **Pressure diagnostics** are post-hoc envelope checks on the converged result (except capacity study and N-1, which use `network_with_scenario_boundaries_for_nova`).
-- **IPOPT escalation** is never the default; enable via `GAZFLOW_NOVA_IPOPT_ESCALATION` (`on`, `on-notsolved`, `maybe`).
+- **IPOPT escalation** is never the default; enable via `GAZFLOW_NOVA_IPOPT_ESCALATION` (`on`, `on-notsolved`, `maybe` ≡ `on-notsolved`). Requires feature `nlp-ipopt`. Local scaled-pressure restarts on `NotSolvedLocal`: `GAZFLOW_NOVA_LOCAL_RESTARTS` (default **2**).
 - **Reduced nomination** (`POST /api/nova/nominations/reduced`): mass-balance entries at fixed flow; not a substitute for certification without re-validation.
 - **GasLib-582 `mild_618`**: feasible with external IPOPT NLP; the in-repo Newton solver may return `NotSolvedLocal`.
 - **No systematic `.sol` validation** against external reference solutions.
@@ -57,7 +62,7 @@ This document describes the known limits of the solver in its current state. It 
 - GasLib-135 (135 nodes): recommended transport demo with continuation preset; steady-state smoke test passes (faer LU stable with component anchoring on fragmented subgraphs).
 - GasLib-582 (582 nodes): `nomination_mild_618` is **feasible** (proven constructively in Phase VIII-bis by an independent external IPOPT NLP solve — see §3.1 below and [diagnosis](../testing/gaslib-582-compressor-diagnosis.md)). Earlier phases concluded "topological infeasibility" for sink_88/83/108; a zero-demand reachability probe (single anchor source_14 at 86 bar) shows these sinks reach ~86 bar at zero flow, far above their contractual floors (26/21/16 bar). The earlier "capacity = 0 even at zero flow" was an artifact of multiple conflicting pressure anchors (slack 51 bar + sources 70-121 bar + non-convergence), not a real topological infeasibility. The in-repo local Newton solver still reports `NotSolvedLocal` under the full nomination flow because the NoVa NLP is non-convex and the penalty-Newton is weaker than IPOPT (which finds the feasible point reliably when single-threaded); this is a local-solver weakness, not evidence against feasibility.
 - Flow comparison against external `.sol` references: not yet systematic. **GasLib-11 ZIP (ZIB)** does not ship a `.sol` file ; oracle externe indisponible pour ce réseau (voir `docs/testing/gaslib-11-quarantine.md`).
-- PDE transient: monotonicity tests on single pipe; full wave validation pending. **PDE chain junction mass conservation not yet tested** (explicit junction coupling only).
+- PDE transient: monotonicity on single pipe; Y-tree junction balance; parallel-path cycles (`test_pde_cyclic_parallel_paths_mass_balance`); regulator algebraic pin; adaptive_dt. Full acoustic-wave validation still pending.
 
 ### 3.2 EOS H₂ — discontinuité au seuil 20 % (juillet 2026)
 
@@ -108,9 +113,9 @@ match the external one (multistart, continuation, or SQP/IPOPT backend).
 
 ## 5. Recommended evolutions
 
-- Full Saint-Venant PDE on branched networks + transient WebSocket streaming.
+- Full acoustic / Saint-Venant PDE; tighter cyclic residuals on pathological loops; thermal transients.
 - Cv ISA gas choking in Newton; analytic regulator Jacobian.
-- GERG-2008 for high-H₂ blends (beyond PR-78).
+- NoVa local Newton parity with IPOPT on GasLib-582 `mild_618` without external warm-start (non-convex NLP).
 - Thermal profiles in pipes (soil coupling).
 - Outer-loop Re–Q in Newton Jacobian for sub-1 % accuracy.
 - Systematic external reference validation (pressure and flow).

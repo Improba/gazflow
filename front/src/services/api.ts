@@ -487,6 +487,8 @@ export interface TransientStepDto {
   flows_out?: Record<string, number>;
   iterations: number;
   residual: number;
+  /** False when the PDE Picard step did not converge (defaults to true for quasi-steady). */
+  converged?: boolean;
   linepack_kg: number;
   linepack_delta_kg: number;
 }
@@ -507,6 +509,7 @@ export interface TransientRequest {
   gas_composition?: GasCompositionDto;
   mode?: TransientMode;
   n_cells_per_pipe?: number;
+  adaptive_dt?: boolean;
 }
 
 export interface ScenarioSummary {

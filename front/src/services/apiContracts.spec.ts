@@ -60,6 +60,7 @@ describe('apiContracts', () => {
       flows_out: { P1: 5 },
       iterations: 0,
       residual: 0,
+      converged: true,
       linepack_kg: 1200,
       linepack_delta_kg: -0.5,
     };
@@ -67,6 +68,24 @@ describe('apiContracts', () => {
     expect(parsed.flows_in.P1).toBe(5.01);
     expect(parsed.flows_out.P1).toBe(5);
     expect(parsed.flows.P1).toBe(5);
+    expect(parsed.converged).toBe(true);
+  });
+
+  it('serializes transient request with adaptive_dt and initial_demands', () => {
+    const payload = {
+      duration_s: 600,
+      dt_s: 300,
+      events: [] as [],
+      mode: 'pde' as const,
+      adaptive_dt: true,
+      n_cells_per_pipe: 8,
+      initial_demands: { SK: -5 },
+    };
+    const parsed = JSON.parse(JSON.stringify(payload));
+    expect(parsed.mode).toBe('pde');
+    expect(parsed.adaptive_dt).toBe(true);
+    expect(parsed.n_cells_per_pipe).toBe(8);
+    expect(parsed.initial_demands.SK).toBe(-5);
   });
 
   it('serializes compare request with optional scenario ids', () => {
