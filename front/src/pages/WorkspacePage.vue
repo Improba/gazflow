@@ -16,24 +16,22 @@
       </div>
     </header>
 
-    <q-btn-group v-if="hasNetwork" flat class="workspace-page__switcher q-mb-md">
+    <q-btn-group
+      v-if="hasNetwork"
+      flat
+      class="workspace-page__switcher q-mb-md"
+      role="tablist"
+      aria-label="Vues de l'espace d'analyse"
+    >
       <q-btn
-        :color="activeView === 'schematic' ? 'primary' : undefined"
-        :text-color="activeView === 'schematic' ? undefined : 'grey-5'"
-        label="Schéma"
-        @click="activeView = 'schematic'"
-      />
-      <q-btn
-        :color="activeView === 'profile' ? 'primary' : undefined"
-        :text-color="activeView === 'profile' ? undefined : 'grey-5'"
-        label="Profil de pression"
-        @click="activeView = 'profile'"
-      />
-      <q-btn
-        :color="activeView === 'table' ? 'primary' : undefined"
-        :text-color="activeView === 'table' ? undefined : 'grey-5'"
-        label="Tableau"
-        @click="activeView = 'table'"
+        v-for="view in workspaceViews"
+        :key="view.id"
+        :color="activeView === view.id ? 'primary' : undefined"
+        :text-color="activeView === view.id ? undefined : 'grey-5'"
+        :label="view.label"
+        :aria-selected="activeView === view.id"
+        role="tab"
+        @click="activeView = view.id"
       />
     </q-btn-group>
 
@@ -91,7 +89,11 @@
 
     <div v-if="hasNetwork" class="workspace-page__body">
       <div class="workspace-page__main">
-        <SchematicView v-if="activeView === 'schematic'" />
+        <SchematicView
+          v-if="activeView === 'schematic'"
+          :selected-node-id="selectedNode"
+          @select-node="onSelectNode"
+        />
         <PressureProfileView v-else-if="activeView === 'profile'" />
         <ResultsTableView v-else />
       </div>
@@ -127,6 +129,12 @@ import { useSimulateStore } from 'src/stores/simulate';
 import { deficitSinkIds } from 'src/utils/novaDeficitSinks';
 
 type WorkspaceView = 'schematic' | 'profile' | 'table';
+
+const workspaceViews: Array<{ id: WorkspaceView; label: string }> = [
+  { id: 'schematic', label: 'Schéma' },
+  { id: 'profile', label: 'Profil de pression' },
+  { id: 'table', label: 'Tableau' },
+];
 
 const router = useRouter();
 const $q = useQuasar();

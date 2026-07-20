@@ -1,6 +1,6 @@
 <template>
-  <div class="global-status-bar row items-center no-wrap q-gutter-sm">
-    <q-icon name="hub" size="xs" class="text-grey-5" />
+  <div class="global-status-bar row items-center no-wrap q-gutter-sm" role="status" aria-live="polite">
+    <q-icon name="hub" size="xs" class="text-grey-5 gt-xs" aria-hidden="true" />
     <q-chip
       dense
       flat
@@ -10,9 +10,10 @@
       icon="lan"
     >
       <span class="ellipsis">{{ status.network.value ?? 'Aucun réseau' }}</span>
+      <q-tooltip>{{ status.network.value ?? 'Aucun réseau chargé' }}</q-tooltip>
     </q-chip>
 
-    <q-separator vertical dark class="status-sep" />
+    <q-separator vertical dark class="status-sep gt-xs" />
 
     <q-chip
       dense
@@ -28,15 +29,16 @@
     <q-chip
       dense
       flat
-      class="status-chip"
+      class="status-chip gt-sm"
       :color="status.nomination.value.id ? 'blue-grey-8' : 'grey-9'"
       text-color="grey-2"
       icon="assignment"
     >
       <span class="ellipsis">{{ status.nomination.value.label }}</span>
+      <q-tooltip>{{ status.nomination.value.label }}</q-tooltip>
     </q-chip>
 
-    <q-space />
+    <q-space class="gt-xs" />
 
     <q-chip
       dense
@@ -46,7 +48,8 @@
       text-color="white"
       icon="verified_user"
     >
-      {{ status.n1Status.value.label }}
+      <span class="ellipsis">{{ status.n1Status.value.label }}</span>
+      <q-tooltip>{{ status.n1Status.value.label }}</q-tooltip>
     </q-chip>
   </div>
 </template>
@@ -81,10 +84,17 @@ function toneColor(tone: StatusTone): string {
   background: var(--scada-panel, #11161c);
   border-bottom: 1px solid var(--scada-border, #1f2a33);
   min-height: 30px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.global-status-bar::-webkit-scrollbar {
+  display: none;
 }
 
 .status-chip {
   max-width: 220px;
+  flex-shrink: 0;
 }
 
 .status-chip :deep(.q-chip__content) {
@@ -95,5 +105,11 @@ function toneColor(tone: StatusTone): string {
 .status-sep {
   height: 18px;
   margin: 0 2px;
+}
+
+@media (max-width: 599px) {
+  .status-chip {
+    max-width: 140px;
+  }
 }
 </style>

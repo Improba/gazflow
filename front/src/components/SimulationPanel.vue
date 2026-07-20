@@ -67,21 +67,21 @@
     >
       <div class="q-pa-sm text-caption text-grey-4">
         <span>
-          PCS {{ networkStore.gas.pcs_mj_per_nm3.toFixed(2) }} MJ/Nm³
+          PCS {{ formatGas(networkStore.gas.pcs_mj_per_nm3) }} MJ/Nm³
           <q-icon name="help_outline" size="14px" class="q-ml-xs cursor-pointer">
             <q-tooltip>Pouvoir calorifique supérieur du mélange (ISO 6976)</q-tooltip>
           </q-icon>
         </span>
         —
         <span>
-          PCI {{ networkStore.gas.pci_mj_per_nm3.toFixed(2) }} MJ/Nm³
+          PCI {{ formatGas(networkStore.gas.pci_mj_per_nm3) }} MJ/Nm³
           <q-icon name="help_outline" size="14px" class="q-ml-xs cursor-pointer">
             <q-tooltip>Pouvoir calorifique inférieur du mélange (ISO 6976)</q-tooltip>
           </q-icon>
         </span>
         —
         <span>
-          Wobbe {{ networkStore.gas.wobbe_mj_per_nm3.toFixed(2) }} MJ/Nm³
+          Wobbe {{ formatGas(networkStore.gas.wobbe_mj_per_nm3) }} MJ/Nm³
           <q-icon name="help_outline" size="14px" class="q-ml-xs cursor-pointer">
             <q-tooltip>Indice de Wobbe : interchangeabilité des gaz (EN 437)</q-tooltip>
           </q-icon>
@@ -259,230 +259,20 @@
         class="q-mb-sm"
       />
 
-      <div
-        data-section="verdict"
-        class="nova-section q-mb-sm"
-        :class="{ 'nova-section--active': novaCurrentStep === 'verdict' }"
+      <SimulationResultsBlock
+        :active-section="novaWorkflowEnabled ? novaCurrentStep : null"
+        :show-scenario-dirty="false"
+        @focus-deficits="focusFirstDeficit"
+        @select-node="onSelectSink"
+        @run-study="runCapacityStudy"
+        @reduce="onReduceSink"
+        @reduce-all="onReduceAll"
+        @save-reduced="onSaveReduced"
       >
-        <VerdictCard @focus-deficits="focusFirstDeficit" />
-      </div>
-
-      <div
-        data-section="causes"
-        class="nova-section q-mb-sm"
-        :class="{ 'nova-section--active': novaCurrentStep === 'causes' }"
-      >
-        <SinkDiagnosticsList @select-node="onSelectSink" />
-        <MarginsByConstraint @select-node="onSelectSink" />
-        <BoundarySupplyList @select-node="onSelectSink" />
-        <CompressorMapPanel />
-      </div>
-
-      <div
-        data-section="capacity"
-        class="nova-section q-mb-sm"
-        :class="{ 'nova-section--active': novaCurrentStep === 'capacity' }"
-      >
-        <SinkCapacityTable
-          @run-study="runCapacityStudy"
-          @reduce="onReduceSink"
-          @reduce-all="onReduceAll"
-          @save-reduced="onSaveReduced"
-        />
-        <SinkDiagnosticPopover @reduce="onReduceSink" @run-study="runCapacityStudy" />
-      </div>
-
-      <CertificationReportDialog v-model="showReport" />
-
-      <q-banner
-        v-if="partialContinuationWarning"
-        dense
-        rounded
-        class="bg-orange-10 text-orange-2 q-mb-sm"
-      >
-        <template #avatar>
-          <q-icon name="warning" />
+        <template #after-capacity>
+          <SinkDiagnosticPopover @reduce="onReduceSink" @run-study="runCapacityStudy" />
         </template>
-        {{ partialContinuationWarning }}
-      </q-banner>
-
-      <div
-        data-section="export"
-        class="nova-section q-mb-sm"
-        :class="{ 'nova-section--active': novaCurrentStep === 'export' }"
-      >
-        <div class="text-subtitle2 q-mb-xs">
-          Convergence en {{ simulateStore.result.iterations }} itérations
-          ({{ CONVERGENCE_GAP_LABEL.toLowerCase() }} : {{ simulateStore.result.residual.toExponential(2) }})
-        </div>
-
-        <div class="row q-col-gutter-sm q-mb-sm">
-          <div v-for="fmt in exportFormats" :key="fmt.key" class="col-6">
-            <q-btn
-              dense
-              :label="fmt.label"
-              :icon="fmt.icon"
-              color="secondary"
-              class="full-width"
-              :loading="simulateStore.exporting"
-              :disable="simulateStore.status !== 'converged' || simulateStore.exporting"
-              @click="simulateStore.exportResult(fmt.key)"
-            />
-          </div>
-        </div>
-
-        <q-btn
-          v-if="simulateStore.novaActive"
-          dense
-          outline
-          color="primary"
-          icon="assignment_turned_in"
-          label="Rapport de certification"
-          class="full-width"
-          :disable="simulateStore.loading"
-          @click="showReport = true"
-        >
-          <q-tooltip>Verdict, points déficitaires et capacité — export PDF ou JSON.</q-tooltip>
-        </q-btn>
-
-        <q-btn
-          v-if="novaNominationId"
-          dense
-          outline
-          color="warning"
-          icon="warning_amber"
-          label="Analyser N-1 sur cette nomination"
-          class="full-width q-mt-sm"
-          :disable="contingencyCtaDisabled"
-          :to="contingencyCtaDisabled ? undefined : contingencyNominationLink"
-        >
-          <q-tooltip>{{ contingencyCtaTooltip }}</q-tooltip>
-        </q-btn>
-      </div>
-
-      <div v-if="simulateStore.capacityViolations.length > 0" class="q-mt-md">
-        <q-banner dense class="bg-red-10 text-white q-mb-sm" rounded>
-          <template v-slot:avatar>
-            <q-icon name="warning" />
-          </template>
-          {{ simulateStore.capacityViolations.length }} violation(s) de capacité
-        </q-banner>
-        <div
-          v-for="v in simulateStore.capacityViolations"
-          :key="v.element_id + v.bound_type"
-          class="text-caption q-mb-xs"
-        >
-          <q-icon
-            :name="v.bound_type === 'max' ? 'arrow_upward' : 'arrow_downward'"
-            color="red-4"
-            size="14px"
-          />
-          <span class="text-bold">{{ v.element_id }}</span>:
-          {{ v.actual.toFixed(2) }} Nm³/s
-          ({{ v.bound_type === 'max' ? 'max' : 'min' }}: {{ v.limit.toFixed(2) }})
-        </div>
-      </div>
-
-      <q-expansion-item
-        v-if="Object.keys(simulateStore.adjustedDemands).length > 0"
-        dense
-        dark
-        icon="tune"
-        :label="`Demandes ajustées (${Object.keys(simulateStore.adjustedDemands).length})`"
-        class="q-mb-sm bg-grey-10 rounded-borders"
-      >
-        <div class="q-pa-sm">
-          <div
-            v-for="(value, nodeId) in simulateStore.adjustedDemands"
-            :key="'adj-' + nodeId"
-            class="text-caption q-mb-xs"
-          >
-            <q-icon
-              v-if="simulateStore.activeBounds.includes(String(nodeId))"
-              name="lock"
-              color="amber-5"
-              size="14px"
-            />
-            {{ nodeId }}: {{ value.toFixed(2) }} Nm³/s
-          </div>
-        </div>
-      </q-expansion-item>
-
-      <div v-if="simulateStore.warnings.length > 0" class="q-mt-md">
-        <q-banner dense class="bg-amber-10 text-white q-mb-sm" rounded>
-          <template v-slot:avatar>
-            <q-icon name="info" />
-          </template>
-          {{ simulateStore.warnings.length }} avertissement(s) réseau
-        </q-banner>
-        <div
-          v-for="(w, idx) in simulateStore.warnings"
-          :key="'warn-' + idx"
-          class="text-caption q-mb-xs text-amber-3"
-        >
-          {{ w }}
-        </div>
-      </div>
-
-      <q-expansion-item
-        v-if="simulateStore.equipmentStates.length > 0"
-        dense
-        dark
-        icon="settings_input_component"
-        :label="`${EQUIPMENT_SETTINGS_SECTION_LABEL} (${simulateStore.equipmentStates.length})`"
-        class="q-mb-sm bg-grey-10 rounded-borders"
-        default-opened
-      >
-        <div class="q-pa-sm">
-          <div
-            v-for="eq in simulateStore.equipmentStates"
-            :key="eq.pipe_id"
-            class="text-caption q-mb-sm"
-          >
-            <span class="text-bold">{{ eq.pipe_id }}</span>
-            <span class="text-grey-5"> — {{ equipmentKindLabel(eq.kind) }}</span>
-            <q-badge
-              :color="eq.mode === 'active' ? 'green-8' : 'orange-9'"
-              class="q-ml-xs"
-            >
-              {{ regulatorModeLabel(eq.mode) }}
-            </q-badge>
-          </div>
-        </div>
-      </q-expansion-item>
-
-      <q-expansion-item
-        dense
-        dark
-        icon="speed"
-        :label="`Pressions (${pressureCount})`"
-        class="q-mb-sm bg-grey-10 rounded-borders"
-        default-opened
-      >
-        <div class="q-pa-sm">
-          <ResultValueList
-            :items="simulateStore.result.pressures"
-            :decimals="2"
-            search-placeholder="Filtrer un nœud…"
-          />
-        </div>
-      </q-expansion-item>
-
-      <q-expansion-item
-        dense
-        dark
-        icon="water_drop"
-        :label="`Débits (${flowCount})`"
-        class="q-mb-sm bg-grey-10 rounded-borders"
-      >
-        <div class="q-pa-sm">
-          <ResultValueList
-            :items="simulateStore.result.flows"
-            :decimals="4"
-            search-placeholder="Filtrer une conduite…"
-          />
-        </div>
-      </q-expansion-item>
+      </SimulationResultsBlock>
     </template>
 
     <q-separator dark class="q-my-sm" />
@@ -499,35 +289,24 @@ import CompareNominationsPanel from 'src/components/CompareNominationsPanel.vue'
 import DemandControls from 'src/components/DemandControls.vue';
 import EquipmentControls from 'src/components/EquipmentControls.vue';
 import NominationPanel from 'src/components/NominationPanel.vue';
-import CertificationReportDialog from 'src/components/CertificationReportDialog.vue';
 import ScenarioPanel from 'src/components/ScenarioPanel.vue';
-import SinkCapacityTable from 'src/components/SinkCapacityTable.vue';
 import SinkDiagnosticPopover from 'src/components/SinkDiagnosticPopover.vue';
-import SinkDiagnosticsList from 'src/components/SinkDiagnosticsList.vue';
-import CompressorMapPanel from 'src/components/workspace/CompressorMapPanel.vue';
-import MarginsByConstraint from 'src/components/MarginsByConstraint.vue';
-import BoundarySupplyList from 'src/components/BoundarySupplyList.vue';
+import SimulationResultsBlock from 'src/components/SimulationResultsBlock.vue';
 import NovaWorkflowStepper from 'src/components/workspace/NovaWorkflowStepper.vue';
-import VerdictCard from 'src/components/VerdictCard.vue';
 import LogPanel from 'src/components/LogPanel.vue';
 import ProgressBar from 'src/components/ProgressBar.vue';
-import ResultValueList from 'src/components/ResultValueList.vue';
 import { useNovaWorkflow } from 'src/composables/useNovaWorkflow';
-import { useContingencyNominationCta } from 'src/composables/useContingencyNominationCta';
 import { useNetworkStore } from 'src/stores/network';
 import { useNominationStore } from 'src/stores/nomination';
 import { useSimulateStore } from 'src/stores/simulate';
 import { useEditorStore } from 'src/stores/editor';
 import { useTimeseriesStore } from 'src/stores/timeseries';
+import { useContingencyStore } from 'src/stores/contingency';
+import { resetStudyState } from 'src/utils/resetStudyState';
 import type { WsStartOptions } from 'src/services/ws';
 import { G20_NOMINAL, PURE_CH4, type GasCompositionDto, type PipeEquipmentDto } from 'src/services/api';
 import { SIMULATION_MODE_HELP } from 'src/utils/simulationStatus';
-import {
-  CONVERGENCE_GAP_LABEL,
-  EQUIPMENT_SETTINGS_SECTION_LABEL,
-  MODIFIED_WITHDRAWALS_EQUIPMENT_BANNER,
-} from 'src/utils/novaLabels';
-import { equipmentKindLabel, regulatorModeLabel } from 'src/utils/equipmentLabels';
+import { MODIFIED_WITHDRAWALS_EQUIPMENT_BANNER } from 'src/utils/novaLabels';
 import { runDemoCase } from 'src/utils/demoCase';
 import { deficitSinkIds } from 'src/utils/novaDeficitSinks';
 import { formatApiError } from 'src/utils/importError';
@@ -537,9 +316,9 @@ const simulateStore = useSimulateStore();
 const editorStore = useEditorStore();
 const timeseriesStore = useTimeseriesStore();
 const nominationStore = useNominationStore();
+const contingencyStore = useContingencyStore();
 const { enabled: novaWorkflowEnabled, currentStep: novaCurrentStep } = useNovaWorkflow();
 
-const showReport = ref(false);
 const route = useRoute();
 const comparePanelOpen = computed(() => route.query.compare === '1');
 const demandOverrides = ref<Record<string, number>>({});
@@ -551,13 +330,7 @@ const gasDraft = ref<GasCompositionDto>({ ...G20_NOMINAL });
 const gasApplying = ref(false);
 const demoLoading = ref(false);
 const lastRunDemandKey = ref('');
-
-const exportFormats = [
-  { key: 'json' as const, label: 'JSON', icon: 'download' },
-  { key: 'csv' as const, label: 'CSV', icon: 'table_view' },
-  { key: 'zip' as const, label: 'ZIP', icon: 'folder_zip' },
-  { key: 'xlsx' as const, label: 'XLSX', icon: 'table_chart' },
-];
+const lastRunEquipmentKey = ref('');
 
 const gasFields = [
   { key: 'ch4' as const, label: 'CH₄' },
@@ -571,6 +344,13 @@ function networkOptionLabel(id: string): string {
   return networkStore.networkOptionLabel(id);
 }
 
+function formatGas(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 'n/d';
+  }
+  return value.toFixed(2);
+}
+
 const canLoadNetwork = computed(
   () =>
     !!selectedNetwork.value &&
@@ -578,27 +358,11 @@ const canLoadNetwork = computed(
     !simulateStore.loading,
 );
 
-const pressureCount = computed(() => Object.keys(simulateStore.result?.pressures ?? {}).length);
-const flowCount = computed(() => Object.keys(simulateStore.result?.flows ?? {}).length);
-
-const partialContinuationWarning = computed(() => {
-  const scale = simulateStore.result?.demand_scale_achieved;
-  if (scale !== undefined && scale < 1) {
-    return `Convergence partielle à ${Math.round(scale * 100)} % des demandes — résultat valide pour cette charge seulement.`;
-  }
-  const continuationWarnings = simulateStore.warnings.filter((w) =>
-    w.toLowerCase().includes('continuation'),
-  );
-  return continuationWarnings[0] ?? null;
-});
-
 function demandKey(demands: Record<string, number>): string {
   return JSON.stringify(
     Object.entries(demands).sort(([a], [b]) => a.localeCompare(b)),
   );
 }
-
-const lastRunEquipmentKey = ref('');
 
 function equipmentKey(overrides: Record<string, PipeEquipmentDto>): string {
   return JSON.stringify(
@@ -607,7 +371,7 @@ function equipmentKey(overrides: Record<string, PipeEquipmentDto>): string {
 }
 
 const equipmentDirty = computed(() => {
-  if (simulateStore.status !== 'converged' && simulateStore.status !== 'idle') {
+  if (simulateStore.status === 'running') {
     return false;
   }
   if (!lastRunEquipmentKey.value) {
@@ -616,23 +380,14 @@ const equipmentDirty = computed(() => {
   return equipmentKey(equipmentOverrides.value) !== lastRunEquipmentKey.value;
 });
 
-// Nomination (scénario NoVa) modifiée depuis le dernier run → les diagnostics affichés
-// sont potentiellement stale ; on pousse Camille à re-valider.
 const scenarioDirty = computed(() => simulateStore.scenarioDirty);
-
-const {
-  novaNominationId,
-  contingencyNominationLink,
-  disabled: contingencyCtaDisabled,
-  disabledTooltip: contingencyCtaTooltip,
-} = useContingencyNominationCta(scenarioDirty);
 
 const launchLabel = computed(() =>
   novaScenarioId.value ? 'Valider la nomination' : 'Lancer',
 );
 
 const demandsDirty = computed(() => {
-  if (simulateStore.status !== 'converged' && simulateStore.status !== 'idle') {
+  if (simulateStore.status === 'running') {
     return false;
   }
   if (!lastRunDemandKey.value) {
@@ -670,6 +425,10 @@ watch(
   () => nominationStore.activeId,
   () => {
     demandOverrides.value = {};
+    equipmentOverrides.value = {};
+    lastRunDemandKey.value = '';
+    lastRunEquipmentKey.value = '';
+    contingencyStore.reset();
   },
 );
 
@@ -679,6 +438,17 @@ watch(
     gasDraft.value = { ...composition };
   },
   { immediate: true, deep: true },
+);
+
+// Ne marquer les overrides « propres » qu'après convergence réelle.
+watch(
+  () => simulateStore.status,
+  (status) => {
+    if (status === 'converged') {
+      lastRunDemandKey.value = demandKey(demandOverrides.value);
+      lastRunEquipmentKey.value = equipmentKey(equipmentOverrides.value);
+    }
+  },
 );
 
 function applyPreset(preset: 'g20' | 'ch4') {
@@ -765,7 +535,6 @@ function onReduceSink(sinkId: string, maxFeasibleQ: number) {
     [sinkId]: -Math.abs(maxFeasibleQ),
   };
   demandOverrides.value = { ...demandOverrides.value, [sinkId]: -Math.abs(maxFeasibleQ) };
-  lastRunDemandKey.value = demandKey(demandOverrides.value);
   void simulateStore.runSimulation(demands, buildReduceRunOptions(), equipmentOverrides.value);
 }
 
@@ -781,7 +550,6 @@ function onReduceAll() {
     }
   }
   demandOverrides.value = next;
-  lastRunDemandKey.value = demandKey(demandOverrides.value);
   void simulateStore.runSimulation(next, buildReduceRunOptions(), equipmentOverrides.value);
 }
 
@@ -805,9 +573,6 @@ function startSimulation() {
   const demands = Object.keys(demandOverrides.value).length > 0
     ? demandOverrides.value
     : undefined;
-
-  lastRunDemandKey.value = demandKey(demandOverrides.value);
-  lastRunEquipmentKey.value = equipmentKey(equipmentOverrides.value);
 
   simulateStore.setRunScenarioSummary(
     demands
@@ -847,7 +612,8 @@ async function loadSelectedNetwork() {
   demandOverrides.value = {};
   equipmentOverrides.value = {};
   lastRunDemandKey.value = '';
-  simulateStore.resetSimulation();
+  lastRunEquipmentKey.value = '';
+  resetStudyState();
 }
 
 async function loadDemo() {
@@ -863,17 +629,3 @@ async function loadDemo() {
   }
 }
 </script>
-
-<style scoped>
-.nova-section {
-  border-left: 3px solid transparent;
-  padding-left: 8px;
-  margin-left: -4px;
-  border-radius: 2px;
-  transition: border-color 0.2s ease;
-}
-
-.nova-section--active {
-  border-left-color: var(--q-primary);
-}
-</style>

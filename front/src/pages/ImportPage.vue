@@ -239,7 +239,7 @@ import ImportPreview from 'src/components/ImportPreview.vue';
 import ScenarioContextBanner from 'src/components/ScenarioContextBanner.vue';
 import type { ImportNetworkRequest, ImportNetworkResponse } from 'src/services/api';
 import { useNetworkStore } from 'src/stores/network';
-import { useSimulateStore } from 'src/stores/simulate';
+import { resetStudyState } from 'src/utils/resetStudyState';
 import { readFileAsBase64 } from 'src/utils/fileBase64';
 import { formatImportError } from 'src/utils/importError';
 import { downloadPublicAsset } from 'src/utils/downloadFile';
@@ -254,7 +254,6 @@ const formatOptions: { label: string; value: ImportFormat }[] = [
 
 const router = useRouter();
 const networkStore = useNetworkStore();
-const simulateStore = useSimulateStore();
 
 const format = ref<ImportFormat>('geojson');
 const networkName = ref('');
@@ -367,7 +366,7 @@ async function runImport(validateOnly: boolean) {
     const result = await networkStore.importNetwork(payload);
     preview.value = result;
     if (!validateOnly && result.active) {
-      simulateStore.resetSimulation();
+      resetStudyState();
       await router.push({ name: 'map' });
     }
   } catch (err) {

@@ -3,7 +3,7 @@
 > Document maître pour terminer le post-MVP P6–P13. Mode équipe, exécution autonome par vagues parallélisables.
 > Complète `production-sprint-plan.md` (vagues A–C ✅) et remplace le backlog D–G par un découpage exécutable.
 
-**Date** : 2026-06-29  
+**Date** : 2026-06-29 (P11 mis à jour juillet 2026)  
 **Référence état code** : `cargo test --lib` 240/240 · `npm test` 64/64 · commits `da95752`–`e02ddd4` sur `main`
 
 ---
@@ -24,7 +24,7 @@ Un phase est **100 %** quand :
 | P8 Régulation | ~92 % | Cv ISA complet, Jacobien analytique |
 | P9 Profils | ~98 % | Linepack couplé entre pas horaires (P11), météo spatiale |
 | P10 N-1 | ~100 % | — |
-| P11 Transitoire | ~55 % | PDE réseaux branchés, WS, TransientChart, CFL adaptatif |
+| P11 Transitoire | ~70 % | PDE réseaux branchés, WS streaming, TransientChart, CFL adaptatif, jauge Cesium |
 | P12 Édition | ~85 % | Export GeoJSON édité, édition carte avancée |
 | P13 Calage | ~90 % | LM >5 params, scatter plot, perf LM |
 | Transversal | ~85 % | OpenAPI généré, validation externe débits |
@@ -186,6 +186,8 @@ Max **3 sous-agents parallèles** ; intégration parent après chaque vague.
 ---
 
 ## 7. Vague G — P11 Transitoire PDE (~6–10 sem) — GOULOT
+
+**Avancement juillet 2026 (~70–75 %)** : schéma volumes finis conservatif (capacitance C, conductance G chordée), bilan masse `flows_in`/`flows_out` par pas, UI TransientPlayer sur mono-pipe/chaîne série. Reste : réseaux branchés, WS streaming, TransientChart, CFL adaptatif, jauge linepack Cesium.
 
 **Prérequis** : E (régulateurs stables), F1 recommandé  
 **Bloque** : couplage linepack P9, usage transitoire métier

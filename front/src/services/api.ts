@@ -483,6 +483,8 @@ export interface TransientStepDto {
   demands: Record<string, number>;
   pressures: Record<string, number>;
   flows: Record<string, number>;
+  flows_in?: Record<string, number>;
+  flows_out?: Record<string, number>;
   iterations: number;
   residual: number;
   linepack_kg: number;

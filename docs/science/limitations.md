@@ -14,7 +14,7 @@ This document describes the known limits of the solver in its current state. It 
 - Reynolds dynamic in `pipe_resistance_hydraulic` when $|Q|>0$; Newton Jacobian uses $Re=10^7$ for stability (optional Re–Q coupling not enabled).
 - Compressors: simplified pressure-lift MVP (ratio P² coefficient, not full enthalpic balance). Optional **`.cs` performance maps** (measurement / biquadratic modes): outer loop updates `compressor_ratio_max` from head/speed search; **in-Newton recoupling** (`GAZFLOW_NEWTON_COMPRESSOR_MAP`, default on in map modes) evaluates map ratio each Newton iteration (semi-implicit Jacobian). Operating ratio from catalogue (~1,08/stage); pressure cap from `.net` (e.g. 4,09 transport) stored separately (`compressor_pressure_cap_ratio`); **dynamic outlet cap** `pressureOutMax / P_in` (Phase VI) bounds the map target so hard coupling `P_out = r·P_in` respects the physical outlet limit. Legacy blend fallback remains for networks without `.cs`.
 - Flow variable: normal volumetric flow (Nm³/s) at **15 °C / 1,01325 bar**; PCS/PCI/Wobbe at **ISO 6976 0 °C** basis — see `equations.md` §2.4.
-- **P8 regulators**: outer loop + downstream slack; bypass with hysteresis; isothermal expansion (no Joule–Thomson). Control valves: **effective diameter** from $C_v$ and opening (not full ISA gas choking). Regulator Jacobian: finite-difference row coupling (not fully analytic).
+- **P8 regulators**: outer loop + downstream slack; bypass with hysteresis; isothermal expansion (no Joule–Thomson). Hydrostatic threshold uses $\rho(P_{\text{consigne}}, T_{\text{défaut}})$ from gas composition (not a fixed $\rho = 50\ \text{kg/m}^3$). Control valves: **effective diameter** from $C_v$ and opening (not full ISA gas choking). Regulator Jacobian: finite-difference row coupling (not fully analytic).
 - **P9 demand**: quasi-steady hourly timeseries (no linepack coupling between hourly steps); scalar $T_{\mathrm{ext}}$ per step; weather CSV with unique hours; weekday/weekend profiles; $\bar m_h = 1$ when all $w_h \ge 0$.
 - **P13 calibration**: residuals $r_i = y_i - \hat y_i$; LM on global roughness and up to **5 parameters** (roughness + `DemandScale`); per-pipe strategy uses grid search for many pipes.
 - **P11 linepack**: $M = \sum \rho(P_{\mathrm{moy}})\, A\, L$ on active pipes (aggregated, not spatially resolved except PDE MVP on single pipe / chain).
@@ -27,6 +27,9 @@ This document describes the known limits of the solver in its current state. It 
 - **Continuation tiers**: intermediate demand scales use a relaxed residual tolerance (max(0.05, 100× final tolerance)); only the final scale at 100 % demand uses the preset tolerance. Compressor pressure uplift is ramped with the current continuation scale (`network_with_scaled_compressor_lift`).
 - **Floating connected components**: if the hydraulically active subgraph splits into several components without a fixed-pressure node, the Newton solver anchors **one numerical pressure reference per component** (largest |demand| node at the current iterate, else lowest index, else 70 bar). This is a **Jacobian regularisation**, not a GasLib boundary condition; `pressureMin`/`pressureMax` from `.net` are operational bounds, not used as anchors. Distribution networks with a single connected active graph are unaffected.
 - PDE transient: fixed time step; no adaptive CFL yet; junction coupling simplified.
+- **PDE boundary mass balance (transient)**: schéma volumes finis conservatif (BC pression amont sur le bord, pas Dirichlet sur cellule 0) ; bilan cumulatif $|ΔM − ρ_n ∫(Q_{in}−Q_{out})\\,dt| / |ΔM|$ vérifié à **5 %** par `test_pde_mass_balance_integrated` ; régime stationnaire : $|Q_{in} − Q_{out}| < 10^{-4}$ Nm³/s et $|ΔM| < 10^{-3}$ kg/pas.
+- **PDE segment conductance**: $G = 2 P_{\mathrm{ref}} / (R \sqrt{Q_{\mathrm{prev}}^2 + \varepsilon^2})$ with $\varepsilon = 10^{-3}$ Nm³/s. Chord consistent with $P_1^2 - P_2^2 = R Q|Q|$ and $\Delta\pi \approx 2 P_{\mathrm{ref}} \Delta P$ ($\Delta P = R Q^2 / (2 P_{\mathrm{ref}})$), regularized at zero flow. Coupling $Q \approx G\,\Delta P$ (bar) in the implicit Euler step. **$G$ is lagged** at $Q_{\mathrm{prev}}$ (previous-step interface flow), not the implicit $Q$ of the current step: quasi-Newton chord linearization. The factor **2** in $2 P_{\mathrm{ref}}$ is intentional to recover steady $\Delta P = R Q^2 / (2 P_{\mathrm{ref}})$.
+- **PDE storage capacitance** (corrected): $C = A L\, (\partial\rho/\partial P) / \rho_n$ in Nm³/bar, consistent with $Q$ in Nm³/s and linepack $M = \rho A L$ aggregated in Nm³ via $\rho_n$.
 
 ## 2.1 Transport GasLib (`.cdf`, `.scn`)
 
@@ -53,8 +56,19 @@ This document describes the known limits of the solver in its current state. It 
 - GasLib-11 pressure validation: max relative error < 5 % (`test_gaslib_11_vs_reference_solution`).
 - GasLib-135 (135 nodes): recommended transport demo with continuation preset; steady-state smoke test passes (faer LU stable with component anchoring on fragmented subgraphs).
 - GasLib-582 (582 nodes): `nomination_mild_618` is **feasible** (proven constructively in Phase VIII-bis by an independent external IPOPT NLP solve — see §3.1 below and [diagnosis](../testing/gaslib-582-compressor-diagnosis.md)). Earlier phases concluded "topological infeasibility" for sink_88/83/108; a zero-demand reachability probe (single anchor source_14 at 86 bar) shows these sinks reach ~86 bar at zero flow, far above their contractual floors (26/21/16 bar). The earlier "capacity = 0 even at zero flow" was an artifact of multiple conflicting pressure anchors (slack 51 bar + sources 70-121 bar + non-convergence), not a real topological infeasibility. The in-repo local Newton solver still reports `NotSolvedLocal` under the full nomination flow because the NoVa NLP is non-convex and the penalty-Newton is weaker than IPOPT (which finds the feasible point reliably when single-threaded); this is a local-solver weakness, not evidence against feasibility.
-- Flow comparison against external `.sol` references: not yet systematic.
-- PDE transient: monotonicity tests on single pipe; full wave validation pending.
+- Flow comparison against external `.sol` references: not yet systematic. **GasLib-11 ZIP (ZIB)** does not ship a `.sol` file ; oracle externe indisponible pour ce réseau (voir `docs/testing/gaslib-11-quarantine.md`).
+- PDE transient: monotonicity tests on single pipe; full wave validation pending. **PDE chain junction mass conservation not yet tested** (explicit junction coupling only).
+
+### 3.2 EOS H₂ — discontinuité au seuil 20 % (juillet 2026)
+
+Le basculement automatique Papay+Kay → PR-78 à H₂ > 20 % (`gas_properties.rs`, `EosModel::auto_for_composition`) introduit un **saut de densité** à la frontière 19,9 % / 20,1 % H₂. Le test `test_eos_h2_continuity_at_20_percent_threshold` :
+
+- vérifie la continuité **intra-régime** (Papay sous 20 %, PR-78 au-dessus) ;
+- mesure le saut au seuil (~4,7 % à 70 bar, ~1,7 % à 30 bar, juillet 2026) ;
+- borne le saut à **< 15 %** (garde-fou de régression) ;
+- confirme l'avertissement `physics_warnings` au-delà de 20 %.
+
+Ce n'est pas masqué : la discontinuité est un artefact du switch EOS. Pour des mélanges proches de 20 % H₂, interpréter les résultats avec prudence ou forcer une EOS unique. Cible post-MVP : EOS unique PR-78 sur toute la plage.
 
 ### 3.1 GasLib-582 `nomination_mild_618` — corrected NoVa status (Phase VIII, July 2026)
 

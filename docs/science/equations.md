@@ -47,9 +47,22 @@ $$
 With elevation change ($\Delta z = z_2 - z_1$), the code uses:
 
 $$
-P_1^2 - P_2^2 = K \cdot Q \cdot |Q| + \Delta G, \quad
-\Delta G = \frac{\rho \cdot g \cdot \Delta z \cdot (P_1 + P_2)}{10^{10}} \quad [\text{bar}^2]
+P_1^2 - P_2^2 = K \cdot Q \cdot |Q| + \Delta G
 $$
+
+**Pa form** ($P_1$, $P_2$ in Pa):
+
+$$
+\Delta G_{\text{Pa}^2} = \rho \cdot g \cdot \Delta z \cdot (P_1 + P_2)
+$$
+
+**bar form** ($P_1$, $P_2$ in bar) — used in `gravity_dp_sq_bar()`:
+
+$$
+\Delta G_{\text{bar}^2} = \frac{\rho \cdot g \cdot \Delta z \cdot (P_1 + P_2)}{10^{5}}
+$$
+
+The divisor is $10^{5}$ (not $10^{10}$) because $(P_{\text{bar}})^2 = (P_{\text{Pa}} / 10^{5})^2$, so the Pa² term is divided by $10^{10}$ when converting to bar².
 
 ($\rho$ at mean pipe pressure, $g = 9.80665$ m/s²). **Status:** ✅ `gravity_dp_sq_bar()`, `pipe_flow_with_gravity()`.
 
@@ -291,7 +304,7 @@ $$
 P_{\text{requis}} = P_{\text{consigne}} + \Delta P_{\min} + \rho\, g\, (z_{\text{aval}} - z_{\text{amont}})
 $$
 
-($\rho \approx 50\ \text{kg/m}^3$ au seuil ; pressions en bar manométriques aux nœuds). En descente, $P_{\text{requis}}$ peut être $< P_{\text{consigne}}$ ; borné inférieurement à $10^{-6}$ bar pour la stabilité numérique.
+($\rho = \rho(P_{\text{consigne}}, T_{\text{défaut}})$ via la composition du gaz ; pressions en bar aux nœuds). En descente, $P_{\text{requis}}$ peut être $< P_{\text{consigne}}$ ; borné inférieurement à $10^{-6}$ bar pour la stabilité numérique.
 
 **Hypothèses physiques MVP :** détente isotherme (pas de Joule–Thomson) ; liaison active quasi sans perte (pas de $\Delta P_{\min}$ imposée sur l'arc en mode actif) ; $C_v$ ISA calibré via diamètre effectif, pas formule gaz complète.
 
@@ -357,6 +370,53 @@ Outdoor temperature $T_{\mathrm{ext}}$ does **not** modify gas temperature in pi
 **Timeseries (quasi-steady):** each hour solves a full steady-state; transient pipe dynamics are ignored. Warm-start uses the previous converged pressure field when $\sum_i|d_i-d_i^{\mathrm{prev}}|/\sum_i|d_i^{\mathrm{prev}}| \le 3$; on Newton failure, a cold restart is attempted.
 
 **Implementation:** `solver/demand.rs`, `resolve_demands`, `solver/timeseries.rs`.
+
+### 4.7b Transient PDE storage (MVP) ✅
+
+On a 1D pipe cell (isothermal), continuity with normal volumetric flow $Q$ (Nm³/s) is:
+
+$$
+A\,\Delta x\,\frac{\partial\rho}{\partial P}\,\frac{\partial P}{\partial t} + \rho_n\,\frac{\partial Q}{\partial x} = 0
+$$
+
+Storage capacitance used by the implicit Euler step (`storage_capacitance_nm3_per_bar`):
+
+$$
+C = \frac{A\,\Delta x}{\rho_n}\,\frac{\partial\rho}{\partial P} \quad [\mathrm{Nm}^3/\mathrm{bar}]
+$$
+
+with $\rho_n$ at 15 °C / 1.01325 bar. Aggregated linepack remains $M = \sum \rho(P_{\mathrm{moy}})\,A\,L$ [kg].
+
+Segment conductance (quasi-steady coupling $Q \approx G\,\Delta P$, $\Delta P$ in bar):
+
+$$
+G = \frac{2 P_{\mathrm{ref}}}{R \sqrt{Q_{\mathrm{prev}}^2 + \varepsilon^2}} \quad [\mathrm{Nm}^3/(\mathrm{s}\cdot\mathrm{bar})], \quad \varepsilon = 10^{-3}\ \mathrm{Nm}^3/\mathrm{s}
+$$
+
+**Implementation:** `solver/transient/system.rs`, `solver/transient/linepack.rs`.
+
+#### Schéma volumes finis conservatif (implicit Euler)
+
+Toutes les cellules $i = 0 \ldots n-1$ sont des cellules de stockage. La continuité discrète par cellule :
+
+$$
+C_i \frac{P_i^{n+1} - P_i^n}{\Delta t} = Q_{i-1/2} - Q_{i+1/2},
+\quad Q_{j-1/2} = G_j (P_{\mathrm{left}} - P_{\mathrm{right}})
+$$
+
+**BC amont** (pression Dirichlet sur le bord, pas une cellule) : $P_{\mathrm{left}} = P_{\mathrm{source}}$ pour $Q_{-1/2} = G_0 (P_{\mathrm{source}} - P_0)$.
+
+**BC aval** : $Q_{n-1/2,\mathrm{out}} = -\dot V_{\mathrm{sink}}$ (débit normal imposé, positif vers l'aval si prélèvement).
+
+Cellule $0$ ($n > 1$) : $(1 + \alpha_0 + \alpha_1) P_0 - \alpha_1 P_1 = P_0^n + \alpha_0 P_{\mathrm{source}}$, avec $\alpha_0 = \Delta t\, G_0 / C_0$, $\alpha_1 = \Delta t\, G_1 / C_0$.
+
+Cellule unique ($n = 1$) : $(1 + \alpha_0) P_0 = P_0^n + \alpha_0 P_{\mathrm{source}} + (\Delta t / C_0)\,\dot V_{\mathrm{sink}}$.
+
+Dernière cellule ($n > 1$) : $-\alpha_{\mathrm{left}} P_{n-2} + (1 + \alpha_{\mathrm{left}}) P_{n-1} = P^n + (\Delta t / C)\,\dot V_{\mathrm{sink}}$.
+
+Après résolution : $Q_0 = G_0 (P_{\mathrm{source}} - P_0)$, $Q_i = G_i (P_{i-1} - P_i)$ pour $i = 1 \ldots n-1$, $Q_n = -\dot V_{\mathrm{sink}}$.
+
+Le bilan masse $\Delta M \approx \rho_n \int (Q_{\mathrm{in}} - Q_{\mathrm{out}})\, dt$ est vérifié par `test_pde_mass_balance_integrated` (seuil relatif 5 %).
 
 ---
 
@@ -447,7 +507,8 @@ investigation (see `docs/science/validation.md`).
 | Gravity $\rho g \Delta h$         | ✅ implemented | §1.2 |
 | Multi-component gas (G20 default) | ✅ implemented | `GasComposition` |
 | Compressors (MVP uplift)          | ✅ implemented | Enthalpic model ⬜ |
-| Steady state                      | ✅ implemented | Transient (PDE) ⬜ |
+| Steady state                      | ✅ implemented | — |
+| Transient PDE (1D isothermal)     | 🟨 MVP         | Capacitance $C=A\Delta x(\partial\rho/\partial P)/\rho_n$ ; branched → quasi-steady |
 | Hybrid Newton + Jacobi fallback   | ✅ implemented | `newton.rs` |
 | Régulateurs / détendeurs (P8)     | ✅ MVP         | Boucle externe + slack aval |
 | Vannes Cv (P8)                    | 🟨 MVP         | $D_{\text{eff}} \propto \sqrt{C_v \cdot \text{ouverture}}$ |

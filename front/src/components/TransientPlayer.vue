@@ -43,6 +43,14 @@
         {{ currentStep.linepack_delta_kg.toFixed(2) }} kg
       </div>
       <div class="col-6 col-sm-3">
+        <span class="text-grey-5">Σ|Q_out|</span>
+        {{ totalOutflow.toFixed(3) }} Nm³/s
+      </div>
+      <div v-if="maxImbalance != null" class="col-6 col-sm-3">
+        <span class="text-grey-5">max |Qin−Qout|</span>
+        {{ maxImbalance.toFixed(4) }} Nm³/s
+      </div>
+      <div class="col-6 col-sm-3">
         <span class="text-grey-5">Résidu</span>
         {{ currentStep.residual.toExponential(2) }}
       </div>
@@ -74,6 +82,29 @@ const currentStep = computed(() => steps.value[stepIndex.value] ?? null);
 const timeLabel = computed(() => {
   const step = currentStep.value;
   return step ? `${step.time_s.toFixed(0)} s` : '—';
+});
+
+const totalOutflow = computed(() => {
+  const step = currentStep.value;
+  if (!step) return 0;
+  const flows = step.flows_out ?? step.flows;
+  return Object.values(flows).reduce((sum, q) => sum + Math.abs(q), 0);
+});
+
+const maxImbalance = computed(() => {
+  const step = currentStep.value;
+  if (!step?.flows_in || !step.flows_out) return null;
+  const pipeIds = new Set([
+    ...Object.keys(step.flows_in),
+    ...Object.keys(step.flows_out),
+  ]);
+  let max = 0;
+  for (const id of pipeIds) {
+    const qIn = step.flows_in[id] ?? 0;
+    const qOut = step.flows_out[id] ?? 0;
+    max = Math.max(max, Math.abs(qIn - qOut));
+  }
+  return max;
 });
 
 function onSeek(index: number) {

@@ -31,6 +31,14 @@ Fastest way to run a GazFlow simulation locally.
 3. Follow progress (iterations, residual, logs) in real time.
 4. Export to JSON/CSV/ZIP once converged.
 
+## 5) Optional — transient simulation
+
+1. Open **Transitoire** (`/transient`) from the task menu.
+2. Choose **PDE** mode on a single pipe or series chain (GasLib-11 minimal line works).
+3. Set duration and time step, then run. Use the player to inspect pressures, flows, and `flows_in` / `flows_out` per step.
+
+Transient results are not included in the steady-state ZIP export v1.
+
 ## Stop
 
 ```bash

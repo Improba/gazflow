@@ -1,61 +1,88 @@
 <template>
   <div class="schematic-view dark">
-    <svg
-      class="schematic-svg"
-      viewBox="0 0 100 60"
-      preserveAspectRatio="xMidYMid meet"
-      role="img"
-      aria-label="Schéma nodal du réseau"
+    <q-banner
+      v-if="layout.length === 0"
+      dense
+      rounded
+      class="bg-blue-grey-10 text-blue-grey-2"
     >
-      <line
-        v-for="pipe in pipeSegments"
-        :key="pipe.id"
-        :x1="pipe.x1"
-        :y1="pipe.y1"
-        :x2="pipe.x2"
-        :y2="pipe.y2"
-        class="schematic-pipe"
-        :stroke="pipe.stroke"
-        stroke-width="0.6"
-      />
-      <g v-for="node in nodeMarkers" :key="node.id">
-        <circle
-          :cx="node.x"
-          :cy="node.y"
-          r="2.2"
-          class="schematic-node"
-          :stroke="node.stroke"
-        />
-        <text
-          :x="node.x"
-          :y="node.y - 3.2"
-          text-anchor="middle"
-          class="schematic-label"
-        >
-          {{ node.id }}
-        </text>
-        <text
-          :x="node.x"
-          :y="node.y + 4.8"
-          text-anchor="middle"
-          class="schematic-pressure"
-          :class="{ 'schematic-pressure--low': node.pressureTone === 'low' }"
-        >
-          {{ node.pressureLabel }}
-        </text>
-      </g>
-    </svg>
+      <template #avatar>
+        <q-icon name="account_tree" color="blue-grey-4" />
+      </template>
+      Aucun nœud à afficher sur le schéma.
+    </q-banner>
 
-    <div class="schematic-legend row items-center q-gutter-sm q-mt-xs">
-      <div
-        v-for="item in legendItems"
-        :key="item.key"
-        class="row items-center no-wrap q-gutter-xs"
+    <template v-else>
+      <svg
+        class="schematic-svg"
+        viewBox="0 0 100 60"
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        :aria-label="ariaLabel"
       >
-        <span class="legend-dot" :style="{ background: item.color }" />
-        <span class="text-caption text-grey-4">{{ item.label }}</span>
+        <line
+          v-for="pipe in pipeSegments"
+          :key="pipe.id"
+          :x1="pipe.x1"
+          :y1="pipe.y1"
+          :x2="pipe.x2"
+          :y2="pipe.y2"
+          class="schematic-pipe"
+          :stroke="pipe.stroke"
+          stroke-width="0.6"
+        >
+          <title>{{ pipe.id }}</title>
+        </line>
+        <g
+          v-for="node in nodeMarkers"
+          :key="node.id"
+          class="schematic-node-group"
+          :class="{ 'schematic-node-group--selected': node.id === selectedNodeId }"
+          tabindex="0"
+          role="button"
+          :aria-label="`Nœud ${node.id}, ${node.pressureLabel}`"
+          @click="emit('select-node', node.id)"
+          @keydown.enter.prevent="emit('select-node', node.id)"
+          @keydown.space.prevent="emit('select-node', node.id)"
+        >
+          <circle
+            :cx="node.x"
+            :cy="node.y"
+            r="2.2"
+            class="schematic-node"
+            :stroke="node.id === selectedNodeId ? '#FFD54F' : node.stroke"
+          />
+          <text
+            :x="node.x"
+            :y="node.y - 3.2"
+            text-anchor="middle"
+            class="schematic-label"
+          >
+            {{ node.id }}
+          </text>
+          <text
+            :x="node.x"
+            :y="node.y + 4.8"
+            text-anchor="middle"
+            class="schematic-pressure"
+            :class="{ 'schematic-pressure--low': node.pressureTone === 'low' }"
+          >
+            {{ node.pressureLabel }}
+          </text>
+        </g>
+      </svg>
+
+      <div class="schematic-legend row items-center q-gutter-sm q-mt-xs">
+        <div
+          v-for="item in legendItems"
+          :key="item.key"
+          class="row items-center no-wrap q-gutter-xs"
+        >
+          <span class="legend-dot" :style="{ background: item.color }" />
+          <span class="text-caption text-grey-4">{{ item.label }}</span>
+        </div>
       </div>
-    </div>
+    </template>
   </div>
 </template>
 
@@ -74,11 +101,17 @@ import {
 const props = withDefaults(
   defineProps<{
     thresholdMinBar?: number;
+    selectedNodeId?: string | null;
   }>(),
   {
     thresholdMinBar: 45,
+    selectedNodeId: null,
   },
 );
+
+const emit = defineEmits<{
+  (e: 'select-node', nodeId: string): void;
+}>();
 
 const LOAD_STROKE_COLORS: Record<LoadColorKey, string> = {
   idle: '#424242',
@@ -99,6 +132,10 @@ const simulateStore = useSimulateStore();
 
 const layout = computed(() =>
   computeSchematicLayout(networkStore.nodes, networkStore.pipes),
+);
+
+const ariaLabel = computed(
+  () => `Schéma nodal du réseau (${layout.value.length} nœuds)`,
 );
 
 const positionById = computed(() => new Map(layout.value.map((p) => [p.id, p])));
@@ -170,6 +207,7 @@ const legendItems = computed(() =>
 
 .schematic-svg {
   width: 100%;
+  min-height: 280px;
   display: block;
   background: rgba(11, 16, 22, 0.55);
   border: 1px solid var(--scada-border);
@@ -178,21 +216,35 @@ const legendItems = computed(() =>
 
 .schematic-pipe {
   stroke-linecap: round;
+  pointer-events: stroke;
+}
+
+.schematic-node-group {
+  cursor: pointer;
+  outline: none;
+}
+
+.schematic-node-group:focus .schematic-node,
+.schematic-node-group--selected .schematic-node {
+  stroke-width: 0.9;
 }
 
 .schematic-node {
   fill: var(--scada-panel);
   stroke-width: 0.5;
+  transition: stroke 0.15s ease;
 }
 
 .schematic-label {
   fill: var(--scada-text);
   font-size: 2.4px;
+  pointer-events: none;
 }
 
 .schematic-pressure {
   fill: #9e9e9e;
   font-size: 2px;
+  pointer-events: none;
 }
 
 .schematic-pressure--low {

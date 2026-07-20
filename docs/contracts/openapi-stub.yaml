@@ -33,6 +33,11 @@ paths:
   /api/simulate/transient:
     post:
       summary: Transitoire (mode quasi_steady ou pde)
+      description: |
+        Chaque pas (`TransientStepResult`) inclut :
+        - `flows` : débit aval par conduite (affichage carte / Cesium)
+        - `flows_in` : débit amont [Nm³/s] (PDE : flows[0] ; quasi-steady : = flows)
+        - `flows_out` : débit aval [Nm³/s] (PDE : flows[n] ; quasi-steady : = flows)
   /api/simulate/compare:
     post:
       summary: Compare deux scénarios topologiques (ΔP, ΔQ)

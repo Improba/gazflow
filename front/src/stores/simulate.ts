@@ -83,11 +83,13 @@ export const useSimulateStore = defineStore('simulate', () => {
   let lastSnapshotAt = 0;
   let pendingSnapshot: Extract<WsServerMessage, { type: 'snapshot' }> | null = null;
   let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
-  let lastRunParams: LastRunParams | null = null;
+  const lastRunParams = ref<LastRunParams | null>(null);
   const lastRunScenarioId = ref<string | null>(null);
 
   const scenarioDirty = computed(() => {
-    if (status.value !== 'converged' && status.value !== 'idle') {
+    // Pendant un run : pas de bannière dirty (évite le bruit).
+    // Après erreur / annulation : dirty doit rester visible pour bloquer N-1 / capacité.
+    if (status.value === 'running') {
       return false;
     }
     const nominationStore = useNominationStore();
@@ -169,7 +171,7 @@ export const useSimulateStore = defineStore('simulate', () => {
         mode,
       });
 
-      lastRunParams = {
+      lastRunParams.value = {
         demands: demands ? { ...demands } : undefined,
         equipmentOverrides: mergedEquipment ? { ...mergedEquipment } : undefined,
         options: { ...runOptions },
@@ -196,32 +198,32 @@ export const useSimulateStore = defineStore('simulate', () => {
     await rerunLastSimulation();
   }
 
-  const hasLastRun = computed(() => lastRunParams !== null);
+  const hasLastRun = computed(() => lastRunParams.value !== null);
 
   async function rerunLastSimulation() {
-    if (!lastRunParams) {
+    if (!lastRunParams.value) {
       await runSimulation();
       return;
     }
     await runSimulation(
-      lastRunParams.demands,
-      lastRunParams.options,
-      lastRunParams.equipmentOverrides,
+      lastRunParams.value.demands,
+      lastRunParams.value.options,
+      lastRunParams.value.equipmentOverrides,
     );
   }
 
   function lastInputDemands(): Record<string, number> | undefined {
-    return lastRunParams?.demands ? { ...lastRunParams.demands } : undefined;
+    return lastRunParams.value?.demands ? { ...lastRunParams.value.demands } : undefined;
   }
 
   function lastRunEquipmentOverrides(): Record<string, PipeEquipmentDto> | undefined {
-    return lastRunParams?.equipmentOverrides
-      ? { ...lastRunParams.equipmentOverrides }
+    return lastRunParams.value?.equipmentOverrides
+      ? { ...lastRunParams.value.equipmentOverrides }
       : undefined;
   }
 
   function lastRunOptions(): (WsStartOptions & WsCapacityOptions) | undefined {
-    return lastRunParams?.options ? { ...lastRunParams.options } : undefined;
+    return lastRunParams.value?.options ? { ...lastRunParams.value.options } : undefined;
   }
 
   function setRunScenarioSummary(summary: RunScenarioSummary | null) {
@@ -464,10 +466,14 @@ export const useSimulateStore = defineStore('simulate', () => {
   }
 
   function resetSimulation() {
-    if (loading.value) return;
+    if (loading.value) {
+      cancelSimulation();
+      loading.value = false;
+    }
     clearSnapshotQueue();
     resetRuntimeState();
     currentRunId.value = null;
+    lastRunParams.value = null;
   }
 
   async function exportResult(format: 'json' | 'csv' | 'zip' | 'xlsx') {

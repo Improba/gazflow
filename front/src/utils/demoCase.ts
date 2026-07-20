@@ -1,6 +1,7 @@
 import { useDemandProfilesStore } from 'src/stores/demandProfiles';
 import { useNetworkStore } from 'src/stores/network';
 import { useSimulateStore } from 'src/stores/simulate';
+import { resetStudyState } from 'src/utils/resetStudyState';
 import {
   profileFromCategory,
   resolveDemands,
@@ -21,6 +22,7 @@ export async function runDemoCase(): Promise<void> {
   const simulateStore = useSimulateStore();
 
   await networkStore.selectNetwork(DEMO_NETWORK_ID);
+  resetStudyState();
   demandProfilesStore.load(DEMO_NETWORK_ID);
 
   const profiles: Record<string, DemandProfileDto> = {};

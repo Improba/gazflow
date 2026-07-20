@@ -99,7 +99,7 @@ See `docs/science/equations.md`. The detailed scientific validation protocol is 
 | 2.13 | **Warm-start: initialise Newton from previous solution** | Backend | `solver/steady_state.rs` | ✅ |
 | 2.14 | **Valve modelling (K≈0 open, arc removed when closed) and shortPipes** | Backend | `solver/steady_state.rs`, `solver/newton.rs`, `gaslib/parser.rs`, `graph/mod.rs` | ✅ |
 | 2.15 | **Compressors: MVP directional model (compression ratio on \(P^2\) via `.cs`)** | Backend | `solver/steady_state.rs`, `solver/newton.rs`, `gaslib/compressor.rs`, `gaslib/parser.rs` | ✅ |
-| 2.16 | **Run scientific validation protocol v1 (T1→T10) and publish Go/No-Go report** | Science + Backend | `docs/plans/implementation-plan.md`, `docs/science/validation.md`, `scripts/validation-pack.sh` | 🟨 partial (conditional final report published + pack execution script; strict scientific validation pending official reference) |
+| 2.16 | **Run scientific validation protocol v1 (T1→T16) and publish Go/No-Go report** | Science + Backend | `docs/plans/implementation-plan.md`, `docs/science/validation.md`, `scripts/validation-pack.sh` | 🟨 partial (conditional final report published + pack T1–T16; strict scientific validation pending official reference) |
 
 ### Automated tests
 
@@ -162,14 +162,14 @@ cargo test test_valve_closed_removes_arc_and_blocks_flow             # T2-20 ✅
 
 - **Immediate No-Go** if any test T1–T6 fails.
 - **MVP scientific Go** if T1–T8 + T9(MVP) pass (threshold < 5%).
-- **Robust Go** if T1–T10 + T9(post-upgrade) pass (threshold < 1%).
+- **Robust Go** if T1–T16 + T9(post-upgrade) pass (threshold < 1%).
 
 #### Expected deliverable (task 2.16)
 
 Publish a short report in `docs/science/validation.md` with:
 
 - date and commit tested;
-- Pass/Fail status for T1..T10;
+- Pass/Fail status for T1..T16;
 - T9 metrics (max error, mean, worst node);
 - explicit decision: **Go** or **No-Go** for Phase 2 exit.
 

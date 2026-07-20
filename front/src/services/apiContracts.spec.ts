@@ -50,6 +50,25 @@ describe('apiContracts', () => {
     expect(parsed).not.toHaveProperty('available');
   });
 
+  it('serializes transient step with boundary flows', () => {
+    const step = {
+      time_s: 300,
+      demands: { SK: -5 },
+      pressures: { SRC: 70, SK: 65 },
+      flows: { P1: 5 },
+      flows_in: { P1: 5.01 },
+      flows_out: { P1: 5 },
+      iterations: 0,
+      residual: 0,
+      linepack_kg: 1200,
+      linepack_delta_kg: -0.5,
+    };
+    const parsed = JSON.parse(JSON.stringify(step));
+    expect(parsed.flows_in.P1).toBe(5.01);
+    expect(parsed.flows_out.P1).toBe(5);
+    expect(parsed.flows.P1).toBe(5);
+  });
+
   it('serializes compare request with optional scenario ids', () => {
     const payload = {
       scenario_a_id: 'scn-a',

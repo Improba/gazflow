@@ -202,3 +202,11 @@ Implementation recommendations:
 - **Non-breaking** change (optional field addition) => same major version.
 
 On evolution, document migration in this file with before/after examples.
+
+---
+
+## Transient results (out of scope v1)
+
+The ZIP bundle (`format=zip`) and JSON/CSV export v1 cover **steady-state** simulations only.
+
+Transient runs (`POST /api/simulate/transient`) expose per-step `flows`, `flows_in`, and `flows_out` in the API response. These fields are **not** included in `gazflow-export/v1`. Use the transient API response or a future export schema for archival.

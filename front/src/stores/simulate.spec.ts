@@ -267,4 +267,14 @@ describe('useSimulateStore', () => {
     expect(store.activeScenarioId).toBeNull();
     expect(store.lastRunScenarioId).toBeNull();
   });
+
+  it('resetSimulation clears lastRunParams so rerun is unavailable', async () => {
+    const store = useSimulateStore();
+    await store.runSimulation({ N1: -1 });
+    expect(store.hasLastRun).toBe(true);
+    store.resetSimulation();
+    expect(store.hasLastRun).toBe(false);
+    expect(store.lastInputDemands()).toBeUndefined();
+    expect(store.lastRunOptions()).toBeUndefined();
+  });
 });

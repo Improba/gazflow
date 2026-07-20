@@ -192,10 +192,14 @@ async function deleteSelected() {
 .editor-toolbar {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   min-height: 40px;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  gap: 2px;
 }
 
 .save-indicator {
   min-width: 140px;
   justify-content: flex-end;
+  flex-shrink: 0;
 }
 </style>

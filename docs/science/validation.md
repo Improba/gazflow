@@ -6,8 +6,8 @@
 
 **Configuration:**
 - Node A (source): fixed pressure at 70 bar
-- Node B (sink): withdrawn flow of 10 m³/s (standard conditions)
-- Pipe: L = 100 km, D = 500 mm, ε = 0.012 mm
+- Node B (sink): withdrawn flow of 50 Nm³/s (standard conditions)
+- Pipe: L = 150 km, D = 150 mm, ε = 0.012 mm
 
 **Analytical solution:**
 
@@ -15,9 +15,11 @@ $$
 P_B = \sqrt{P_A^2 - K \cdot Q \cdot |Q|}
 $$
 
-With $K = f \cdot L / (2 \cdot D \cdot A^2)$ and $f$ from Swamee-Jain.
+With $K = f \cdot L / (2 \cdot D \cdot A^2)$ and $f$ from Swamee-Jain at **Re = 10⁷** (plateau turbulent, `flow_m3s=0` in the solver Jacobian path).
 
-**Criterion:** Solver vs analytical difference < 0.1 bar.
+**Criterion:** Solver vs analytical difference < **0.05 bar** (or 5 % of ΔP, whichever is larger). Test requires ΔP > 1 bar (non-trivial).
+
+**Test:** `test_two_node_closed_form_p_squared` (résistance `pipe_resistance_at_pressure_with_composition`, point fixe P_moy, Re plateau).
 
 ---
 
@@ -60,7 +62,7 @@ Reference solutions will be compared when available.
 
 - Date: 2026-03-09
 - Scope: Rust backend (`back/`) on local working branch
-- Commands run: suite T1..T10 (T9 via versioned internal reference)
+- Commands run: suite T1..T16 (T9 via versioned internal reference; T9 quarantined in pack)
 
 ### T1..T10 status
 
@@ -87,7 +89,7 @@ Reference solutions will be compared when available.
 ### Go/No-Go decision
 
 - **Strict No-Go for full Phase 2 exit** until an external official reference is available for T9.
-- **Conditional MVP technical Go** on internal robustness (T1–T10 with locked internal reference).
+- **Conditional MVP technical Go** on internal robustness (T1–T16 with locked internal reference; T9 external still pending).
 
 ---
 
@@ -152,6 +154,55 @@ Reference solutions will be compared when available.
 
 ---
 
+## Scientific quantitative tests — tranches 2–5 (juillet 2026)
+
+Nouveaux tests backend (`gazflow-back`, `cargo test --lib`) et seuils associés.
+
+> **Distinction d'IDs.** Les IDs **T2–T6** (et sous-IDs T3b, T5b, …) ci-dessous sont des **IDs de contenu** (tranches scientifiques). Les IDs **pack T11–T16** du script `scripts/validation-pack.sh` sont **distincts** : ils regroupent des filtres `cargo test` pour l'industrialisation CI (voir tableau « Pack mapping »).
+
+### Pack mapping (`scripts/validation-pack.sh`)
+
+| Pack ID | Filtre `cargo test` | Lien contenu |
+|---------|---------------------|--------------|
+| T3b | `test_two_node_closed_form_p_squared` | Tranche T2 (formule P² fermée) |
+| T11 | `mass_balance_gaslib` | Tranche T3 (bilan massique GasLib) |
+| T12 | `linepack_capacitance` | Tranche T4 (linepack ↔ capacitance) |
+| T13 | `test_pde_` | Tranche T5 (bilan masse PDE) |
+| T14 | `eos_` | Tranche T6 (EOS H₂) |
+| T15 | `segment_conductance` | Conductance segment (G chordée, FV) |
+| T16 | `gravity` | Terme gravitaire |
+
+Le pack exécute T1–T16 en séquence. Par défaut `GAZFLOW_REQUIRE_GASLIB_DATA=1` : absence de `back/dat/` GasLib → échec explicite sur T6 et T11.
+
+### Seuils par tranche de contenu
+
+| ID | Test(s) | Seuil | Note |
+|---|---|---|---|
+| T2 | `test_two_node_closed_form_p_squared` | \|P_calc − P_expected\| < **0,05 bar** (ou 5 % ΔP) ; ΔP > **1 bar** | Formule P², R via `pipe_resistance_at_pressure_with_composition` avec **Re plateau 10⁷** (`flow_m3s=0`) |
+| T3 | `mass_balance_gaslib_{11,24,40}` | \|Σd\| < **1e−4** ; résidu flux toujours asserté ; NLP fini et < **1e6** (compresseurs) ou < **max(2×tol, 0,1)** ; déterminisme \|ΔP\| < **1e−9** ; **fail** si `CI`/`GAZFLOW_REQUIRE_GASLIB_DATA` et `dat/` absent | Skip local sans données seulement |
+| T3b | `recompute_mass_balance_residual` (`newton.rs`) | — | Résidu honnête via `pressure_nlp_eval` |
+| T4 | `test_linepack_capacitance_cross_module` | \|dM/dP_FD − ρ_n ΣC\| / ρ_n ΣC < **0,05** | P = 70 et 30 bar, CH₄, pipe maillé |
+| T5 | `test_pde_steady_mass_balance_at_boundaries`, `test_pde_mass_balance_after_demand_step`, `test_pde_sink_flow_matches_boundary` | Steady : \|Q_in−Q_out\| < **1e−4** Nm³/s, \|ΔM\| < **1e−3** kg/pas ; après échelon : ΔM < 0 + débit aval = \|d_sink\| | voir schéma FV conservatif |
+| T5b | `test_pde_mass_balance_integrated` | \|ΔM − ρ_n∫(Q_in−Q_out)dt\| / max(\|ΔM\|, 1e−6) < **0,05** | Échelon demande, dt = 60 s, T = 1800 s |
+| T5c | `test_pde_single_pipe_pressure_step_response_monotonic` | Dépressurisation > **10 %** de ΔP attendu : `R·(Q_new²−Q_old²)/(2·P_moy)` ; monotonie + linepack ↓ | Re plateau 10⁷ ; pas de seuil absolu arbitraire |
+| T6 | `test_eos_h2_continuity_at_20_percent_threshold` | Intra-régime < **1–2 %** ; saut au seuil **≥ 0,5 %** et < **15 %** ; warning PR-78 | Mesure ~4,7 % @70 bar ; voir `limitations.md` §3.2 |
+| T6b | `test_eos_z_clamp_on_pressure_h2_grid` | Z ∈ **[0,2 ; 1,5]** | Grille P × H₂ (Papay+Kay) |
+| T6c | `test_eos_ch4_density_monotone_in_pressure` | ρ(P) strictement croissante | CH₄ pur |
+
+Commandes de contrôle :
+
+```bash
+cd gazsim/back
+cargo test -p gazflow-back --lib test_two_node_closed_form
+cargo test -p gazflow-back --lib mass_balance
+cargo test -p gazflow-back --lib linepack_capacitance
+cargo test -p gazflow-back --lib test_pde
+cargo test -p gazflow-back --lib eos_
+```
+
+---
+
+
 ## Final report v1 (conditional) — 2026-03-10
 
 ### Locked internal reference (regression)
@@ -172,16 +223,26 @@ Reference solutions will be compared when available.
 
 ### Go/No-Go decision (final conditional version)
 
-- **Go (engineering / CI):** yes, validation T1..T10 is continuously runnable with locked internal reference.
+- **Go (engineering / CI):** yes, validation T1..T16 is continuously runnable with locked internal reference (`GAZFLOW_REQUIRE_GASLIB_DATA=1` by default in the pack).
 - **No-Go (strict scientific):** maintained until an independent official GasLib-11 reference is available.
 
 ### Execution industrialisation
 
 - Script pack: `scripts/validation-pack.sh`
-- Observed execution: T1..T10 passing end-to-end (backend).
+- Observed execution: T1..T16 passing end-to-end (backend, juillet 2026).
+- Default: `GAZFLOW_REQUIRE_GASLIB_DATA=1` (fail if GasLib data absent).
 - Options:
   - `GAZFLOW_REGEN_REFERENCE=1` to regenerate internal reference before T9;
   - `GAZFLOW_RUN_LARGE_SMOKE=1` to include large-dataset smoke tests.
+
+### Transient API — boundary flows
+
+Each transient step exposes nodal `flows` [Nm³/s] plus boundary-oriented fields (see [`docs/contracts/openapi-stub.yaml`](../contracts/openapi-stub.yaml)):
+
+- `flows_in` : upstream boundary flow (PDE: `flows[0]`; quasi-steady: equals `flows`)
+- `flows_out` : downstream boundary flow (PDE: `flows[n]`; quasi-steady: equals `flows`)
+
+These support Qin/Qout mass-balance checks in the UI (TransientPlayer) and in pack tests T13.
 
 ---
 

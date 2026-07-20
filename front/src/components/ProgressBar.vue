@@ -5,8 +5,8 @@
       <template v-if="simulateStore.iteration > 0">
         | Itér. : <b>{{ simulateStore.iteration }}</b>
       </template>
-      <template v-if="simulateStore.residual != null">
-        | {{ CONVERGENCE_GAP_LABEL }} : <b>{{ simulateStore.residual.toExponential(2) }}</b>
+      <template v-if="residualLabel">
+        | {{ CONVERGENCE_GAP_LABEL }} : <b>{{ residualLabel }}</b>
       </template>
       <template v-if="simulateStore.elapsedMs != null">
         | Temps : <b>{{ simulateStore.elapsedMs }} ms</b>
@@ -18,6 +18,7 @@
       indeterminate
       color="primary"
       class="q-mb-md"
+      aria-label="Simulation en cours"
     />
   </div>
 </template>
@@ -31,4 +32,12 @@ import { CONVERGENCE_GAP_LABEL } from 'src/utils/novaLabels';
 const simulateStore = useSimulateStore();
 
 const statusLabel = computed(() => simulationStatusLabel(simulateStore.status));
+
+const residualLabel = computed(() => {
+  const residual = simulateStore.residual;
+  if (residual == null || !Number.isFinite(residual)) {
+    return null;
+  }
+  return residual.toExponential(2);
+});
 </script>

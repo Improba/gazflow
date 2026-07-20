@@ -717,11 +717,21 @@ where
     )?;
     let mut total_iters = ref_result.iterations;
 
-    let mut modes = modes_from_bypass_reference(network, &ref_result.pressures, None);
+    let mut modes = modes_from_bypass_reference(
+        network,
+        &ref_result.pressures,
+        None,
+        &config.gas_composition,
+    );
 
     // Point fixe de la commutation avec hystérésis sur le champ de pression bypass (fixe).
     for _outer in 0..MAX_REGULATOR_OUTER {
-        let new_modes = modes_from_bypass_reference(network, &ref_result.pressures, Some(&modes));
+        let new_modes = modes_from_bypass_reference(
+            network,
+            &ref_result.pressures,
+            Some(&modes),
+            &config.gas_composition,
+        );
         if new_modes == modes {
             let adjusted = network_for_regulator_modes(network, &modes);
             let mut result = solve_steady_state_newton_core(
@@ -739,6 +749,7 @@ where
                 &modes,
                 &ref_result.pressures,
                 &result.pressures,
+                &config.gas_composition,
             ));
             result.iterations = total_iters;
             return Ok(result);
@@ -763,6 +774,7 @@ where
         &modes,
         &ref_result.pressures,
         &result.pressures,
+        &config.gas_composition,
     ));
     result.iterations = total_iters;
     Ok(result)
@@ -1660,6 +1672,52 @@ mod tests {
         net
     }
 
+    /// Réseau 2 nœuds calibré pour T2 : ΔP frictionnel de plusieurs bar (non trivial).
+    fn closed_form_two_node_network() -> GasNetwork {
+        let mut net = GasNetwork::new();
+        net.add_node(Node {
+            id: "source".into(),
+            x: 0.0,
+            y: 0.0,
+            lon: Some(10.0),
+            lat: Some(50.0),
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: Some(70.0),
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+        net.add_node(Node {
+            id: "sink".into(),
+            x: 1.0,
+            y: 0.0,
+            lon: Some(11.0),
+            lat: Some(50.0),
+            height_m: 0.0,
+            pressure_lower_bar: None,
+            pressure_upper_bar: None,
+            pressure_fixed_bar: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+        });
+        net.add_pipe(Pipe {
+            id: "pipe1".into(),
+            from: "source".into(),
+            to: "sink".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 150.0,
+            diameter_mm: 150.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
+        });
+        net
+    }
+
     fn y_network() -> GasNetwork {
         let mut net = GasNetwork::new();
         net.add_node(Node {
@@ -1947,6 +2005,191 @@ mod tests {
         assert!(
             p_sink > 0.0,
             "sink pressure should be positive, got {p_sink}"
+        );
+    }
+
+    /// T2 (validation.md) : solution analytique P² sur réseau plat 2 nœuds (gravité nulle).
+    #[test]
+    fn test_two_node_closed_form_p_squared() {
+        let net = closed_form_two_node_network();
+        let q_withdrawal = 50.0;
+        let mut demands = HashMap::new();
+        demands.insert("sink".to_string(), -q_withdrawal);
+
+        let result = solve_steady_state(&net, &demands, 500, 1e-6).expect("solver should converge");
+        let p_source = result.pressures["source"];
+        let p_calc = result.pressures["sink"];
+
+        let pipe = net.pipes().next().expect("pipe");
+        let composition = GasComposition::pure_ch4();
+        let p_src = 70.0;
+
+        // Point fixe : R(P_moy) avec Re plateau (flow_m3s=0 → Re=10⁷), comme le solveur Newton.
+        let mut p_expected = 50.0;
+        for _ in 0..32 {
+            let mean_p = 0.5 * (p_src + p_expected);
+            let resistance = pipe_resistance_at_pressure_with_composition(
+                pipe.length_km,
+                pipe.diameter_mm,
+                pipe.roughness_mm,
+                mean_p,
+                DEFAULT_GAS_TEMPERATURE_K,
+                composition,
+                0.0,
+            );
+            let p_sq = p_src * p_src - resistance * q_withdrawal * q_withdrawal;
+            assert!(p_sq > 0.0, "incoherent closed-form parameters: P_sink²={p_sq}");
+            p_expected = p_sq.sqrt();
+        }
+
+        let delta_p = p_src - p_expected;
+        let tol_bar = 0.05_f64.max(0.05 * delta_p);
+        eprintln!(
+            "closed-form P²: P_calc={p_calc:.4} bar, P_expected={p_expected:.4} bar, ΔP={delta_p:.4} bar, err={:.4} bar",
+            (p_calc - p_expected).abs()
+        );
+        assert!(
+            delta_p > 1.0,
+            "test must be non-trivial: expected ΔP={delta_p:.4} bar (need > 1 bar)"
+        );
+        assert!(
+            (p_calc - p_expected).abs() < tol_bar,
+            "solver vs analytical P²: calc={p_calc}, expected={p_expected}, tol={tol_bar:.4} bar"
+        );
+        assert!(
+            (p_source - p_src).abs() < 0.1,
+            "source pressure should remain fixed at ~70 bar, got {p_source}"
+        );
+    }
+
+    fn network_has_compressors(network: &GasNetwork) -> bool {
+        network
+            .pipes()
+            .any(|p| p.kind == ConnectionKind::CompressorStation)
+    }
+
+    fn assert_mass_balance_scientific(
+        dataset: &str,
+        network_path: &Path,
+        scenario_path: &Path,
+        max_iter: usize,
+        tolerance: f64,
+    ) {
+        if !network_path.exists() || !scenario_path.exists() {
+            let require = std::env::var("CI").is_ok()
+                || std::env::var("GAZFLOW_REQUIRE_GASLIB_DATA").is_ok();
+            if require {
+                panic!(
+                    "mass_balance {dataset}: données GasLib requises ({network_path:?}, {scenario_path:?}); \
+                     lancer ./scripts/fetch_gaslib.sh {dataset}"
+                );
+            }
+            eprintln!(
+                "skip mass_balance {dataset}: data files not found ({network_path:?}, {scenario_path:?})"
+            );
+            return;
+        }
+
+        let network = load_network(network_path).expect("load network");
+        let scenario = load_scenario_demands(scenario_path).expect("load scenario");
+        let demands = scenario.demands.clone();
+        let gas = GasComposition::default();
+
+        let global_demand: f64 = demands.values().sum();
+        assert!(
+            global_demand.abs() < 1e-4,
+            "{dataset}: global demand imbalance |Σd|={global_demand:.3e} Nm³/s (expected < 1e-4)"
+        );
+
+        let result1 = solve_steady_state(&network, &demands, max_iter, tolerance)
+            .or_else(|_| solve_steady_state(&network, &demands, max_iter * 2, tolerance * 2.0))
+            .unwrap_or_else(|err| panic!("{dataset}: solver failed: {err:#}"));
+
+        let report = mass_balance_report(&network, &demands, &result1);
+        assert!(
+            report.global_balance_mismatch_m3s < 1e-4,
+            "{dataset}: global mass mismatch {:.3e} Nm³/s",
+            report.global_balance_mismatch_m3s
+        );
+
+        // Toujours asserter le résidu de flux (indépendant de la tolérance Newton d'origine).
+        let flow_residual = report.max_free_imbalance_m3s;
+        let flow_tol = (2.0 * tolerance).max(result1.residual * 2.0).max(1e-3);
+        assert!(
+            flow_residual < flow_tol,
+            "{dataset}: flow mass residual {flow_residual:.3e} > flow_tol {flow_tol:.3e} \
+             (solver residual={:.3e}, tol={tolerance:.3e})",
+            result1.residual
+        );
+
+        let pressure_residual = crate::solver::newton::recompute_mass_balance_residual(
+            &network, &demands, &result1, gas,
+        )
+        .unwrap_or(f64::INFINITY);
+        assert!(
+            pressure_residual.is_finite(),
+            "{dataset}: NLP recomputed residual must be finite, got {pressure_residual}"
+        );
+        // Réseaux sans compresseur : borne NLP stricte. Avec compresseurs : borne haute anti-explosion.
+        let nlp_bound = if network_has_compressors(&network) {
+            1.0e6
+        } else {
+            (2.0 * tolerance).max(0.1)
+        };
+        assert!(
+            pressure_residual < nlp_bound,
+            "{dataset}: NLP recomputed residual {pressure_residual:.3e} > {nlp_bound:.3e} \
+             (flow OK at {flow_residual:.3e})"
+        );
+
+        let result2 = solve_steady_state(&network, &demands, max_iter, tolerance)
+            .or_else(|_| solve_steady_state(&network, &demands, max_iter * 2, tolerance * 2.0))
+            .unwrap_or_else(|err| panic!("{dataset}: second solve failed: {err:#}"));
+
+        let mut max_dp = 0.0_f64;
+        for (id, &p1) in &result1.pressures {
+            let p2 = result2.pressures.get(id).copied().unwrap_or(p1);
+            max_dp = max_dp.max((p1 - p2).abs());
+        }
+        assert!(
+            max_dp < 1e-9,
+            "{dataset}: deterministic solve violated: max |ΔP|={max_dp:.3e} bar"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn mass_balance_gaslib_11() {
+        assert_mass_balance_scientific(
+            "GasLib-11",
+            Path::new("dat/GasLib-11.net"),
+            Path::new("dat/GasLib-11.scn"),
+            1200,
+            5e-4,
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn mass_balance_gaslib_24() {
+        assert_mass_balance_scientific(
+            "GasLib-24",
+            Path::new("dat/GasLib-24.net"),
+            Path::new("dat/GasLib-24.scn"),
+            1200,
+            5e-4,
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn mass_balance_gaslib_40() {
+        assert_mass_balance_scientific(
+            "GasLib-40",
+            Path::new("dat/GasLib-40.net"),
+            Path::new("dat/GasLib-40.scn"),
+            1200,
+            5e-4,
         );
     }
 

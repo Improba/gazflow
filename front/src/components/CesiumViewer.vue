@@ -829,6 +829,9 @@ function updateNodeLod() {
     }
     entity.show = pointVisible || labelVisible;
   });
+
+  // LOD écrase pixelSize : réappliquer les highlights NoVa après coup.
+  applyNovaDeficitHighlights();
 }
 </script>
 

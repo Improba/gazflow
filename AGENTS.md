@@ -7,6 +7,8 @@ This file defines contribution rules for agents/assistants only. Detailed execut
 - Setup and scripts: `README.md`
 - Test execution: `docs/testing/README.md`
 - Operational test corpus (P6–P13): `docs/testing/corpus/README.md`
+- Scientific validation protocol and thresholds: `docs/science/validation.md`
+- Validation pack script (T1–T16): `scripts/validation-pack.sh`
 - Project priorities and detailed scientific protocol (shared): `docs/plans/implementation-plan.md`
 - Local unversioned plans/drafts: `docs/temps/`
 - Physical model / equations: `docs/science/equations.md`
@@ -16,7 +18,7 @@ This file defines contribution rules for agents/assistants only. Detailed execut
 1. **Docker required**: do not run `cargo`/`npm`/`npx` on the host.
 2. **Before modifying**: read the affected files and the corresponding phase of the plan.
 3. **After modifying**: run at least the targeted tests for the modified scope.
-4. **If physical logic is modified**: update the scientific documentation and related tests.
+4. **If physical logic is modified**: update the scientific documentation (`docs/science/equations.md`, `docs/science/validation.md` if thresholds change, `docs/science/limitations.md` if scope/limits change) and related tests.
 5. **If plan tasks are impacted**: update the status in `docs/plans/implementation-plan.md`.
 6. **Never version GasLib data** in `back/dat/`.
 7. **Temporary plan files**: use `docs/temps/` (content ignored by git).

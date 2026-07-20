@@ -153,6 +153,7 @@ import { Notify, useQuasar } from 'quasar';
 import { useNetworkStore } from 'src/stores/network';
 import { useScenariosStore } from 'src/stores/scenarios';
 import { useSimulateStore } from 'src/stores/simulate';
+import { resetStudyState } from 'src/utils/resetStudyState';
 import { formatApiError } from 'src/utils/importError';
 
 withDefaults(
@@ -300,7 +301,7 @@ async function applyScenario(id: string) {
   applyingId.value = id;
   try {
     await scenariosStore.applyScenario(id);
-    simulateStore.resetSimulation();
+    resetStudyState();
     Notify.create({ type: 'positive', message: 'Scénario appliqué sur la carte' });
   } catch (err) {
     Notify.create({ type: 'negative', message: formatApiError(err) });

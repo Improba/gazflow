@@ -8,7 +8,11 @@
 
 ## Diagnostic (vérifié, pas hypothèse)
 
-L'échec **n'est pas un bug du modèle**. Trois causes convergentes, toutes confirmées par expérimentation :
+L'échec **n'est pas un bug du modèle**. Quatre causes convergentes, toutes confirmées par expérimentation :
+
+### 0. Pas de fichier `.sol` dans le ZIP ZIB
+
+L'archive officielle GasLib-11 (`GasLib-11-v1-20211130.zip`) ne contient **aucun** fichier `.sol` (solution de référence Pfetsch et al.). Le script `fetch_gaslib.sh` crée un alias `GasLib-11.sol` uniquement si un `.sol` versionné est présent après extraction. Validation pro = formule analytique P² + invariants internes (bilan masse PDE, linepack↔capacitance) ; pas d'oracle externe pour GasLib-11.
 
 ### 1. Problème sous-déterminé
 

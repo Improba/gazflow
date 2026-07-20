@@ -6,8 +6,9 @@
   --scada-border: rgba(84, 182, 206, 0.35);
   --scada-text: #d8edf3;
 
-  /* Carte : zones réservées pour éviter les superpositions */
-  --map-app-header-height: 50px;
+  /* Carte : zones réservées pour éviter les superpositions.
+     Hauteur header = toolbar (~50) + GlobalStatusBar (~34) ; sync dynamique dans MainLayout. */
+  --map-app-header-height: 84px;
   --map-editor-toolbar-height: 40px;
   --map-sidebar-width: 360px;
   --map-sidebar-inset: 16px;

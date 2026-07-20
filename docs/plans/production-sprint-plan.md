@@ -76,11 +76,14 @@
 Voir `operational-roadmap.md` sections P12, P8, P7, P11 pour détail tâches.
 
 ### P11 PDE (vague G, prochaine itération dédiée)
+
+**Juillet 2026** : endurcissement scientifique livré (~70 %) — volumes finis conservatifs, capacitance/linepack, `flows_in`/`flows_out`, TransientPlayer. Reste : réseaux branchés, WS streaming, CFL, jauge Cesium.
+
 1. Maillage 1D par conduite (segments = arcs graphe)
-2. Équation $\partial P / \partial t + \ldots$ simplifiée isotherme + linepack local
-3. Euler implicite tridiagonal par pipe
-4. Couplage jonctions (continuité masse)
-5. WS + TransientPlayer + jauge linepack Cesium
+2. Équation isotherme FV + linepack local (C, G chordée)
+3. Intégration implicite par pipe / chaîne série
+4. Couplage jonctions (continuité masse) — réseaux branchés en cours
+5. WS + TransientChart + jauge linepack Cesium (non livrés)
 
 ---
 
@@ -118,6 +121,6 @@ Voir `operational-roadmap.md` sections P12, P8, P7, P11 pour détail tâches.
 | D | P12 scénarios + compare | ✅ |
 | E | P8 Cv ISA + Jacobien analytique | 🟡 MVP (Cv diamètre effectif, FD régulateur) |
 | F | P7 PR-78 auto H₂ | ✅ |
-| G | P11 PDE scaffold + TransientPlayer | 🟡 MVP |
+| G | P11 PDE FV conservatif + TransientPlayer + bilan masse UI | 🟡 ~70 % |
 | H | P13 LM multi-param | ✅ MVP |
 | I | Export history + OpenAPI stub | 🟡 |

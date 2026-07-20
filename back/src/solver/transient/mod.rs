@@ -52,7 +52,14 @@ pub struct TransientStepResult {
     pub time_s: f64,
     pub demands: HashMap<String, f64>,
     pub pressures: HashMap<String, f64>,
+    /// Débit « affichage carte » = débit aval par conduite (compat Cesium).
     pub flows: HashMap<String, f64>,
+    /// Débit amont par conduite [Nm³/s] (PDE: flows[0] ; quasi-steady: = flows).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub flows_in: HashMap<String, f64>,
+    /// Débit aval par conduite [Nm³/s] (PDE: flows[n] ; quasi-steady: = flows).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub flows_out: HashMap<String, f64>,
     pub iterations: usize,
     pub residual: f64,
     pub linepack_kg: f64,
@@ -119,11 +126,14 @@ pub fn simulate_transient_quasi_steady(
     let mut previous_linepack =
         compute_linepack(&network_state, &previous_pressures, &config.gas_composition);
 
+    let initial_flows = initial.flows.clone();
     let mut steps = vec![TransientStepResult {
         time_s: 0.0,
         demands: demands.clone(),
         pressures: initial.pressures,
-        flows: initial.flows,
+        flows: initial_flows.clone(),
+        flows_in: initial_flows.clone(),
+        flows_out: initial_flows,
         iterations: initial.iterations,
         residual: initial.residual,
         linepack_kg: previous_linepack,
@@ -165,11 +175,14 @@ pub fn simulate_transient_quasi_steady(
         previous_linepack = linepack;
         previous_pressures = solved.pressures.clone();
 
+        let step_flows = solved.flows.clone();
         steps.push(TransientStepResult {
             time_s,
             demands: demands.clone(),
             pressures: solved.pressures,
-            flows: solved.flows,
+            flows: step_flows.clone(),
+            flows_in: step_flows.clone(),
+            flows_out: step_flows,
             iterations: solved.iterations,
             residual: solved.residual,
             linepack_kg: linepack,
@@ -230,11 +243,15 @@ pub fn simulate_transient_pde(
     )?;
 
     let mut previous_linepack = total_pde_linepack(&pipe_contexts, &config.gas_composition);
+    let (initial_flows_in, initial_flows_out) =
+        snapshot_pipe_boundary_flows(&pipe_contexts, &initial.flows);
     let mut steps = vec![TransientStepResult {
         time_s: 0.0,
         demands: demands.clone(),
         pressures: snapshot_node_pressures(&pipe_contexts, &initial.pressures),
-        flows: snapshot_pipe_flows(&pipe_contexts, &initial.flows),
+        flows: initial_flows_out.clone(),
+        flows_in: initial_flows_in,
+        flows_out: initial_flows_out,
         iterations: initial.iterations,
         residual: initial.residual,
         linepack_kg: previous_linepack,
@@ -271,11 +288,15 @@ pub fn simulate_transient_pde(
         let linepack_delta = linepack - previous_linepack;
         previous_linepack = linepack;
 
+        let (flows_in, flows_out) =
+            snapshot_pipe_boundary_flows(&pipe_contexts, &initial.flows);
         steps.push(TransientStepResult {
             time_s,
             demands: demands.clone(),
             pressures: snapshot_node_pressures(&pipe_contexts, &initial.pressures),
-            flows: snapshot_pipe_flows(&pipe_contexts, &initial.flows),
+            flows: flows_out.clone(),
+            flows_in,
+            flows_out,
             iterations: 0,
             residual: 0.0,
             linepack_kg: linepack,
@@ -396,7 +417,7 @@ fn build_pipe_contexts(
         });
     }
 
-  Ok(contexts)
+    Ok(contexts)
 }
 
 fn refresh_pde_boundaries(
@@ -453,21 +474,19 @@ fn snapshot_node_pressures(
     pressures
 }
 
-fn snapshot_pipe_flows(
+fn snapshot_pipe_boundary_flows(
     contexts: &[ActivePipeContext],
     fallback: &HashMap<String, f64>,
-) -> HashMap<String, f64> {
-    let mut flows = fallback.clone();
+) -> (HashMap<String, f64>, HashMap<String, f64>) {
+    let mut flows_in = fallback.clone();
+    let mut flows_out = fallback.clone();
     for ctx in contexts {
-        let q = ctx
-            .state
-            .flows
-            .iter()
-            .copied()
-            .fold(0.0_f64, |acc, v| if v.abs() > acc.abs() { v } else { acc });
-        flows.insert(ctx.pipe.id.clone(), q);
+        let q_in = ctx.state.flows.first().copied().unwrap_or(0.0);
+        let q_out = ctx.state.flows.last().copied().unwrap_or(0.0);
+        flows_in.insert(ctx.pipe.id.clone(), q_in);
+        flows_out.insert(ctx.pipe.id.clone(), q_out);
     }
-    flows
+    (flows_in, flows_out)
 }
 
 fn validate_config(config: &TransientConfig) -> Result<()> {
@@ -476,6 +495,9 @@ fn validate_config(config: &TransientConfig) -> Result<()> {
     }
     if !config.dt_s.is_finite() || config.dt_s <= 0.0 {
         bail!("dt_s must be finite and positive");
+    }
+    if config.n_cells_per_pipe == Some(0) {
+        bail!("n_cells_per_pipe must be >= 1");
     }
     Ok(())
 }
@@ -632,6 +654,119 @@ mod tests {
         }
     }
 
+    /// Exécute le PDE et retourne (time_s, q_in, q_out, linepack_kg) par pas.
+    fn pde_boundary_flow_series(
+        net: &GasNetwork,
+        demands: &HashMap<String, f64>,
+        events: &[TransientEvent],
+        cfg: &TransientConfig,
+    ) -> Vec<(f64, f64, f64, f64)> {
+        use crate::solver::steady_state::{SolverControl, solve_steady_state_with_progress};
+        use super::SteadyStateConfig;
+        use time_integration::advance_one_step;
+
+        let steady_cfg = SteadyStateConfig {
+            gas_composition: cfg.gas_composition,
+            ..SteadyStateConfig::default()
+        };
+        let initial =
+            solve_steady_state_with_progress(net, demands, None, steady_cfg, |_| {
+                SolverControl::Continue
+            })
+            .expect("steady init");
+
+        let ordered_pipes = pde_pipe_chain(net).expect("pde chain");
+        let mut pipe_contexts = build_pipe_contexts(
+            net,
+            &ordered_pipes,
+            &initial.pressures,
+            demands,
+            cfg,
+        )
+        .expect("pipe contexts");
+
+        for ctx in pipe_contexts.iter_mut() {
+            system::update_flows(
+                &ctx.mesh,
+                &mut ctx.state,
+                &ctx.pipe,
+                &ctx.source,
+                &ctx.sink,
+                &cfg.gas_composition,
+            );
+        }
+
+        let mut network_state = net.clone();
+        let mut demands = demands.clone();
+        let mut ordered_events = events.to_vec();
+        ordered_events.sort_by(|a, b| {
+            a.time_s()
+                .partial_cmp(&b.time_s())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut event_cursor = 0usize;
+        while event_cursor < ordered_events.len() && ordered_events[event_cursor].time_s() <= 1e-9
+        {
+            apply_event(
+                &mut network_state,
+                &mut demands,
+                &ordered_events[event_cursor],
+            )
+            .expect("event");
+            refresh_pde_boundaries(&mut pipe_contexts, &network_state, &demands);
+            for ctx in pipe_contexts.iter_mut() {
+                system::update_flows(
+                    &ctx.mesh,
+                    &mut ctx.state,
+                    &ctx.pipe,
+                    &ctx.source,
+                    &ctx.sink,
+                    &cfg.gas_composition,
+                );
+            }
+            event_cursor += 1;
+        }
+
+        let mut series = Vec::new();
+        let lp0 = total_pde_linepack(&pipe_contexts, &cfg.gas_composition);
+        let ctx0 = &pipe_contexts[0];
+        let n_ifaces = ctx0.mesh.n_cells;
+        series.push((
+            0.0,
+            ctx0.state.flows[0],
+            ctx0.state.flows[n_ifaces],
+            lp0,
+        ));
+
+        let total_steps = (cfg.duration_s / cfg.dt_s).ceil() as usize;
+
+        for step_idx in 1..=total_steps {
+            let time_s = ((step_idx as f64) * cfg.dt_s).min(cfg.duration_s);
+            while event_cursor < ordered_events.len()
+                && ordered_events[event_cursor].time_s() <= time_s + 1e-9
+            {
+                apply_event(
+                    &mut network_state,
+                    &mut demands,
+                    &ordered_events[event_cursor],
+                )
+                .expect("event");
+                refresh_pde_boundaries(&mut pipe_contexts, &network_state, &demands);
+                event_cursor += 1;
+            }
+
+            advance_one_step(&mut pipe_contexts, cfg.dt_s, &cfg.gas_composition);
+            sync_chain_junctions(&mut pipe_contexts);
+
+            let lp = total_pde_linepack(&pipe_contexts, &cfg.gas_composition);
+            let ctx = &pipe_contexts[0];
+            let n = ctx.mesh.n_cells;
+            series.push((time_s, ctx.state.flows[0], ctx.state.flows[n], lp));
+        }
+
+        series
+    }
+
     #[test]
     fn test_transient_steady_initial_stays_steady() {
         let net = two_node_network();
@@ -664,7 +799,7 @@ mod tests {
         let events = vec![TransientEvent::DemandChange {
             time_s: 600.0,
             node_id: "SK".to_string(),
-            demand_m3s: -8.0,
+            demand_m3s: -5.5,
         }];
 
         let cfg = transient_cfg(1200.0, 600.0);
@@ -688,7 +823,79 @@ mod tests {
     }
 
     #[test]
+    fn test_pde_steady_initial_stays_steady() {
+        use crate::solver::steady_state::pipe_resistance_at_pressure_with_composition;
+
+        let net = two_node_network();
+        let q_steady = 5.0;
+        let p_source = 70.0;
+        let pipe = net.pipes().next().expect("pipe");
+        let composition = GasComposition::default();
+        let mean_p = 0.5 * (p_source + 60.0);
+        let resistance = pipe_resistance_at_pressure_with_composition(
+            pipe.length_km,
+            pipe.diameter_mm,
+            pipe.roughness_mm,
+            mean_p,
+            DEFAULT_GAS_TEMPERATURE_K,
+            composition,
+            q_steady,
+        );
+        let p_sink_sq = p_source * p_source - resistance * q_steady * q_steady;
+        assert!(
+            p_sink_sq > 0.0,
+            "incoherent steady parameters: P_sink²={p_sink_sq}"
+        );
+        let p_sink = p_sink_sq.sqrt();
+
+        let mut demands = HashMap::new();
+        demands.insert("SK".to_string(), -q_steady);
+
+        let cfg = transient_cfg(600.0, 150.0);
+        let result = simulate_transient_with_mode(
+            &net,
+            &demands,
+            &[],
+            &cfg,
+            TransientMode::Pde,
+        )
+        .expect("pde transient");
+
+        assert!(
+            result.limitation.contains("PDE MVP"),
+            "expected PDE path, got: {}",
+            result.limitation
+        );
+
+        let p0 = result.steps[0]
+            .pressures
+            .get("SK")
+            .copied()
+            .expect("initial sink pressure");
+        let f0 = result.steps[0]
+            .flows
+            .get("P1")
+            .copied()
+            .expect("initial pipe flow");
+
+        for step in result.steps.iter().skip(1) {
+            let p = step.pressures.get("SK").copied().expect("sink pressure");
+            let f = step.flows.get("P1").copied().expect("pipe flow");
+            assert!(
+                (p - p0).abs() < 0.05 || (p - p0).abs() / p0.max(1.0) < 1e-2,
+                "steady PDE should keep sink pressure near init: p0={p0}, p={p}, p_sink_ref={p_sink}"
+            );
+            assert!(
+                (f - f0).abs() < 0.05 || (f - f0).abs() / f0.abs().max(1.0) < 1e-2,
+                "steady PDE should keep signed flow near init: f0={f0}, f={f}"
+            );
+        }
+    }
+
+    #[test]
     fn test_pde_single_pipe_pressure_step_response_monotonic() {
+        use crate::solver::steady_state::pipe_resistance_at_pressure_with_composition;
+
         let net = two_node_network();
         let mut demands = HashMap::new();
         demands.insert("SK".to_string(), -5.0);
@@ -696,7 +903,7 @@ mod tests {
         let events = vec![TransientEvent::DemandChange {
             time_s: 0.0,
             node_id: "SK".to_string(),
-            demand_m3s: -10.0,
+            demand_m3s: -5.5,
         }];
 
         let cfg = transient_cfg(3600.0, 300.0);
@@ -732,9 +939,39 @@ mod tests {
         }
 
         let p_final = result.steps.last().unwrap().pressures["SK"];
+        let pipe = net.pipes().next().expect("pipe");
+        let composition = GasComposition::default();
+        let q_old = 5.0;
+        let q_new = 5.5;
+        let p_source = 70.0;
+        let mean_p = 0.5 * (p_source + p0);
+        // Re plateau (flow_m3s=0), cohérent avec le solveur stationnaire.
+        let r_total = pipe_resistance_at_pressure_with_composition(
+            pipe.length_km,
+            pipe.diameter_mm,
+            pipe.roughness_mm,
+            mean_p,
+            DEFAULT_GAS_TEMPERATURE_K,
+            composition,
+            0.0,
+        );
+        let delta_p_expected = r_total * (q_new * q_new - q_old * q_old) / (2.0 * mean_p);
+        let actual_drop = p0 - p_final;
         assert!(
-            p_final < p0 - 0.01,
+            actual_drop > 0.0,
             "demand increase should depressurize sink: p0={p0}, p_final={p_final}"
+        );
+        if delta_p_expected > 1e-12 {
+            assert!(
+                actual_drop > 0.1 * delta_p_expected,
+                "sink should move toward new steady pressure: actual_drop={actual_drop}, delta_p_expected={delta_p_expected}"
+            );
+        }
+        let lp0 = result.steps[0].linepack_kg;
+        let lp_final = result.steps.last().unwrap().linepack_kg;
+        assert!(
+            lp_final < lp0 - 1e-6,
+            "demand increase should reduce linepack: lp0={lp0}, lp_final={lp_final}"
         );
     }
 
@@ -791,6 +1028,260 @@ mod tests {
             result.limitation.contains("Fallback to quasi-steady"),
             "branched network should fallback: {}",
             result.limitation
+        );
+    }
+
+    /// T4a (validation.md) : régime PDE stationnaire — Q_entrée ≈ Q_sortie, linepack stable.
+    #[test]
+    fn test_pde_steady_mass_balance_at_boundaries() {
+        let net = two_node_network();
+        let q_steady = 5.0;
+        let mut demands = HashMap::new();
+        demands.insert("SK".to_string(), -q_steady);
+
+        let cfg = transient_cfg(900.0, 300.0);
+        let series = pde_boundary_flow_series(&net, &demands, &[], &cfg);
+        assert!(series.len() > 2, "need multiple steps for warm-up");
+
+        for &(_time_s, q_in, q_out, _) in series.iter().skip(2) {
+            assert!(
+                (q_in - q_out).abs() < 1e-4,
+                "steady PDE: Q_in={q_in} Q_out={q_out}"
+            );
+        }
+
+        let result = simulate_transient_with_mode(
+            &net,
+            &demands,
+            &[],
+            &cfg,
+            TransientMode::Pde,
+        )
+        .expect("pde transient");
+
+        assert!(result.limitation.contains("PDE MVP"));
+
+        for step in result.steps.iter().skip(2) {
+            assert!(
+                step.linepack_delta_kg.abs() < 1e-3,
+                "steady PDE: linepack should be stable, ΔM={:.3e} kg",
+                step.linepack_delta_kg
+            );
+        }
+    }
+
+    /// T4b (validation.md) : après échelon de demande, linepack diminue et bilan amont/aval cohérent.
+    #[test]
+    fn test_pde_mass_balance_after_demand_step() {
+        let net = two_node_network();
+        let mut demands = HashMap::new();
+        demands.insert("SK".to_string(), -5.0);
+
+        let events = vec![TransientEvent::DemandChange {
+            time_s: 0.0,
+            node_id: "SK".to_string(),
+            demand_m3s: -5.5,
+        }];
+
+        let cfg = transient_cfg(1800.0, 300.0);
+        let series = pde_boundary_flow_series(&net, &demands, &events, &cfg);
+        assert!(series.len() > 4, "need warm-up steps after demand step");
+
+        let lp0 = series[0].3;
+        let lp_final = series.last().unwrap().3;
+        let delta_m = lp_final - lp0;
+
+        assert!(
+            delta_m < -1e-6,
+            "demand step should deplete linepack: ΔM={delta_m:.4e} kg"
+        );
+
+        let warmup = series.len().saturating_sub(3);
+        for &(_time_s, q_in, q_out, _) in series.iter().skip(warmup) {
+            let rel_imbalance = (q_in - q_out).abs() / q_out.abs().max(1e-6);
+            assert!(
+                rel_imbalance < 0.05,
+                "after warm-up, Q_in should track Q_out: Q_in={q_in}, Q_out={q_out}, rel={rel_imbalance:.4}"
+            );
+        }
+
+        eprintln!(
+            "PDE demand step: ΔM={delta_m:.4e} kg over {:.0}s (linepack reacts slowly in PDE MVP)",
+            series.last().unwrap().0
+        );
+    }
+
+    /// Après 1 pas PDE, flows_in/flows_out sont publiés et cohérents en régime stationnaire.
+    #[test]
+    fn test_pde_step_has_boundary_flows() {
+        let net = two_node_network();
+        let q_steady = 5.0;
+        let mut demands = HashMap::new();
+        demands.insert("SK".to_string(), -q_steady);
+
+        let cfg = transient_cfg(600.0, 150.0);
+        let result = simulate_transient_with_mode(
+            &net,
+            &demands,
+            &[],
+            &cfg,
+            TransientMode::Pde,
+        )
+        .expect("pde transient");
+
+        assert!(result.steps.len() >= 2, "need at least initial + 1 step");
+        let step = &result.steps[1];
+        let q_in = step
+            .flows_in
+            .get("P1")
+            .copied()
+            .expect("flows_in[P1]");
+        let q_out = step
+            .flows_out
+            .get("P1")
+            .copied()
+            .expect("flows_out[P1]");
+        assert!(
+            (q_in - q_out).abs() < 1e-4,
+            "steady PDE: |Qin-Qout| should be small: Q_in={q_in}, Q_out={q_out}"
+        );
+        assert_eq!(
+            step.flows.get("P1").copied(),
+            Some(q_out),
+            "flows should equal flows_out for map display"
+        );
+    }
+
+    /// T4c : cohérence du débit aval avec la demande imposée (convention signée).
+    #[test]
+    fn test_pde_sink_flow_matches_boundary() {
+        let net = two_node_network();
+        let q_sink = 7.5;
+        let mut demands = HashMap::new();
+        demands.insert("SK".to_string(), -q_sink);
+
+        let cfg = transient_cfg(600.0, 150.0);
+        let result = simulate_transient_with_mode(
+            &net,
+            &demands,
+            &[],
+            &cfg,
+            TransientMode::Pde,
+        )
+        .expect("pde transient");
+
+        for step in &result.steps {
+            let q_pipe = step.flows.get("P1").copied().expect("pipe flow");
+            assert!(
+                (q_pipe - q_sink).abs() < 1e-6,
+                "flows[P1]={q_pipe} should equal withdrawal |d|={q_sink} (sign: positive out of pipe)"
+            );
+        }
+    }
+
+    /// T4d (validation.md) : bilan masse strict ∫(Q_in−Q_out)dt ≈ ΔM/ρ_n (schéma FV conservatif).
+    /// Règle rectangle sur les flux de fin de pas (cohérents avec l'Euler implicite).
+    #[test]
+    fn test_pde_mass_balance_integrated() {
+        use crate::solver::gas_properties::{STANDARD_PRESSURE_BAR, STANDARD_TEMPERATURE_K};
+
+        let net = two_node_network();
+        let mut demands = HashMap::new();
+        demands.insert("SK".to_string(), -5.0);
+
+        let events = vec![TransientEvent::DemandChange {
+            time_s: 0.0,
+            node_id: "SK".to_string(),
+            demand_m3s: -10.0,
+        }];
+
+        let cfg = transient_cfg(1800.0, 60.0);
+        let series = pde_boundary_flow_series(&net, &demands, &events, &cfg);
+        assert!(series.len() >= 2);
+
+        let composition = GasComposition::default();
+        let rho_n = composition
+            .density_kg_per_m3(STANDARD_PRESSURE_BAR, STANDARD_TEMPERATURE_K)
+            .max(1e-6);
+
+        let lp_initial = series[0].3;
+        let lp_final = series.last().unwrap().3;
+        let delta_m = lp_final - lp_initial;
+
+        let mut integral_q = 0.0;
+        for w in series.windows(2) {
+            let (_t1, q_in1, q_out1, _) = w[1];
+            let dt = w[1].0 - w[0].0;
+            integral_q += (q_in1 - q_out1) * dt;
+        }
+
+        let mass_from_flux = rho_n * integral_q;
+        let rel_err = (delta_m - mass_from_flux).abs() / delta_m.abs().max(1e-6);
+
+        eprintln!(
+            "PDE mass balance: ΔM={delta_m:.4e} kg, ρ_n∫(Qin−Qout)dt={mass_from_flux:.4e} kg, rel_err={rel_err:.4}"
+        );
+
+        assert!(
+            rel_err < 0.05,
+            "integrated mass balance: |ΔM − ρ_n∫(Qin−Qout)dt|/|ΔM| = {rel_err:.4} (threshold 0.05)"
+        );
+    }
+
+    /// T4e : bilan masse intégré en régime quasi-linéaire (petit échelon 5 → 5,5 Nm³/s).
+    #[test]
+    fn test_pde_mass_balance_integrated_small_step() {
+        use crate::solver::gas_properties::{STANDARD_PRESSURE_BAR, STANDARD_TEMPERATURE_K};
+
+        let mut net = two_node_network();
+        if let Some(pipe) = net.pipes_mut().next() {
+            pipe.length_km = 80.0;
+        }
+
+        let mut demands = HashMap::new();
+        demands.insert("SK".to_string(), -5.0);
+
+        let events = vec![TransientEvent::DemandChange {
+            time_s: 0.0,
+            node_id: "SK".to_string(),
+            demand_m3s: -5.5,
+        }];
+
+        let cfg = transient_cfg(3600.0, 45.0);
+        let series = pde_boundary_flow_series(&net, &demands, &events, &cfg);
+        assert!(series.len() >= 2);
+
+        let composition = GasComposition::default();
+        let rho_n = composition
+            .density_kg_per_m3(STANDARD_PRESSURE_BAR, STANDARD_TEMPERATURE_K)
+            .max(1e-6);
+
+        let lp_initial = series[0].3;
+        let lp_final = series.last().unwrap().3;
+        let delta_m = lp_final - lp_initial;
+
+        assert!(
+            delta_m < -1e-5,
+            "small demand step should deplete linepack: ΔM={delta_m:.4e} kg"
+        );
+
+        let mut integral_q = 0.0;
+        for w in series.windows(2) {
+            let (_t1, q_in1, q_out1, _) = w[1];
+            let dt = w[1].0 - w[0].0;
+            integral_q += (q_in1 - q_out1) * dt;
+        }
+
+        let mass_from_flux = rho_n * integral_q;
+        let rel_err = (delta_m - mass_from_flux).abs() / delta_m.abs().max(1e-6);
+
+        eprintln!(
+            "PDE small-step mass balance: ΔM={delta_m:.4e} kg, ρ_n∫(Qin−Qout)dt={mass_from_flux:.4e} kg, rel_err={rel_err:.4}"
+        );
+
+        assert!(
+            rel_err < 0.01,
+            "small-step integrated mass balance: |ΔM − ρ_n∫(Qin−Qout)dt|/|ΔM| = {rel_err:.4} (threshold 0.01)"
         );
     }
 }

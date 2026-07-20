@@ -1,16 +1,41 @@
 <template>
   <div class="pressure-profile dark">
-    <div class="text-caption text-grey-4 q-mb-xs">
-      Profil le long du chemin : {{ pathCaption }}
-    </div>
-
-    <svg
-      class="pressure-svg"
-      viewBox="0 0 100 60"
-      preserveAspectRatio="xMidYMid meet"
-      role="img"
-      aria-label="Profil de pression le long du réseau"
+    <q-banner
+      v-if="pathIds.length === 0"
+      dense
+      rounded
+      class="bg-blue-grey-10 text-blue-grey-2"
     >
+      <template #avatar>
+        <q-icon name="show_chart" color="blue-grey-4" />
+      </template>
+      Impossible de construire un chemin de pression sur ce réseau.
+    </q-banner>
+
+    <template v-else>
+      <div class="text-caption text-grey-4 q-mb-xs">
+        Profil le long du chemin : {{ pathCaption }}
+      </div>
+
+      <q-banner
+        v-if="!hasPressures"
+        dense
+        rounded
+        class="bg-blue-grey-10 text-blue-grey-2 q-mb-xs"
+      >
+        <template #avatar>
+          <q-icon name="info" color="blue-grey-4" />
+        </template>
+        Aucune pression simulée — le profil affichera les seuils de référence uniquement.
+      </q-banner>
+
+      <svg
+        class="pressure-svg"
+        viewBox="0 0 100 60"
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label="Profil de pression le long du réseau"
+      >
       <g class="grid-lines">
         <line
           v-for="(tick, index) in yTicks"
@@ -38,13 +63,14 @@
       />
 
       <polyline
-        v-if="profilePoints.length > 1"
+        v-if="hasPressures && profilePoints.length > 1"
         :points="profilePolyline"
         class="pressure-line"
       />
 
       <circle
         v-for="point in profilePoints"
+        v-show="hasPressures"
         :key="point.id"
         :cx="point.x"
         :cy="point.y"
@@ -77,7 +103,8 @@
       >
         {{ tick.value }}
       </text>
-    </svg>
+      </svg>
+    </template>
   </div>
 </template>
 
@@ -121,6 +148,12 @@ const pressuresAlongPath = computed(() =>
     id,
     pressure: simulateStore.result?.pressures[id],
   })),
+);
+
+const hasPressures = computed(() =>
+  pressuresAlongPath.value.some(
+    (entry) => entry.pressure != null && Number.isFinite(entry.pressure),
+  ),
 );
 
 const yDomain = computed(() => {
@@ -193,6 +226,7 @@ const yTicks = computed(() => {
 
 .pressure-svg {
   width: 100%;
+  min-height: 240px;
   display: block;
   background: rgba(11, 16, 22, 0.55);
   border: 1px solid var(--scada-border);

@@ -15,7 +15,9 @@ Synthetic fixtures (GeoJSON, CSV, mapping YAML, SCADA) are versioned under `corp
 
 ## Scientific validation
 
-The detailed scientific validation protocol is maintained in `docs/plans/implementation-plan.md` (Phase 2).
+The detailed scientific validation protocol and quantitative thresholds are in [`docs/science/validation.md`](../science/validation.md).
+
+The implementation plan (Phase 2) also references the protocol in `docs/plans/implementation-plan.md`.
 
 For the GasLib-11 reference comparison test (`test_gaslib_11_vs_reference_solution`), a versioned internal reference is provided in `docs/testing/references/GasLib-11.reference.internal.csv`.
 
@@ -40,7 +42,7 @@ From the project root:
 ./scripts/back-test.sh     # Rust backend tests
 ./scripts/front-test.sh    # Frontend tests
 ./scripts/ci.sh            # Full build + tests (+ verify_test_corpus.sh)
-./scripts/validation-pack.sh # Backend scientific protocol T1→T10
+./scripts/validation-pack.sh # Backend scientific protocol T1→T16
 ```
 
 ## Backend tests
@@ -73,7 +75,7 @@ Common alternative:
 npx vitest run
 ```
 
-Current baseline (2026-06-30): **~270** Rust lib tests, **64** frontend tests (`vitest`).
+Current baseline (2026-07): **~420+** Rust lib tests (recount via `cargo test --lib`); frontend: see vitest.
 
 Current frontend coverage includes:
 - `src/services/ws.spec.ts`, `apiContracts.spec.ts`, `gas-presets.spec.ts`
@@ -229,11 +231,25 @@ See also the transport `.cdf` routing variables in the [GasLib datasets](#gaslib
 
 ## Validation pack (backend)
 
-Single script to run T1→T10 in sequence:
+Single script to run T1→T16 in sequence:
 
 ```bash
 ./scripts/validation-pack.sh
 ```
+
+By default the pack sets `GAZFLOW_REQUIRE_GASLIB_DATA=1`: if GasLib data is missing from `back/dat/`, T6 and T11 fail instead of being silently skipped. Override with `GAZFLOW_REQUIRE_GASLIB_DATA=0` for a local run without datasets.
+
+| Pack ID | Filter / scope | Brief description |
+|---------|----------------|-------------------|
+| T1–T10 | (see `docs/science/validation.md`) | Steady-state protocol v1 (Darcy, 2-node, Y-net, GasLib-11, units, sensitivity) |
+| T11 | `mass_balance_gaslib` | Mass balance on GasLib-11/24/40 with honest NLP residual |
+| T12 | `linepack_capacitance` | Linepack ↔ capacitance consistency (dM/dP vs ρ ΣC) |
+| T13 | `test_pde_` | PDE mass balance at boundaries and after demand steps |
+| T14 | `eos_` | EOS H₂ continuity and Z clamps |
+| T15 | `segment_conductance` | Segment conductance (chord G) in transient FV |
+| T16 | `gravity` | Gravity term in transient / steady coupling |
+
+Quantitative thresholds for T2–T6 content IDs and T11–T16: [`docs/science/validation.md`](../science/validation.md).
 
 Useful options:
 - `GAZFLOW_REGEN_REFERENCE=1`: regenerate `GasLib-11.reference.internal.csv` before T9.

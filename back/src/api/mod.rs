@@ -1887,6 +1887,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_api_transient_pde_returns_boundary_flows() {
+        let app = test_router();
+        let payload = serde_json::json!({
+            "duration_s": 600.0,
+            "dt_s": 150.0,
+            "mode": "pde",
+            "n_cells_per_pipe": 8,
+            "initial_demands": {
+                "sink": -5.0
+            },
+            "events": []
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/simulate/transient")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("request");
+
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json: Value = serde_json::from_slice(&body).expect("json body");
+        let steps = json.get("steps").and_then(Value::as_array).expect("steps");
+        assert!(steps.len() >= 2);
+        let step = &steps[1];
+        assert!(
+            step.get("flows_in")
+                .and_then(Value::as_object)
+                .is_some_and(|m| !m.is_empty()),
+            "flows_in missing in PDE step"
+        );
+        assert!(
+            step.get("flows_out")
+                .and_then(Value::as_object)
+                .is_some_and(|m| !m.is_empty()),
+            "flows_out missing in PDE step"
+        );
+    }
+
+    #[tokio::test]
     async fn test_api_contingency_scope_all_returns_report() {
         let app = test_router();
         let payload = serde_json::json!({

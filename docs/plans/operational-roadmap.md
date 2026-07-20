@@ -12,14 +12,14 @@
 | **P8** Régulation | 🟨 **~92 %** | Cv MVP ; Jacobien analytique restant |
 | **P9** Profils demande | ✅ **~98 %** | Météo CSV, week-end, persistance, WS timeseries |
 | **P10** N-1 | ✅ **~100 %** | WS, export, overlay carte — code complet |
-| **P11** Transitoire | 🟨 **~55 %** | PDE 1D scaffold + mode API ; réseaux branchés → fallback |
+| **P11** Transitoire | 🟨 **~70–75 %** | FV conservatif mono-pipe/chaîne + UI TransientPlayer ; réseaux branchés → fallback |
 | **P12** Édition | 🟨 **~85 %** | Scénarios diffs, compare ΔP/ΔQ, export GeoJSON restant |
 | **P13** Calage SCADA | 🟨 **~90 %** | LM multi-param (≤5), demand scale ; GERG calage restant |
-| Corpus tests | ✅ | `docs/testing/corpus/` + CI ; **240** tests back, **64** front |
+| Corpus tests | ✅ | `docs/testing/corpus/` + CI ; **~420+** tests back lib, front : vitest |
 
 Plan complétion : `docs/plans/completion-plan.md`.
 
-**Note (juillet 2026)** : parcours NoVa Camille livré sur `main` (verdict, nomination, capacité, nomination réduite, N-1, rapport) — voir [plan interface NoVa](../temp/plan-interface-natran-nova.md) et [persona Camille](../personas/ingenieur-natran.md). P11 (transitoire) et P7 (physique) inchangés.
+**Note (juillet 2026)** : parcours NoVa Camille livré sur `main` (verdict, nomination, capacité, nomination réduite, N-1, rapport) — voir [plan interface NoVa](../temp/plan-interface-natran-nova.md) et [persona Camille](../personas/ingenieur-natran.md). **P11** : endurcissement scientifique juillet 2026 (schéma volumes finis conservatif, bilan masse `flows_in`/`flows_out`, UI TransientPlayer) — ~70–75 %. P7 (physique) inchangé.
 
 ## Contexte
 
@@ -48,7 +48,7 @@ Un exploitant gaz (type Natran) a besoin de simuler **son propre réseau** (pas 
 | **P8** | Organes de régulation | Détendeurs, régulateurs PID, postes de livraison | P6 | 🟨 ~92 % |
 | **P9** | Profils de demande | Courbes horaires, thermosensibilité, catégories clients | P6 | ✅ ~98 % |
 | **P10** | Analyse N-1 | Simulation automatique de contingences | P8, P9 | ✅ ~100 % |
-| **P11** | Simulation transitoire | Résolution PDE instationnaire (linepack, propagation) | P7, P8 | 🟨 ~55 % |
+| **P11** | Simulation transitoire | Résolution PDE instationnaire (linepack, propagation) | P7, P8 | 🟨 ~70–75 % |
 | **P12** | Édition topologique | Création/modification du réseau dans l'UI | P6 | 🟨 ~85 % |
 | **P13** | Calage SCADA | Comparaison mesures/simulation, calibration inverse | P6, P9 | 🟨 ~90 % |
 
@@ -433,19 +433,23 @@ Avec $P = \rho Z R T / M$ (équation d'état).
 
 ### Schéma numérique retenu
 
-**Méthode implicite aux différences finies** (Euler implicite en temps, centré en espace) :
-- Chaque pipe est discrétisé en $N_x$ segments (adaptatif selon $L/D$ et CFL).
-- Le système non-linéaire résultant est résolu par Newton (réutilisation de l'infrastructure sparse existante).
-- Pas de temps adaptatif basé sur le CFL et la vitesse de convergence.
+**Volumes finis conservatifs** (isotherme, 1D) sur maillage par conduite :
+
+- Chaque pipe est discrétisé en $N_x$ cellules (`n_cells_per_pipe`).
+- **Capacitance** $C = A L / (Z R T)$ par cellule : stockage de masse (linepack local).
+- **Conductance** $G$ **chordée** entre cellules adjacentes (résistance friction + gravité).
+- Intégration implicite en temps ; Newton sparse réutilise l'infrastructure existante.
+- Modes API : `quasi_steady` (séquence steady par pas) et `pde` (FV conservatif, mono-pipe / chaîne série).
+- Pas de temps fixe ou adaptatif (CFL) : optionnel, non livré en MVP.
 
 ### Tâches
 
 | # | Tâche | Fichiers | Status |
 |---|-------|----------|--------|
 | 11.1 | Maillage 1D par conduite (`n_cells_per_pipe`) | `solver/transient/mesh.rs` | ✅ MVP |
-| 11.2 | Système transitoire (Euler implicite tridiagonal par pipe) | `solver/transient/system.rs` | 🟡 MVP |
-| 11.3 | Conditions aux limites source/sink | `solver/transient/boundary.rs` | 🟡 MVP |
-| 11.4 | Intégration temporelle | `solver/transient/time_integration.rs` | 🟡 MVP |
+| 11.2 | Système transitoire FV conservatif (C, G chordée) | `solver/transient/system.rs` | ✅ |
+| 11.3 | Conditions aux limites source/sink + `flows_in`/`flows_out` | `solver/transient/boundary.rs` | 🟡 avancé |
+| 11.4 | Intégration temporelle (implicite, pas fixe) | `solver/transient/time_integration.rs` | 🟡 avancé |
 | 11.5 | Initialisation steady-state + modes `quasi_steady` / `pde` | `solver/transient/mod.rs` | ✅ |
 | 11.6 | Événements temporels (vanne, demande, consigne) | `solver/transient/events.rs` | ✅ |
 | 11.7 | Linepack agrégé $M = \sum \rho A L$ | `solver/transient/linepack.rs` | ✅ |
@@ -456,6 +460,8 @@ Avec $P = \rho Z R T / M$ (équation d'état).
 | 11.12 | Jauge linepack par zone | `components/LinepackGauge.vue` | ⬜ (linepack dans steps API) |
 
 ### Tests
+
+> **Note :** les IDs **feature P11** (T11-1…T11-8) ci-dessous sont des tests de la phase roadmap. Ils sont **distincts** des IDs **pack validation T11–T16** (`scripts/validation-pack.sh`, seuils dans `docs/science/validation.md`).
 
 | ID | Test | Description |
 |----|------|-------------|

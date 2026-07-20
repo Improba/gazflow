@@ -180,6 +180,7 @@ import {
 import { useContingencyStore } from 'src/stores/contingency';
 import { useEditorStore } from 'src/stores/editor';
 import { useNetworkStore } from 'src/stores/network';
+import { useNominationStore } from 'src/stores/nomination';
 import { useSimulateStore } from 'src/stores/simulate';
 import ScenarioContextBanner from 'src/components/ScenarioContextBanner.vue';
 import { formatApiError } from 'src/utils/importError';
@@ -188,6 +189,7 @@ const networkStore = useNetworkStore();
 const contingencyStore = useContingencyStore();
 const simulateStore = useSimulateStore();
 const editorStore = useEditorStore();
+const nominationStore = useNominationStore();
 const route = useRoute();
 
 const scope = ref<ContingencyScope>('all');
@@ -206,7 +208,8 @@ const launchDisabled = computed(
     networkStore.nodes.length === 0
     || contingencyStore.loading
     || editorStore.dirty
-    || editorStore.saving,
+    || editorStore.saving
+    || simulateStore.scenarioDirty,
 );
 
 const launchDisabledTooltip = computed(() => {
@@ -221,6 +224,9 @@ const launchDisabledTooltip = computed(() => {
   }
   if (editorStore.dirty) {
     return 'Modifications réseau non enregistrées — enregistrez ou annulez avant de lancer l\'analyse.';
+  }
+  if (simulateStore.scenarioDirty) {
+    return 'Nomination modifiée depuis la dernière validation — relancez la simulation avant l\'analyse N-1.';
   }
   return '';
 });
@@ -270,11 +276,19 @@ const sortedRows = computed(() => {
     });
 });
 
+function casesMatch(a: ContingencyCase, b: ContingencyCase): boolean {
+  return (
+    a.element_id === b.element_id
+    && a.element_type === b.element_type
+    && a.action === b.action
+  );
+}
+
 function rowClass(row: { is_red: boolean; raw: { case: ContingencyCase } }) {
   const base = row.is_red ? 'contingency-row--red' : 'contingency-row--green';
   const selected =
-    contingencyStore.selectedCase?.case.element_id === row.raw.case.element_id &&
-    contingencyStore.selectedCase?.case.action === row.raw.case.action;
+    contingencyStore.selectedCase != null
+    && casesMatch(contingencyStore.selectedCase.case, row.raw.case);
   return selected ? `${base} contingency-row--selected` : base;
 }
 
@@ -308,8 +322,12 @@ async function runAnalysis() {
 }
 
 function buildContingencyPayload(): ContingencyRequest {
-  if (nominationScenarioId.value) {
-    return { scope: scope.value, scenario_id: nominationScenarioId.value };
+  const scenarioId =
+    nominationScenarioId.value
+    ?? nominationStore.activeId
+    ?? simulateStore.activeScenarioId;
+  if (scenarioId) {
+    return { scope: scope.value, scenario_id: scenarioId };
   }
   return {
     scope: scope.value,
@@ -323,22 +341,42 @@ function maybeAutoRunAnalysis() {
     !nominationScenarioId.value ||
     networkStore.nodes.length === 0 ||
     editorStore.dirty ||
-    editorStore.saving
+    editorStore.saving ||
+    simulateStore.scenarioDirty
   ) {
     return;
   }
   void runAnalysis();
 }
 
+async function syncNominationFromQuery(): Promise<void> {
+  const id = nominationScenarioId.value;
+  if (!id) {
+    return;
+  }
+  if (networkStore.activeNetwork) {
+    try {
+      await nominationStore.load(networkStore.activeNetwork);
+    } catch {
+      // Le store notifie déjà ; on sélectionne quand même l'id pour aligner la barre de statut.
+    }
+  }
+  nominationStore.selectById(id);
+}
+
 onMounted(() => {
-  maybeAutoRunAnalysis();
+  void syncNominationFromQuery().then(() => {
+    maybeAutoRunAnalysis();
+  });
 });
 
 watch(
   () => nominationScenarioId.value,
   (nextId, prevId) => {
     if (nextId && nextId !== prevId) {
-      maybeAutoRunAnalysis();
+      void syncNominationFromQuery().then(() => {
+        maybeAutoRunAnalysis();
+      });
     }
   },
 );
@@ -353,10 +391,8 @@ watch(
 );
 
 function onRowClick(_evt: Event, row: { raw: { case: ContingencyCase } }) {
-  const selected = contingencyStore.results.find(
-    (result) =>
-      result.case.element_id === row.raw.case.element_id &&
-      result.case.action === row.raw.case.action,
+  const selected = contingencyStore.results.find((result) =>
+    casesMatch(result.case, row.raw.case),
   );
   contingencyStore.selectCase(selected ?? null);
 }

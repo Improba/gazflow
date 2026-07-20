@@ -29,7 +29,8 @@ impl TransientPipeState {
             pressures.push(0.5 * (pressure_from_bar + pressure_to_bar));
         } else {
             for i in 0..n {
-                let frac = i as f64 / (n - 1) as f64;
+                // Centres de cellule : le bord amont (P_source) n'est pas une cellule.
+                let frac = (i as f64 + 0.5) / n as f64;
                 pressures.push(pressure_from_bar + frac * (pressure_to_bar - pressure_from_bar));
             }
         }

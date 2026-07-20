@@ -61,7 +61,7 @@ if [[ -n "${NOMINATIONS_URLS[$REQUESTED]:-}" ]]; then
 fi
 
 # Crée des alias stables attendus par le backend (ex: GasLib-11.net, GasLib-11.scn).
-for ext in net scn cs svg; do
+for ext in net scn cs svg sol; do
     target=""
     dataset_code="${REQUESTED#GasLib-}"
     for candidate in "$DAT_DIR/${REQUESTED}-v1-"*."$ext"; do

@@ -2928,3 +2928,29 @@ pub(crate) fn pressure_nlp_eval(
 
     Ok(PressureNlpEval { g, jac_val, residual_inf })
 }
+
+/// Recalcule le résidu de bilan massique (max |g_i| aux nœuds libres) à partir des
+/// pressions résolues, indépendamment du résidu Newton mémorisé dans [`SolverResult`].
+#[cfg(test)]
+pub(crate) fn recompute_mass_balance_residual(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    result: &crate::solver::steady_state::SolverResult,
+    gas_composition: GasComposition,
+) -> Result<f64> {
+    let structure = pressure_nlp_structure(network, demands, gas_composition)?;
+    let x_free: Vec<f64> = structure
+        .free_node_ids
+        .iter()
+        .map(|id| {
+            result
+                .pressures
+                .get(id)
+                .copied()
+                .unwrap_or(70.0)
+                .powi(2)
+        })
+        .collect();
+    let eval = pressure_nlp_eval(network, demands, gas_composition, &x_free)?;
+    Ok(eval.residual_inf)
+}

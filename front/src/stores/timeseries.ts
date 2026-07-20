@@ -32,6 +32,8 @@ export const useTimeseriesStore = defineStore('timeseries', () => {
   let wsClient: SimulationWsClient | null = null;
   let wsResolve: ((result: TimeseriesResultDto) => void) | null = null;
   let wsReject: ((err: Error) => void) | null = null;
+  /** Invalide les réponses REST / WS orphelines après reset (changement de réseau). */
+  let runEpoch = 0;
 
   const selectedStep = computed(
     () => steps.value[selectedStepIndex.value] ?? null,
@@ -42,6 +44,16 @@ export const useTimeseriesStore = defineStore('timeseries', () => {
   const hasResult = computed(() => steps.value.length > 0);
 
   function reset() {
+    runEpoch += 1;
+    if (wsClient && currentRunId.value && loading.value) {
+      wsClient.cancelSimulation(currentRunId.value);
+    }
+    if (wsReject) {
+      const reject = wsReject;
+      wsResolve = null;
+      wsReject = null;
+      reject(new Error('série temporelle réinitialisée'));
+    }
     steps.value = [];
     failedHours.value = [];
     totalIterations.value = 0;
@@ -49,6 +61,7 @@ export const useTimeseriesStore = defineStore('timeseries', () => {
     status.value = 'idle';
     errorMessage.value = null;
     currentRunId.value = null;
+    loading.value = false;
   }
 
   function applyResult(result: TimeseriesResultDto) {
@@ -159,11 +172,18 @@ export const useTimeseriesStore = defineStore('timeseries', () => {
     max_iter?: number;
     tolerance?: number;
   }): Promise<TimeseriesResultDto> {
+    const epoch = runEpoch;
     try {
       const result = await api.simulateTimeseries(payload);
+      if (epoch !== runEpoch) {
+        throw new Error('série temporelle réinitialisée');
+      }
       applyResult(result);
       return result;
     } catch (err) {
+      if (epoch !== runEpoch) {
+        throw err instanceof Error ? err : new Error('série temporelle réinitialisée');
+      }
       status.value = 'error';
       errorMessage.value = formatApiError(err);
       loading.value = false;
@@ -178,7 +198,20 @@ export const useTimeseriesStore = defineStore('timeseries', () => {
     max_iter?: number;
     tolerance?: number;
   }): Promise<TimeseriesResultDto> {
-    await ensureWs();
+    const epoch = runEpoch;
+    try {
+      await ensureWs();
+    } catch (err) {
+      if (epoch === runEpoch) {
+        status.value = 'error';
+        errorMessage.value = formatApiError(err);
+        loading.value = false;
+      }
+      throw err instanceof Error ? err : new Error(formatApiError(err));
+    }
+    if (epoch !== runEpoch) {
+      throw new Error('série temporelle réinitialisée');
+    }
     const networkStore = useNetworkStore();
     currentRunId.value = `ts-${Date.now()}`;
     const options: WsTimeseriesOptions = {
@@ -188,6 +221,10 @@ export const useTimeseriesStore = defineStore('timeseries', () => {
       gas_composition: { ...networkStore.gas.composition },
     };
     return new Promise<TimeseriesResultDto>((resolve, reject) => {
+      if (epoch !== runEpoch) {
+        reject(new Error('série temporelle réinitialisée'));
+        return;
+      }
       wsResolve = resolve;
       wsReject = reject;
       wsClient!.startTimeseriesSimulation({

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 use crate::graph::{ConnectionKind, GasNetwork, Pipe};
+use crate::solver::gas_properties::{DEFAULT_GAS_TEMPERATURE_K, GasComposition};
 
 /// $g$ pour le seuil gravitaire actif/bypass [m/s²].
 const REGULATOR_GRAVITY_M_S2: f64 = 9.80665;
@@ -88,8 +89,17 @@ pub(crate) fn has_regulator_edges(network: &GasNetwork) -> bool {
     !collect_regulator_edges(network).is_empty()
 }
 
-/// Densité de référence pour le seuil gravitaire actif/bypass [kg/m³].
+/// Densité de référence legacy pour tests / documentation [kg/m³].
+#[cfg(test)]
 pub(crate) const REGULATOR_THRESHOLD_RHO_KG_M3: f64 = 50.0;
+
+/// Densité au seuil gravitaire : $\rho(P_{\text{consigne}}, T_{\text{défaut}})$.
+pub(crate) fn regulator_threshold_density_kg_per_m3(
+    composition: &GasComposition,
+    setpoint_bar: f64,
+) -> f64 {
+    composition.density_kg_per_m3(setpoint_bar.max(0.1), DEFAULT_GAS_TEMPERATURE_K)
+}
 
 fn node_height_m(network: &GasNetwork, id: &str) -> f64 {
     network
@@ -172,27 +182,30 @@ pub(crate) fn modes_from_bypass_reference(
     network: &GasNetwork,
     reference_pressures_bar: &HashMap<String, f64>,
     previous: Option<&HashMap<String, RegulatorMode>>,
+    composition: &GasComposition,
 ) -> HashMap<String, RegulatorMode> {
     let empty = HashMap::new();
     let prev = previous.unwrap_or(&empty);
-    update_regulator_modes(network, reference_pressures_bar, prev)
+    update_regulator_modes(network, reference_pressures_bar, prev, composition)
 }
 
 pub(crate) fn update_regulator_modes(
     network: &GasNetwork,
     pressures_bar: &HashMap<String, f64>,
     previous: &HashMap<String, RegulatorMode>,
+    composition: &GasComposition,
 ) -> HashMap<String, RegulatorMode> {
     let mut modes = HashMap::new();
     for reg in collect_regulator_edges(network) {
         let h_from = node_height_m(network, &reg.from_id);
         let h_to = node_height_m(network, &reg.to_id);
+        let rho = regulator_threshold_density_kg_per_m3(composition, reg.setpoint_bar);
         let p_required = required_upstream_pressure_bar(
             reg.setpoint_bar,
             reg.delta_p_min_bar,
             h_from,
             h_to,
-            REGULATOR_THRESHOLD_RHO_KG_M3,
+            rho,
         );
         let p_up = pressures_bar
             .get(&reg.from_id)
@@ -268,6 +281,7 @@ pub(crate) fn regulator_consistency_warnings(
     modes: &HashMap<String, RegulatorMode>,
     bypass_pressures_bar: &HashMap<String, f64>,
     final_pressures_bar: &HashMap<String, f64>,
+    composition: &GasComposition,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
     for reg in collect_regulator_edges(network) {
@@ -280,12 +294,13 @@ pub(crate) fn regulator_consistency_warnings(
             .unwrap_or(f64::NAN);
         let h_from = node_height_m(network, &reg.from_id);
         let h_to = node_height_m(network, &reg.to_id);
+        let rho = regulator_threshold_density_kg_per_m3(composition, reg.setpoint_bar);
         let on_threshold = required_upstream_pressure_bar(
             reg.setpoint_bar,
             reg.delta_p_min_bar,
             h_from,
             h_to,
-            REGULATOR_THRESHOLD_RHO_KG_M3,
+            rho,
         );
         match mode {
             RegulatorMode::Active => {
@@ -310,8 +325,7 @@ pub(crate) fn regulator_consistency_warnings(
                     final_pressures_bar.get(&reg.to_id),
                 ) {
                     let hydro_bar =
-                        REGULATOR_THRESHOLD_RHO_KG_M3 * REGULATOR_GRAVITY_M_S2 * (h_to - h_from)
-                            / 1e5;
+                        rho * REGULATOR_GRAVITY_M_S2 * (h_to - h_from) / 1e5;
                     // Liaison quasi sans perte : écart nodal attendu ≈ |ρgΔz| + marge friction.
                     let expected_drop = hydro_bar.abs() + reg.delta_p_min_bar + 0.25;
                     let drop = (p_up - p_down).abs();
@@ -426,8 +440,8 @@ mod tests {
 
     #[test]
     fn test_regulator_gravity_uphill_raises_required_upstream() {
-        // Δz = 200 m → ρgΔz ≈ 50·9.81·200/1e5 ≈ 0.98 bar
-        let flat = required_upstream_pressure_bar(20.0, 0.5, 0.0, 0.0, 50.0);
+        // Δz = 200 m → ρgΔz avec ρ=50 kg/m³ ≈ 0.98 bar (legacy doc value)
+        let flat = required_upstream_pressure_bar(20.0, 0.5, 0.0, 0.0, REGULATOR_THRESHOLD_RHO_KG_M3);
         let uphill = required_upstream_pressure_bar(20.0, 0.5, 0.0, 200.0, 50.0);
         assert!(uphill > flat + 0.9);
         // P_amont = 21 bar : actif à plat, bypass en montée (seuil ~21.5)
@@ -484,5 +498,98 @@ mod tests {
     fn test_delivery_min_is_not_regulator_setpoint() {
         let spec = EquipmentSpec::delivery_station(4.5, 4.0, 0.3);
         assert_eq!(spec.effective_setpoint_bar(), Some(4.5));
+    }
+
+    fn regulator_network_with_elevation(setpoint: f64, height_to_m: f64) -> GasNetwork {
+        let mut net = GasNetwork::new();
+        for (id, p_fix, height_m) in [
+            ("HP", Some(70.0), 0.0),
+            ("MP", None, 0.0),
+            ("SK", None, height_to_m),
+        ] {
+            net.add_node(Node {
+                id: id.into(),
+                x: 0.0,
+                y: 0.0,
+                lon: None,
+                lat: None,
+                height_m,
+                pressure_lower_bar: None,
+                pressure_upper_bar: None,
+                pressure_fixed_bar: p_fix,
+                flow_min_m3s: None,
+                flow_max_m3s: None,
+            });
+        }
+        net.add_pipe(Pipe {
+            id: "P_HP".into(),
+            from: "HP".into(),
+            to: "MP".into(),
+            kind: ConnectionKind::Pipe,
+            is_open: true,
+            length_km: 20.0,
+            diameter_mm: 700.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::default(),
+        });
+        net.add_pipe(Pipe {
+            id: "REG".into(),
+            from: "MP".into(),
+            to: "SK".into(),
+            kind: ConnectionKind::PressureRegulator,
+            is_open: true,
+            length_km: 0.01,
+            diameter_mm: 800.0,
+            roughness_mm: 0.012,
+            compressor_ratio_max: None,
+            flow_min_m3s: None,
+            flow_max_m3s: None,
+            equipment: EquipmentSpec::pressure_regulator(setpoint, 0.5),
+        });
+        net
+    }
+
+    #[test]
+    fn test_regulator_h2_rich_lower_hydro_threshold_than_ch4() {
+        let setpoint = 20.0;
+        let delta_p = 0.5;
+        let delta_z_m = 500.0;
+        let ch4 = GasComposition::pure_ch4();
+        let h2_rich = GasComposition {
+            h2: 0.4,
+            ..GasComposition::pure_ch4()
+        }
+        .normalize();
+        let rho_ch4 = regulator_threshold_density_kg_per_m3(&ch4, setpoint);
+        let rho_h2 = regulator_threshold_density_kg_per_m3(&h2_rich, setpoint);
+        assert!(rho_h2 < rho_ch4);
+        let required_ch4 = required_upstream_pressure_bar(
+            setpoint,
+            delta_p,
+            0.0,
+            delta_z_m,
+            rho_ch4,
+        );
+        let required_h2 = required_upstream_pressure_bar(
+            setpoint,
+            delta_p,
+            0.0,
+            delta_z_m,
+            rho_h2,
+        );
+        assert!(required_h2 < required_ch4);
+        let gap = required_ch4 - required_h2;
+        assert!(gap > 0.1, "need hydro gap between compositions, got {gap}");
+        let p_up = required_h2 + gap * 0.5;
+        let net = regulator_network_with_elevation(setpoint, delta_z_m);
+        let mut pressures = HashMap::new();
+        pressures.insert("MP".into(), p_up);
+        let modes_ch4 = update_regulator_modes(&net, &pressures, &HashMap::new(), &ch4);
+        let modes_h2 = update_regulator_modes(&net, &pressures, &HashMap::new(), &h2_rich);
+        assert_eq!(modes_ch4.get("REG"), Some(&RegulatorMode::Bypass));
+        assert_eq!(modes_h2.get("REG"), Some(&RegulatorMode::Active));
     }
 }

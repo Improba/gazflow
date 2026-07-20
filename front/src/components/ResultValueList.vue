@@ -64,6 +64,9 @@ const filteredItems = computed(() => {
 });
 
 function formatValue(value: number): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 'n/d';
+  }
   return value.toFixed(props.decimals);
 }
 </script>

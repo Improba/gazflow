@@ -24,7 +24,9 @@ impl PipeMesh {
     pub fn from_pipe(pipe: &Pipe, n_cells: Option<usize>) -> Self {
         let length_m = (pipe.length_km * 1e3).max(1.0);
         let diameter_m = (pipe.diameter_mm * 1e-3).max(1e-6);
-        let n_cells = n_cells.unwrap_or_else(|| default_n_cells(pipe.length_km));
+        let n_cells = n_cells
+            .unwrap_or_else(|| default_n_cells(pipe.length_km))
+            .max(MIN_CELLS);
         let dx = length_m / n_cells as f64;
         let area_m2 = std::f64::consts::PI * diameter_m * diameter_m / 4.0;
         Self {
@@ -62,6 +64,12 @@ mod tests {
             flow_max_m3s: None,
             equipment: EquipmentSpec::default(),
         }
+    }
+
+    #[test]
+    fn from_pipe_clamps_zero_cells_to_minimum() {
+        let mesh = PipeMesh::from_pipe(&sample_pipe(), Some(0));
+        assert!(mesh.n_cells >= MIN_CELLS);
     }
 
     #[test]

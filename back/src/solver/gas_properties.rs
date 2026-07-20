@@ -670,4 +670,99 @@ mod tests {
         assert!((back.ch4 - comp.ch4).abs() < 1e-12);
         assert!((back.h2 - comp.h2).abs() < 1e-12);
     }
+
+    fn composition_with_h2(h2: f64) -> GasComposition {
+        GasComposition {
+            ch4: 1.0 - h2,
+            h2,
+            ..GasComposition::pure_ch4()
+        }
+        .normalize()
+    }
+
+    /// T5 (validation.md) : continuité ρ(H₂) au seuil 20 % (saut EOS Papay→PR-78 documenté si > 5 %).
+    #[test]
+    fn test_eos_h2_continuity_at_20_percent_threshold() {
+        // Continuité intra-régime (même EOS) : saut local << 1 %.
+        for p_bar in [70.0, 30.0] {
+            let rho_a = composition_with_h2(0.195).density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
+            let rho_b = composition_with_h2(0.198).density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
+            let jump_papay = (rho_b - rho_a).abs() / rho_a.max(1e-6);
+            assert!(
+                jump_papay < 0.01,
+                "Papay intra-regime P={p_bar}: jump={jump_papay:.4} (attendu < 1 % sur ΔH₂=0,3 pt)"
+            );
+
+            let rho_c = composition_with_h2(0.205).density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
+            let rho_d = composition_with_h2(0.210).density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
+            let jump_pr = (rho_d - rho_c).abs() / rho_c.max(1e-6);
+            assert!(
+                jump_pr < 0.015,
+                "PR-78 intra-regime P={p_bar}: jump={jump_pr:.4} (attendu < 1,5 % sur ΔH₂=0,5 pt)"
+            );
+        }
+
+        // Switch Papay → PR-78 à H₂ > 20 % : le saut doit être mesurable et borné.
+        // Mesure de référence (juillet 2026) : ~4,7 % à 70 bar, ~1,7 % à 30 bar.
+        for p_bar in [70.0, 30.0] {
+            let lo = composition_with_h2(0.199);
+            let hi = composition_with_h2(0.201);
+            assert!(
+                lo.physics_warnings().is_empty(),
+                "H₂=19.9 % ne doit pas déclencher l'avertissement PR-78"
+            );
+            assert!(
+                !hi.physics_warnings().is_empty(),
+                "H₂=20.1 % doit déclencher l'avertissement PR-78"
+            );
+
+            let rho_lo = lo.density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
+            let rho_hi = hi.density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
+            let rho_mid = composition_with_h2(0.200)
+                .density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
+            let jump = (rho_hi - rho_lo).abs() / rho_mid.max(1e-6);
+            eprintln!(
+                "H₂ threshold P={p_bar} bar: ρ(19.9%)={rho_lo:.4}, ρ(20.0%)={rho_mid:.4}, ρ(20.1%)={rho_hi:.4}, jump={jump:.4}"
+            );
+            assert!(
+                jump > 0.005,
+                "P={p_bar}: le switch EOS doit produire un saut de densité détectable ≥ 0,5 % (got {jump})"
+            );
+            assert!(
+                jump < 0.15,
+                "P={p_bar}: saut EOS H₂={jump:.4} hors borne documentée 15 % (limitations.md §3.2)"
+            );
+        }
+    }
+
+    /// T5b : facteur Z Papay+Kay borné dans [0.2, 1.5] sur grille P×H₂.
+    #[test]
+    fn test_eos_z_clamp_on_pressure_h2_grid() {
+        for p_bar in [1.0, 10.0, 30.0, 70.0, 100.0] {
+            for h2_pct in [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30] {
+                let comp = composition_with_h2(h2_pct);
+                let z = comp.compressibility_papay(p_bar, DEFAULT_GAS_TEMPERATURE_K);
+                assert!(
+                    (0.2..=1.5).contains(&z),
+                    "Z out of clamp [0.2, 1.5] at P={p_bar} bar, H₂={h2_pct}: Z={z}"
+                );
+            }
+        }
+    }
+
+    /// T5c : monotonie ρ(P) pour CH₄ pur.
+    #[test]
+    fn test_eos_ch4_density_monotone_in_pressure() {
+        let comp = GasComposition::pure_ch4();
+        let pressures = [1.0, 10.0, 30.0, 50.0, 70.0, 100.0];
+        let mut prev_rho = 0.0;
+        for &p in &pressures {
+            let rho = comp.density_kg_per_m3(p, DEFAULT_GAS_TEMPERATURE_K);
+            assert!(
+                rho > prev_rho,
+                "CH₄ density must increase with pressure: P={p} bar, ρ={rho}, prev={prev_rho}"
+            );
+            prev_rho = rho;
+        }
+    }
 }

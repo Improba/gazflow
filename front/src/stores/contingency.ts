@@ -32,6 +32,8 @@ export const useContingencyStore = defineStore('contingency', () => {
   let wsClient: SimulationWsClient | null = null;
   let wsResolve: ((value: ContingencyReport) => void) | null = null;
   let wsReject: ((error: Error) => void) | null = null;
+  /** Invalide les réponses REST / WS orphelines après reset (changement de réseau). */
+  let runEpoch = 0;
 
   const results = computed<ContingencyResult[]>(() => {
     if (report.value) return report.value.results;
@@ -131,6 +133,16 @@ export const useContingencyStore = defineStore('contingency', () => {
   }
 
   function reset() {
+    runEpoch += 1;
+    if (wsClient && currentRunId.value && loading.value) {
+      wsClient.cancelSimulation(currentRunId.value);
+    }
+    if (wsReject) {
+      const reject = wsReject;
+      wsResolve = null;
+      wsReject = null;
+      reject(new Error('analyse de contingence réinitialisée'));
+    }
     report.value = null;
     streamedResults.value = [];
     loading.value = false;
@@ -177,11 +189,18 @@ export const useContingencyStore = defineStore('contingency', () => {
   }
 
   async function runContingencyRest(payload: ContingencyRequest): Promise<ContingencyReport> {
+    const epoch = runEpoch;
     try {
       const nextReport = await api.runContingency(payload);
+      if (epoch !== runEpoch) {
+        throw new Error('analyse de contingence réinitialisée');
+      }
       applyReport(nextReport);
       return nextReport;
     } catch (err) {
+      if (epoch !== runEpoch) {
+        throw err instanceof Error ? err : new Error('analyse de contingence réinitialisée');
+      }
       status.value = 'error';
       errorMessage.value = formatApiError(err);
       loading.value = false;
@@ -190,9 +209,26 @@ export const useContingencyStore = defineStore('contingency', () => {
   }
 
   async function runContingencyWs(payload: ContingencyRequest): Promise<ContingencyReport> {
-    await ensureWs();
+    const epoch = runEpoch;
+    try {
+      await ensureWs();
+    } catch (err) {
+      if (epoch === runEpoch) {
+        status.value = 'error';
+        errorMessage.value = formatApiError(err);
+        loading.value = false;
+      }
+      throw err instanceof Error ? err : new Error(formatApiError(err));
+    }
+    if (epoch !== runEpoch) {
+      throw new Error('analyse de contingence réinitialisée');
+    }
     currentRunId.value = `ct-${Date.now()}`;
     return new Promise<ContingencyReport>((resolve, reject) => {
+      if (epoch !== runEpoch) {
+        reject(new Error('analyse de contingence réinitialisée'));
+        return;
+      }
       wsResolve = resolve;
       wsReject = reject;
       wsClient!.startContingencySimulation({

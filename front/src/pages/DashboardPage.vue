@@ -112,13 +112,24 @@
           </q-card-section>
           <q-separator dark />
           <q-card-section class="q-pa-none">
-            <q-list separator dark>
+            <q-banner
+              v-if="recentNetworks.length === 0"
+              dense
+              class="bg-transparent text-grey-5 q-ma-md"
+            >
+              <template #avatar>
+                <q-icon name="history" color="grey-6" />
+              </template>
+              Aucun réseau récent. Importez un jeu ou lancez la démo.
+            </q-banner>
+            <q-list v-else separator dark>
               <q-item
                 v-for="network in recentNetworks"
                 :key="network"
                 clickable
                 v-ripple
                 :disable="networkStore.switching"
+                :aria-label="`Ouvrir le réseau ${network}`"
                 @click="openNetwork(network)"
               >
                 <q-item-section avatar>
@@ -134,6 +145,7 @@
                     round
                     icon="close"
                     color="grey-5"
+                    :aria-label="`Retirer ${network} des récents`"
                     @click.stop="removeRecentNetwork(network)"
                   />
                 </q-item-section>
@@ -208,9 +220,11 @@ import {
 } from 'src/composables/useOperationalKpis';
 import { useAlertCenter, type AlertTone } from 'src/composables/useAlertCenter';
 import { useRecentNetworks } from 'src/composables/useRecentNetworks';
+import { useContingencyStore } from 'src/stores/contingency';
 import { useDemo } from 'src/composables/useDemo';
 import { useNetworkStore } from 'src/stores/network';
 import { useSimulateStore } from 'src/stores/simulate';
+import { resetStudyState } from 'src/utils/resetStudyState';
 
 const router = useRouter();
 const networkStore = useNetworkStore();
@@ -330,9 +344,36 @@ const minPressureNodeLabel = computed(() => {
   return nodeId ? `Nœud ${nodeId}` : 'Nœud non disponible';
 });
 
-const minPressureTone = computed(() =>
-  minPressureBar.value === null ? 'grey-5' : toneToQuasarColor('neutral'),
-);
+/** Seuils par défaut (transport). Si des marges NoVa existent, on s'aligne sur la borne la plus basse. */
+const MIN_PRESSURE_DANGER_BAR = 45;
+const MIN_PRESSURE_WARN_BAR = 50;
+
+const pressureToneThresholds = computed(() => {
+  const margins = simulateStore.pressureMargins;
+  const contractMins = margins
+    .map((m) => m.lower_bar)
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0);
+  if (contractMins.length === 0) {
+    return { danger: MIN_PRESSURE_DANGER_BAR, warn: MIN_PRESSURE_WARN_BAR };
+  }
+  const danger = Math.min(...contractMins);
+  return { danger, warn: danger * 1.1 };
+});
+
+const minPressureTone = computed(() => {
+  const value = minPressureBar.value;
+  if (value === null) {
+    return 'grey-5';
+  }
+  const { danger, warn } = pressureToneThresholds.value;
+  if (value < danger) {
+    return toneToQuasarColor('danger');
+  }
+  if (value < warn) {
+    return toneToQuasarColor('warning');
+  }
+  return toneToQuasarColor('success');
+});
 
 const capacityMarginDisplay = computed(() => {
   const value = capacityMarginPercent.value;
@@ -382,6 +423,7 @@ async function openNetwork(networkId: string): Promise<void> {
   addRecentNetwork(networkId);
   try {
     await networkStore.selectNetwork(networkId);
+    resetStudyState();
     void router.push({ name: 'map' });
   } catch {
     // Erreur de chargement propagée au store (networkStore.error) ; on reste sur le dashboard.

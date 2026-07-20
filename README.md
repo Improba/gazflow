@@ -56,7 +56,7 @@ The tool computes hydraulic operating points (nodal pressures, pipe flows in Nm�
 - **N-1 security analysis** with parallel contingency runs, map overlay, Excel/CSV export
 - **Calibrate** roughness (and limited demand scale) against SCADA pressure/flow measurements
 - Save **topological variants** as scenarios and **compare** ΔP/ΔQ between variants
-- Explore **transient** response (linepack tracking; PDE mode on single pipe / series chains)
+- Explore **transient** response on simple topologies: **quasi-steady** or **1D PDE** modes (`POST /api/simulate/transient`), **linepack** tracking, boundary mass balance via `flows_in` / `flows_out` (Qin/Qout per step), and the **TransientPlayer** UI (`/transient`)
 - Document results via export history (`/exports` page)
 
 ### What the tool is not
@@ -115,6 +115,7 @@ That’s it. Rust and Node toolchains live inside the containers.
 | `./scripts/front-test.sh`   | Runs `npm test` in the container                   |
 | `./scripts/ci.sh`           | Full CI (build + back & front tests)               |
 | `./scripts/fetch_gaslib.sh` | Downloads GasLib data                              |
+| `./scripts/validation-pack.sh` | Backend scientific protocol T1→T16 (see `docs/science/validation.md`) |
 
 
 ## Adding a dependency
@@ -136,12 +137,13 @@ The `Cargo.toml` and `package.json` files are on the shared volume: changes are 
 ## Tests
 
 ```bash
-./scripts/back-test.sh     # Rust tests (~270 lib tests)
-./scripts/front-test.sh    # Frontend tests (116 tests)
+./scripts/back-test.sh     # Rust tests (~420+ lib tests; recount via cargo)
+./scripts/front-test.sh    # Frontend tests (see vitest)
 ./scripts/ci.sh            # Full CI (+ corpus verification step)
+./scripts/validation-pack.sh  # Scientific protocol T1→T16
 ```
 
-Current baseline (2026-07-10): `cargo test --lib` ~270 tests, `npm test` 116/116.
+Current baseline (2026-07): `cargo test --lib` ~420+ lib tests (recount via `cargo test --lib -- --list`); frontend: see vitest. Scientific thresholds and pack mapping: [validation](docs/science/validation.md). Execution details: [Testing](docs/testing/README.md).
 
 Large transport networks (GasLib-582, GasLib-4197): optional smoke tests and env knobs are documented in [Testing](docs/testing/README.md). Model limits (compressor MVP, `.cdf` routing, convergence) are in [Limitations](docs/science/limitations.md).
 
@@ -165,6 +167,7 @@ See [LICENSING.md](LICENSING.md) and [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.
 - [Physical equations](docs/science/equations.md)
 - [Model limitations](docs/science/limitations.md)
 - [Testing & validation](docs/testing/README.md)
+- [Scientific validation protocol](docs/science/validation.md)
 - [GasLib-582 compressor bench (Phase I)](docs/testing/gaslib-582-compressor-bench.md)
 - [Operational roadmap P6–P13](docs/plans/operational-roadmap.md)
 - [Completion plan](docs/plans/completion-plan.md)
