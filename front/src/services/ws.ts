@@ -93,6 +93,8 @@ type WsClientMessage =
       n_cells_per_pipe?: number;
       adaptive_dt?: boolean;
       gas_composition?: GasCompositionDto;
+      initial_pressures?: Record<string, number>;
+      picard_relax?: number;
     };
 
 export type WsServerMessage =
@@ -316,6 +318,8 @@ export class SimulationWsClient {
     nCellsPerPipe?: number;
     adaptiveDt?: boolean;
     gasComposition?: GasCompositionDto;
+    initialPressures?: Record<string, number>;
+    picardRelax?: number;
   }): void {
     this.send({
       type: 'start_transient_simulation',
@@ -328,6 +332,8 @@ export class SimulationWsClient {
       n_cells_per_pipe: payload.nCellsPerPipe,
       adaptive_dt: payload.adaptiveDt,
       gas_composition: payload.gasComposition,
+      initial_pressures: payload.initialPressures,
+      picard_relax: payload.picardRelax,
     });
   }
 

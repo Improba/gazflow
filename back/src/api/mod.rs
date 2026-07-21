@@ -466,6 +466,22 @@ struct TransientRequest {
     n_cells_per_pipe: Option<usize>,
     #[serde(default)]
     adaptive_dt: bool,
+    #[serde(default)]
+    initial_pressures: Option<HashMap<String, f64>>,
+    #[serde(default)]
+    picard_relax: Option<f64>,
+}
+
+/// Valide le facteur de relaxation Picard optionnel pour le transitoire PDE.
+pub(super) fn validate_picard_relax(picard_relax: Option<f64>) -> Result<(), String> {
+    if let Some(w) = picard_relax {
+        if !(w > 0.0 && w <= 1.0) {
+            return Err(format!(
+                "picard_relax must be in (0.0, 1.0], got {w}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1094,6 +1110,13 @@ async fn run_transient_simulation(
     State(state): State<SharedState>,
     Json(payload): Json<TransientRequest>,
 ) -> ApiResult<TransientResponse> {
+    validate_picard_relax(payload.picard_relax).map_err(|error| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError { error }),
+        )
+    })?;
+
     let demands = payload
         .initial_demands
         .unwrap_or_else(|| (*active_default_demands(&state)).clone());
@@ -1108,8 +1131,10 @@ async fn run_transient_simulation(
             .unwrap_or_else(|| active_gas_composition(&state)),
         n_cells_per_pipe: payload.n_cells_per_pipe,
         adaptive_dt: payload.adaptive_dt,
+        picard_relax: payload.picard_relax,
     };
     let mode = solver::TransientMode::from(payload.mode);
+    let initial_pressures = payload.initial_pressures;
 
     let permit = state
         .simulation_slots
@@ -1135,6 +1160,8 @@ async fn run_transient_simulation(
                 &events,
                 &config,
                 mode,
+                initial_pressures.as_ref(),
+                None,
             )
         })
     })

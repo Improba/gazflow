@@ -71,6 +71,10 @@ enum ClientMessage {
         adaptive_dt: bool,
         #[serde(default)]
         gas_composition: Option<solver::GasComposition>,
+        #[serde(default)]
+        initial_pressures: Option<HashMap<String, f64>>,
+        #[serde(default)]
+        picard_relax: Option<f64>,
     },
     CancelSimulation {
         run_id: Option<String>,
@@ -652,7 +656,23 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                 n_cells_per_pipe,
                                 adaptive_dt,
                                 gas_composition,
+                                initial_pressures,
+                                picard_relax,
                             }) => {
+                                if let Err(error) = super::validate_picard_relax(picard_relax) {
+                                    let run_id_for_error =
+                                        run_id.clone().unwrap_or_else(|| "active-run".to_string());
+                                    let _ = tx
+                                        .send(ServerMessage::Error {
+                                            run_id: run_id_for_error,
+                                            seq: 0,
+                                            message: error,
+                                            fatal: false,
+                                        })
+                                        .await;
+                                    continue;
+                                }
+
                                 if active_run_id.is_some() {
                                     let run_id_for_error =
                                         run_id.unwrap_or_else(|| "active-run".to_string());
@@ -742,6 +762,8 @@ async fn ws_session(socket: WebSocket, state: super::SharedState) {
                                         n_cells_per_pipe,
                                         adaptive_dt,
                                         gas_composition: gas,
+                                        initial_pressures,
+                                        picard_relax,
                                         run_id,
                                         cancel_flag: run_cancel,
                                         cancel_reason: run_cancel_reason,
@@ -1322,6 +1344,8 @@ struct TransientStreamContext {
     n_cells_per_pipe: Option<usize>,
     adaptive_dt: bool,
     gas_composition: solver::GasComposition,
+    initial_pressures: Option<HashMap<String, f64>>,
+    picard_relax: Option<f64>,
     run_id: String,
     cancel_flag: Arc<AtomicBool>,
     cancel_reason: Arc<AtomicU8>,
@@ -1340,6 +1364,8 @@ fn run_transient_stream(ctx: TransientStreamContext) {
         n_cells_per_pipe,
         adaptive_dt,
         gas_composition,
+        initial_pressures,
+        picard_relax,
         run_id,
         cancel_flag,
         cancel_reason,
@@ -1353,6 +1379,7 @@ fn run_transient_stream(ctx: TransientStreamContext) {
         gas_composition,
         n_cells_per_pipe,
         adaptive_dt,
+        picard_relax,
     };
 
     let progress_cb = |step: &solver::TransientStepResult| -> solver::TransientControl {
@@ -1375,6 +1402,8 @@ fn run_transient_stream(ctx: TransientStreamContext) {
             &events,
             &config,
             mode,
+            initial_pressures.as_ref(),
+            None,
             Some(&progress_cb),
         )
     });

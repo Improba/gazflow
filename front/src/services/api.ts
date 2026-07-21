@@ -510,6 +510,8 @@ export interface TransientRequest {
   mode?: TransientMode;
   n_cells_per_pipe?: number;
   adaptive_dt?: boolean;
+  initial_pressures?: Record<string, number>;
+  picard_relax?: number;
 }
 
 export interface ScenarioSummary {

@@ -34,7 +34,7 @@ Fastest way to run a GazFlow simulation locally.
 ## 5) Optional — transient simulation
 
 1. Open **Transitoire** (`/transient`) from the task menu.
-2. Choose **PDE** mode on a single pipe or series chain (GasLib-11 minimal line works).
+2. Choose **PDE** mode (trees/cycles supported; GasLib-11 works). Prefer `dt_s ≈ 60` with **adaptive dt** for multi-hour runs.
 3. Set duration and time step, then run. Use the player to inspect pressures, flows, and `flows_in` / `flows_out` per step.
 
 Transient results are not included in the steady-state ZIP export v1.

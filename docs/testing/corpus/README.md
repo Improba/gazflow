@@ -60,7 +60,7 @@ Constante recommandée côté Rust : lire `GAZFLOW_TEST_CORPUS` ou `CARGO_MANIFE
 | P8 | `external/gaslib-39/`, GasLib-24/582 | Control valves |
 | P9 | `synthetic/demand/`, nominations GasLib | Profils / snapshots |
 | P10 | GasLib-11, GasLib-39 | N-1 vert / rouge |
-| P11 | `external/transient/gaslib-11/` | Benchmark transitoire TRR154 |
+| P11 | `external/transient/gaslib-11/` | Smoke PDE TRR154 (stabilité ρ_* / CI ; **pas** oracle trajectoire) |
 | P12 | tout réseau chargé | Édition (pas de données spécifiques) |
 | P13 | `synthetic/scada/` | Calage sur mesures synthétiques |
 

@@ -8,7 +8,7 @@ This document describes the known limits of the solver in its current state. It 
   - `quasi_steady`: re-solves steady-state at each step (MVP, no wave propagation between steps).
   - `pde`: 1D isothermal implicit Euler on meshable pipes (Pipe/ShortPipe/Valve/Resistor); **trees** use leaf→root flow sweep; **cycles** use spanning-tree + chord Dirichlet; **regulators/compressors** are algebraic links (P_set / r·P_in). Fallback to quasi-steady only if disconnected / no pressure anchor.
 - Isothermal assumption (uniform gas temperature 288.15 K in pipes; outdoor $T_{\mathrm{ext}}$ affects demand only).
-- **EOS**: Kay pseudo-criticals + Papay Z by default; **PR-78 auto-selected** when H₂ > 20 % (`solver/eos/pr78.rs`); **GERG-2008 auto** when H₂ > 50 % (`solver/eos/gerg.rs`, crate `aga8` / NIST), with PR-78 fallback if density iteration fails.
+- **EOS**: Kay pseudo-criticals + Papay Z by default; **smooth blend Papay↔PR-78** on H₂ ∈ [15 %, 25 %] (smoothstep C¹); **PR-78** above 25 %; **GERG-2008 auto** when H₂ > 50 % (`solver/eos/gerg.rs`, crate `aga8` / NIST), with PR-78 fallback if density iteration fails.
 - Lee-Gonzalez-Eakin viscosity; G20 or custom composition via `PATCH /api/network/gas-composition`.
 - Gravity included (`ρ g Δz` in the P² equation); altitude from import/GasLib.
 - Reynolds dynamic in `pipe_resistance_hydraulic` when $|Q|>0$; Newton Jacobian uses $Re=10^7$ for stability (optional Re–Q coupling not enabled).
@@ -62,18 +62,26 @@ This document describes the known limits of the solver in its current state. It 
 - GasLib-135 (135 nodes): recommended transport demo with continuation preset; steady-state smoke test passes (faer LU stable with component anchoring on fragmented subgraphs).
 - GasLib-582 (582 nodes): `nomination_mild_618` is **feasible** (proven constructively in Phase VIII-bis by an independent external IPOPT NLP solve — see §3.1 below and [diagnosis](../testing/gaslib-582-compressor-diagnosis.md)). Earlier phases concluded "topological infeasibility" for sink_88/83/108; a zero-demand reachability probe (single anchor source_14 at 86 bar) shows these sinks reach ~86 bar at zero flow, far above their contractual floors (26/21/16 bar). The earlier "capacity = 0 even at zero flow" was an artifact of multiple conflicting pressure anchors (slack 51 bar + sources 70-121 bar + non-convergence), not a real topological infeasibility. The in-repo local Newton solver still reports `NotSolvedLocal` under the full nomination flow because the NoVa NLP is non-convex and the penalty-Newton is weaker than IPOPT (which finds the feasible point reliably when single-threaded); this is a local-solver weakness, not evidence against feasibility.
 - Flow comparison against external `.sol` references: not yet systematic. **GasLib-11 ZIP (ZIB)** does not ship a `.sol` file ; oracle externe indisponible pour ce réseau (voir `docs/testing/gaslib-11-quarantine.md`).
-- PDE transient: monotonicity on single pipe; Y-tree junction balance; parallel-path cycles (`test_pde_cyclic_parallel_paths_mass_balance`); regulator algebraic pin; adaptive_dt. Full acoustic-wave validation still pending.
+- PDE transient: monotonicity on single pipe; Y-tree / cycles / regulator; adaptive_dt; **optional external nodal IC** (`initial_pressures` on API/WS) ; optional **`picard_relax`** on API/WS ∈ (0, 1] (défaut solveur 0,35) ; **CI spatiale conduites** (`initial_pipe_states` / TRR154 `edgedata`) = Rust/corpus only (HTTP passe `None`) ; **TRR154 GasLib-11** :
+  - IC from `.state` (`test_trr154_gaslib11_pde_ic_from_state`) : CI nodale libre + **CI spatiale** conduites (profils P/ṁ `edgedata`) + **projection** sorties CS sur ratios catalogue GazFlow (préserver la CI brute CS ou caler r sur TRR154 → Picard instable) ; t=0 match strict hors CS, tolérante sur N01/N05 ;
+  - smoke court (`test_trr154_gaslib11_pde_smoke_validation`) : parse `.state`/`.bcd`, $\dot m/\rho_n^{\mathrm{G20}}$ ≈ 1,25× $Q_{\mathrm{scn}}$, PDE 1 pas ;
+  - smoke multi-heure (`test_trr154_gaslib11_pde_smoke_900s` ; `test_trr154_gaslib11_pde_smoke_24h` `#[ignore]`, vert en `--release`) : BC TRR154 ($\rho_*$, BCD), CI spatiale `edgedata`, projection CS catalogue, `adaptive_dt` + `dt_s=60` + `picard_relax=0.25` ; mesuré 900 s P∈[40,62], 24 h P∈[40,68], exit01→56 bar (attracteur GazFlow). **`dt_s=300` fixe diverge** (P négatives). Ce n'est **pas** un match vs trajectoire TRR154 ;
+  - BC cohérentes (`test_trr154_gaslib11_consistent_bc_and_bcd`) : $\rho_*\approx 1{,}02$ calée pour retrouver les $Q_{\mathrm{scn}}$ (≠ `normDensity` GasLib 0,785 ; ≠ $\rho_n^{\mathrm{G20}}$) ; snapshots BCD (0/1/2 h) dans bande physique. Écart P vs `.state` **&lt; 55 %** (max mesuré ~52 % sur exit02 ; modèle P² ≠ Euler TRR154) : ce n'est **pas** une validation de trajectoire. Full acoustic / Saint-Venant validation still pending.
 
-### 3.2 EOS H₂ — discontinuité au seuil 20 % (juillet 2026)
+### 3.2 EOS H₂ — bande de transition [15 %, 25 %] (juillet 2026)
 
-Le basculement automatique Papay+Kay → PR-78 à H₂ > 20 % (`gas_properties.rs`, `EosModel::auto_for_composition`) introduit un **saut de densité** à la frontière 19,9 % / 20,1 % H₂. Le test `test_eos_h2_continuity_at_20_percent_threshold` :
+Le basculement brutal Papay+Kay → PR-78 à H₂ = 20 % a été remplacé par un **blend d'ingénierie C¹**
+(smoothstep) de $Z$ sur $H_2 \in [15\,\%,\,25\,\%]$ (`EosModel::pr78_blend_weight`).
+Ce n'est **pas** une EOS physique de mélange : on interpolé linéairement $Z$ pour assurer la
+continuité de $\rho(H_2)$ à $P,T$ fixés. Au-delà de 25 % : PR-78 pur ; au-delà de 50 % : GERG-2008.
 
-- vérifie la continuité **intra-régime** (Papay sous 20 %, PR-78 au-dessus) ;
-- mesure le saut au seuil (~4,7 % à 70 bar, ~1,7 % à 30 bar, juillet 2026) ;
-- borne le saut à **< 15 %** (garde-fou de régression) ;
-- confirme l'avertissement `physics_warnings` au-delà de 20 %.
+Le test `test_eos_h2_continuity_at_20_percent_threshold` vérifie :
 
-Ce n'est pas masqué : la discontinuité est un artefact du switch EOS. Pour des mélanges proches de 20 % H₂, interpréter les résultats avec prudence ou forcer une EOS unique. Cible post-MVP : EOS unique PR-78 sur toute la plage.
+- saut ρ local autour de 20 % **&lt; 1 %** (ΔH₂ = 0,2 pt) ;
+- max saut local sur la bande [15 %, 25 %] **&lt; 2 %** (pas de 0,5 pt H₂) ;
+- avertissements `physics_warnings` distincts (transition vs PR-78 ≥ 25 %).
+
+Cible ultérieure : GERG (ou PR-78) unique sur toute la plage, sans blend.
 
 ### 3.1 GasLib-582 `nomination_mild_618` — corrected NoVa status (Phase VIII, July 2026)
 

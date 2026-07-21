@@ -249,6 +249,8 @@ By default the pack sets `GAZFLOW_REQUIRE_GASLIB_DATA=1`: if GasLib data is miss
 | T15 | `segment_conductance` | Segment conductance (chord G) in transient FV |
 | T16 | `gravity` | Gravity term in transient / steady coupling |
 
+TRR154 GasLib-11 smokes (`cargo test -p gazflow-back --lib trr154`) are **outside** the pack; see `docs/science/validation.md` § TRR154. Requires `./scripts/fetch_test_corpus.sh`.
+
 Quantitative thresholds for T2–T6 content IDs and T11–T16: [`docs/science/validation.md`](../science/validation.md).
 
 Useful options:

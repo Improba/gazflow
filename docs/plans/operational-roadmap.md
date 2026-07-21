@@ -8,18 +8,18 @@
 |-------|--------|-------------|
 | MVP (P0–P5) | ✅ | Steady-state, Cesium, WS, export, capacités |
 | **P6** Import | ✅ **~100 %** | GeoJSON/CSV/Shapefile, mapping, validation, UI + aperçu carte |
-| **P7** Physique | 🟨 **~95 %** | + PR-78 (H₂>20 %) + GERG-2008 (H₂>50 %, `aga8`) ; thermique conduites restant |
+| **P7** Physique | 🟨 **~97 %** | + blend Papay↔PR-78 [15–25 %] H₂ ; GERG H₂>50 % ; thermique conduites restant |
 | **P8** Régulation | 🟨 **~92 %** | Cv MVP ; Jacobien analytique restant |
 | **P9** Profils demande | ✅ **~98 %** | Météo CSV, week-end, persistance, WS timeseries |
 | **P10** N-1 | ✅ **~100 %** | WS, export, overlay carte — code complet |
-| **P11** Transitoire | 🟨 **~90 %** | FV arbres + cycles (arbre couvrant) + régulateur/compresseur algébriques + WS + adaptive_dt |
+| **P11** Transitoire | 🟨 **~95 %** | FV + organes + WS + adaptive_dt ; TRR154 smoke PDE 900 s (CI) + 24 h (`--ignored`, release) |
 | **P12** Édition | 🟨 **~85 %** | Scénarios diffs, compare ΔP/ΔQ, export GeoJSON restant |
 | **P13** Calage SCADA | 🟨 **~90 %** | LM multi-param (≤5), demand scale |
 | Corpus tests | ✅ | `docs/testing/corpus/` + CI ; **~420+** tests back lib, front : vitest |
 
 Plan complétion : `docs/plans/completion-plan.md`.
 
-**Note (juillet 2026)** : parcours NoVa Camille livré sur `main`. **P11** : arbres + cycles PDE, organes algébriques, WS, adaptive_dt (~90 %). **P7** : GERG-2008 auto H₂>50 %.
+**Note (juillet 2026)** : parcours NoVa Camille livré sur `main`. **P11** : arbres + cycles + organes + WS + adaptive_dt (~95 %) ; TRR154 = BC $\rho_*$ + CI spatiale + smoke PDE 900 s / 24 h (stabilité bande [40,68] bar mesurée ; `dt≤60`+adaptive requis) ; **pas** oracle trajectoire. **P7** : blend Papay↔PR-78 [15–25 %] + GERG H₂>50 %.
 
 ## Contexte
 
@@ -48,7 +48,7 @@ Un exploitant gaz (type Natran) a besoin de simuler **son propre réseau** (pas 
 | **P8** | Organes de régulation | Détendeurs, régulateurs PID, postes de livraison | P6 | 🟨 ~92 % |
 | **P9** | Profils de demande | Courbes horaires, thermosensibilité, catégories clients | P6 | ✅ ~98 % |
 | **P10** | Analyse N-1 | Simulation automatique de contingences | P8, P9 | ✅ ~100 % |
-| **P11** | Simulation transitoire | Résolution PDE instationnaire (linepack, propagation) | P7, P8 | 🟨 ~70–75 % |
+| **P11** | Simulation transitoire | FV trees+cycles+organes, WS stream, adaptive_dt, CI nodale API, TRR154 smoke stabilité (pas oracle) | P7, P8 | 🟨 ~95 % |
 | **P12** | Édition topologique | Création/modification du réseau dans l'UI | P6 | 🟨 ~85 % |
 | **P13** | Calage SCADA | Comparaison mesures/simulation, calibration inverse | P6, P9 | 🟨 ~90 % |
 
@@ -436,28 +436,29 @@ Avec $P = \rho Z R T / M$ (équation d'état).
 **Volumes finis conservatifs** (isotherme, 1D) sur maillage par conduite :
 
 - Chaque pipe est discrétisé en $N_x$ cellules (`n_cells_per_pipe`).
-- **Capacitance** $C = A L / (Z R T)$ par cellule : stockage de masse (linepack local).
-- **Conductance** $G$ **chordée** entre cellules adjacentes (résistance friction + gravité).
-- Intégration implicite en temps ; Newton sparse réutilise l'infrastructure existante.
-- Modes API : `quasi_steady` (séquence steady par pas) et `pde` (FV conservatif, mono-pipe / chaîne série).
-- Pas de temps fixe ou adaptatif (CFL) : optionnel, non livré en MVP.
+- **Capacitance** $C = A L\,(\partial\rho/\partial P)/\rho_n$ par cellule (Nm³/bar) : stockage cohérent avec $Q$ en Nm³/s.
+- **Conductance** $G$ **chordée** (laguée) entre cellules adjacentes.
+- Intégration implicite ; Picard réseau (arbres + cycles) ; `picard_relax` (défaut 0,35).
+- Modes API : `quasi_steady` et `pde` (FV trees/cycles + organes algébriques).
+- Pas de temps fixe ou `adaptive_dt` (α·C/G + hint onde) : livré ; recettes longues TRR154 : `dt_s≈60` + adaptive.
 
 ### Tâches
 
 | # | Tâche | Fichiers | Status |
 |---|-------|----------|--------|
-| 11.1 | Maillage 1D par conduite (`n_cells_per_pipe`) | `solver/transient/mesh.rs` | ✅ MVP |
+| 11.1 | Maillage 1D par conduite (`n_cells_per_pipe`) | `solver/transient/mesh.rs` | ✅ |
 | 11.2 | Système transitoire FV conservatif (C, G chordée) | `solver/transient/system.rs` | ✅ |
-| 11.3 | Conditions aux limites source/sink + `flows_in`/`flows_out` | `solver/transient/boundary.rs` | 🟡 avancé |
-| 11.4 | Intégration temporelle (implicite, pas fixe) | `solver/transient/time_integration.rs` | 🟡 avancé |
-| 11.5 | Initialisation steady-state + modes `quasi_steady` / `pde` | `solver/transient/mod.rs` | ✅ |
+| 11.3 | Conditions aux limites source/sink + `flows_in`/`flows_out` | `solver/transient/boundary.rs` | ✅ |
+| 11.4 | Intégration temporelle (implicite, `adaptive_dt`, Picard) | `solver/transient/time_integration.rs` | ✅ |
+| 11.5 | Initialisation steady / CI nodale / modes QS·PDE | `solver/transient/mod.rs` | ✅ |
 | 11.6 | Événements temporels (vanne, demande, consigne) | `solver/transient/events.rs` | ✅ |
 | 11.7 | Linepack agrégé $M = \sum \rho A L$ | `solver/transient/linepack.rs` | ✅ |
-| 11.8 | API `POST /api/simulate/transient` (+ `mode`, `n_cells_per_pipe`) | `api/mod.rs` | ✅ |
-| 11.9 | WebSocket streaming transitoire $P(x,t)$ | `api/ws.rs` | ⬜ |
+| 11.8 | API REST transient (+ CI, `picard_relax`, `adaptive_dt`) | `api/mod.rs` | ✅ |
+| 11.9 | WebSocket streaming transitoire | `api/ws.rs` | ✅ |
 | 11.10 | Frontend timeline + player | `components/TransientPlayer.vue` | ✅ MVP |
 | 11.11 | Graphiques P(t), Q(t) dédiés | `components/TransientChart.vue` | ⬜ |
 | 11.12 | Jauge linepack par zone | `components/LinepackGauge.vue` | ⬜ (linepack dans steps API) |
+| 11.13 | Corpus TRR154 GasLib-11 (ρ_*, CI spatiale, smoke 900 s / 24 h) | `solver/transient/trr154.rs` | ✅ smoke (pas oracle) |
 
 ### Tests
 

@@ -39,7 +39,10 @@ paths:
         - `flows_in` : débit amont [Nm³/s] (PDE : flows[0] ; quasi-steady : = flows)
         - `flows_out` : débit aval [Nm³/s] (PDE : flows[n] ; quasi-steady : = flows)
         - `converged` : false si le pas Picard PDE n'a pas convergé (défaut true en QS)
-        - requête : `mode` (`quasi_steady`|`pde`), `adaptive_dt`, `n_cells_per_pipe`, `initial_demands`
+        - requête : `mode` (`quasi_steady`|`pde`), `adaptive_dt`, `n_cells_per_pipe`,
+          `initial_demands`, `initial_pressures` (CI nodale optionnelle, bar),
+          `picard_relax` (optionnel, (0, 1], défaut solveur 0,35), `events`
+          (CI spatiale conduites : pas sur ce contrat, Rust/corpus seulement)
   /api/simulate/compare:
     post:
       summary: Compare deux scénarios topologiques (ΔP, ΔQ)
@@ -74,7 +77,8 @@ paths:
         - `start_simulation` : `options.robust_mode` (bool), `options.continuation_scales` (number[])
         - `start_timeseries_simulation` : `options.robust_mode` (bool)
         - `start_contingency_simulation`, `cancel_simulation`
-        - `start_transient_simulation` : `mode`, `adaptive_dt`, `n_cells_per_pipe`, `events`, `initial_demands`
+        - `start_transient_simulation` : `mode`, `adaptive_dt`, `n_cells_per_pipe`,
+          `events`, `initial_demands`, `initial_pressures`, `picard_relax`
 
         Messages serveur :
         - `started`, `iteration`, `snapshot`, `converged`, `cancelled`, `error`, …

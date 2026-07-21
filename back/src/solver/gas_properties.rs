@@ -2,8 +2,8 @@
 //!
 //! ## Hypothèses et limites (revue métier)
 //! - **Kay + Papay** : pseudo-critiques de Kay (moyenne molaire) pour Z de Papay ;
-//!   acceptable gaz naturel classique (CH₄ dominant, H₂ < 10 %). Au-delà de ~20 % H₂,
-//!   préférer PR-78 / GERG-2008.
+//!   acceptable gaz naturel classique (CH₄ dominant, H₂ < 10 %). Au-delà de 15 % H₂,
+//!   blend Papay↔PR-78 puis PR-78 ; GERG-2008 au-delà de 50 %.
 //! - **PCS / PCI** : mélange idéal des composants à 0 °C, 101,325 kPa (MJ/Nm³, ISO 6976).
 //! - **Wobbe** : WI = PCS / √d avec d = M_gaz / M_air (EN 437, gaz parfait à 15 °C).
 //! - La composition par défaut des simulations opérationnelles est le **G20** (EN 437).
@@ -181,25 +181,35 @@ impl GasComposition {
             .max(1e-6)
     }
 
-    /// EOS effective (auto GERG si H₂ > 50 %, PR-78 si H₂ > 20 %).
+    /// EOS dominante pour diagnostics (GERG >50 %, PR-78 au-delà de 15 % H₂, sinon Papay).
     pub fn effective_eos(&self) -> super::eos::EosModel {
         super::eos::EosModel::auto_for_composition(self.h2)
     }
 
-    /// Facteur Z selon EOS effective (Papay+Kay, PR-78 ou GERG-2008).
+    /// Facteur Z.
+    ///
+    /// Sous 50 % H₂ : **blend d'ingénierie** C¹ de $Z$ Papay↔PR-78 sur [15 %, 25 %]
+    /// (smoothstep sur le poids). Ce n'est **pas** une règle de mélange thermodynamique ;
+    /// le but est la continuité de $\rho(H_2)$ pour éviter un saut artificiel au basculement EOS.
+    /// Au-delà de 50 % : GERG-2008 (fallback PR-78).
     pub fn compressibility(&self, pressure_bar: f64, temperature_k: f64) -> f64 {
-        match self.effective_eos() {
-            super::eos::EosModel::PapayKay => self.compressibility_papay(pressure_bar, temperature_k),
-            super::eos::EosModel::Pr78 => {
-                super::eos::pr78::compressibility_pr78(*self, pressure_bar, temperature_k)
-            }
-            super::eos::EosModel::Gerg2008 => {
-                super::eos::gerg::compressibility_gerg2008(*self, pressure_bar, temperature_k)
-                    .unwrap_or_else(|| {
-                        super::eos::pr78::compressibility_pr78(*self, pressure_bar, temperature_k)
-                    })
-            }
+        use super::eos::EosModel;
+        if self.h2 > EosModel::H2_GERG_THRESHOLD + 1e-9 {
+            return super::eos::gerg::compressibility_gerg2008(*self, pressure_bar, temperature_k)
+                .unwrap_or_else(|| {
+                    super::eos::pr78::compressibility_pr78(*self, pressure_bar, temperature_k)
+                });
         }
+        let w = EosModel::pr78_blend_weight(self.h2);
+        if w <= 1e-15 {
+            return self.compressibility_papay(pressure_bar, temperature_k);
+        }
+        let z_pr = super::eos::pr78::compressibility_pr78(*self, pressure_bar, temperature_k);
+        if w >= 1.0 - 1e-15 {
+            return z_pr;
+        }
+        let z_papay = self.compressibility_papay(pressure_bar, temperature_k);
+        (1.0 - w) * z_papay + w * z_pr
     }
 
     /// Facteur de compressibilité Z (Papay, pseudo-Pr/Tr).
@@ -215,16 +225,23 @@ impl GasComposition {
     /// Avertissements physiques (EOS, domaine de validité).
     pub fn physics_warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
-        if self.h2 > 0.50 + 1e-9 {
+        use super::eos::EosModel;
+        if self.h2 > EosModel::H2_GERG_THRESHOLD + 1e-9 {
             out.push(
                 "Fraction H₂ > 50 % : EOS GERG-2008 activée (fallback PR-78 si itération densité échoue)."
                     .to_string(),
             );
-        } else if self.h2 > 0.20 + 1e-9 {
+        } else if self.h2 >= EosModel::H2_BLEND_HI - 1e-12 {
             out.push(
-                "Fraction H₂ > 20 % : EOS PR-78 activée automatiquement (remplace Papay + Kay)."
+                "Fraction H₂ ≥ 25 % : EOS PR-78 (après bande de transition Papay↔PR-78)."
                     .to_string(),
             );
+        } else if self.h2 > EosModel::H2_BLEND_LO + 1e-9 {
+            out.push(format!(
+                "Fraction H₂ dans la bande de transition Papay↔PR-78 ([{:.0} %, {:.0} %]) : Z blendé (smoothstep).",
+                EosModel::H2_BLEND_LO * 100.0,
+                EosModel::H2_BLEND_HI * 100.0
+            ));
         }
         out
     }
@@ -670,7 +687,18 @@ mod tests {
         }
         .normalize();
         let warnings = blend.physics_warnings();
-        assert!(warnings.iter().any(|w| w.contains("20 %")));
+        assert!(
+            warnings.iter().any(|w| w.contains("PR-78") || w.contains("25 %")),
+            "H₂=25 % doit signaler PR-78: {warnings:?}"
+        );
+        let mid = composition_with_h2(0.20);
+        assert!(
+            mid.physics_warnings()
+                .iter()
+                .any(|w| w.contains("transition") || w.contains("blend")),
+            "H₂=20 % doit signaler la bande de transition: {:?}",
+            mid.physics_warnings()
+        );
     }
 
     #[test]
@@ -691,59 +719,45 @@ mod tests {
         .normalize()
     }
 
-    /// T5 (validation.md) : continuité ρ(H₂) au seuil 20 % (saut EOS Papay→PR-78 documenté si > 5 %).
+    /// T5 : continuité ρ(H₂) — bande de blend Papay↔PR-78 [15 %, 25 %] (smoothstep).
     #[test]
     fn test_eos_h2_continuity_at_20_percent_threshold() {
-        // Continuité intra-régime (même EOS) : saut local << 1 %.
+        // Continuité locale autour de 20 % : saut << 1 % grâce au blend.
         for p_bar in [70.0, 30.0] {
-            let rho_a = composition_with_h2(0.195).density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
-            let rho_b = composition_with_h2(0.198).density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
-            let jump_papay = (rho_b - rho_a).abs() / rho_a.max(1e-6);
+            let rho_lo = composition_with_h2(0.199).density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
+            let rho_hi = composition_with_h2(0.201).density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
+            let jump = (rho_hi - rho_lo).abs() / rho_lo.max(1e-6);
+            eprintln!("H₂ blend P={p_bar} bar: ρ(19.9%)={rho_lo:.4}, ρ(20.1%)={rho_hi:.4}, jump={jump:.5}");
             assert!(
-                jump_papay < 0.01,
-                "Papay intra-regime P={p_bar}: jump={jump_papay:.4} (attendu < 1 % sur ΔH₂=0,3 pt)"
-            );
-
-            let rho_c = composition_with_h2(0.205).density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
-            let rho_d = composition_with_h2(0.210).density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
-            let jump_pr = (rho_d - rho_c).abs() / rho_c.max(1e-6);
-            assert!(
-                jump_pr < 0.015,
-                "PR-78 intra-regime P={p_bar}: jump={jump_pr:.4} (attendu < 1,5 % sur ΔH₂=0,5 pt)"
+                jump < 0.01,
+                "P={p_bar}: saut ρ sur ΔH₂=0,2 pt doit rester < 1 % avec blend (got {jump:.4})"
             );
         }
 
-        // Switch Papay → PR-78 à H₂ > 20 % : le saut doit être mesurable et borné.
-        // Mesure de référence (juillet 2026) : ~4,7 % à 70 bar, ~1,7 % à 30 bar.
+        // Continuité sur toute la bande [15 %, 25 %] : max saut local ≤ 2 %.
         for p_bar in [70.0, 30.0] {
-            let lo = composition_with_h2(0.199);
-            let hi = composition_with_h2(0.201);
+            let samples: Vec<f64> = (0..=20).map(|i| 0.15 + 0.005 * i as f64).collect();
+            let mut max_jump = 0.0_f64;
+            for w in samples.windows(2) {
+                let a = composition_with_h2(w[0]).density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
+                let b = composition_with_h2(w[1]).density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
+                max_jump = max_jump.max((b - a).abs() / a.max(1e-6));
+            }
+            eprintln!("H₂ blend band P={p_bar}: max local jump={max_jump:.5}");
             assert!(
-                lo.physics_warnings().is_empty(),
-                "H₂=19.9 % ne doit pas déclencher l'avertissement PR-78"
-            );
-            assert!(
-                !hi.physics_warnings().is_empty(),
-                "H₂=20.1 % doit déclencher l'avertissement PR-78"
-            );
-
-            let rho_lo = lo.density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
-            let rho_hi = hi.density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
-            let rho_mid = composition_with_h2(0.200)
-                .density_kg_per_m3(p_bar, DEFAULT_GAS_TEMPERATURE_K);
-            let jump = (rho_hi - rho_lo).abs() / rho_mid.max(1e-6);
-            eprintln!(
-                "H₂ threshold P={p_bar} bar: ρ(19.9%)={rho_lo:.4}, ρ(20.0%)={rho_mid:.4}, ρ(20.1%)={rho_hi:.4}, jump={jump:.4}"
-            );
-            assert!(
-                jump > 0.005,
-                "P={p_bar}: le switch EOS doit produire un saut de densité détectable ≥ 0,5 % (got {jump})"
-            );
-            assert!(
-                jump < 0.15,
-                "P={p_bar}: saut EOS H₂={jump:.4} hors borne documentée 15 % (limitations.md §3.2)"
+                max_jump < 0.02,
+                "P={p_bar}: max jump local sur bande [15,25] % doit être < 2 % (got {max_jump:.4})"
             );
         }
+
+        // Hors bande : Papay pur (10 %) et PR-78 pur (30 %) sans warning de transition.
+        assert!(composition_with_h2(0.10).physics_warnings().is_empty());
+        assert!(
+            composition_with_h2(0.30)
+                .physics_warnings()
+                .iter()
+                .any(|w| w.contains("PR-78"))
+        );
     }
 
     /// T5b : facteur Z Papay+Kay borné dans [0.2, 1.5] sur grille P×H₂.

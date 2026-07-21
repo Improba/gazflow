@@ -88,6 +88,21 @@ describe('apiContracts', () => {
     expect(parsed.initial_demands.SK).toBe(-5);
   });
 
+  it('serializes transient request with initial_pressures and picard_relax', () => {
+    const payload = {
+      duration_s: 900,
+      dt_s: 60,
+      events: [] as [],
+      mode: 'pde' as const,
+      initial_pressures: { SRC: 70, SK: 65 },
+      picard_relax: 0.25,
+    };
+    const parsed = JSON.parse(JSON.stringify(payload));
+    expect(parsed.initial_pressures.SRC).toBe(70);
+    expect(parsed.initial_pressures.SK).toBe(65);
+    expect(parsed.picard_relax).toBe(0.25);
+  });
+
   it('serializes compare request with optional scenario ids', () => {
     const payload = {
       scenario_a_id: 'scn-a',

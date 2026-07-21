@@ -182,13 +182,14 @@ Multiple WebSocket clients can run simulations at the same time with different d
 
 ## Transient simulation API
 
-`POST /api/simulate/transient` runs an isothermal transient on the active network.
+`POST /api/simulate/transient` and WebSocket `start_transient_simulation` run an isothermal transient on the active network.
 
-- **Modes** : `quasi_steady` (steady solve per time step) or `pde` (conservative finite-volume scheme on single pipe / series chains).
-- **Parameters** : `duration_s`, `dt_s`, `n_cells_per_pipe`, optional `events` (demand steps, valve actions).
-- **Response steps** : each step includes nodal `pressures`, `flows` [Nm³/s], aggregated `linepack_kg`, and boundary-oriented `flows_in` / `flows_out` for Qin/Qout mass-balance checks.
-- **UI** : `/transient` page with `TransientPlayer` (timeline, play/pause). No WebSocket streaming for transient in the current MVP.
-- **Contract** : see [`docs/contracts/openapi-stub.yaml`](../contracts/openapi-stub.yaml). Transient boundary flows are not included in steady-state export v1 (see `export-contract.md`).
+- **Modes** : `quasi_steady` (steady solve per time step) or `pde` (1D isothermal FV on meshable pipes: trees + cycles; algebraic regulators/compressors).
+- **Parameters** : `duration_s`, `dt_s`, `n_cells_per_pipe`, `adaptive_dt`, optional `events`, optional nodal `initial_pressures` (bar), optional `picard_relax` ∈ (0, 1] (default 0.35 when omitted).
+- **Not on HTTP** : spatial pipe IC (`initial_pipe_states` / TRR154 `edgedata`) remains Rust/corpus-only.
+- **Response steps** : nodal `pressures`, `flows` [Nm³/s], `linepack_kg`, `flows_in` / `flows_out`, `converged`.
+- **UI** : `/transient` with `TransientPlayer` ; WS streams `transient_step` / `transient_finished`. Optional reuse of last steady pressures as CI.
+- **Contract** : [`docs/contracts/openapi-stub.yaml`](../contracts/openapi-stub.yaml).
 
 ---
 

@@ -53,7 +53,7 @@ const TREE_PICARD_MAX: usize = 20;
 const TREE_PICARD_TOL_BAR: f64 = 1e-3;
 const NODAL_PICARD_MAX: usize = 80;
 const NODAL_PICARD_TOL_M3S: f64 = 1e-3;
-const NODAL_RELAX: f64 = 0.35;
+pub(crate) const DEFAULT_PICARD_RELAX: f64 = 0.35;
 
 /// Statut de convergence Picard pour un pas réseau.
 #[derive(Debug, Clone, Copy)]
@@ -84,6 +84,7 @@ pub fn advance_network_one_step(
     composition: &GasComposition,
     is_tree: bool,
     equipment: &[AlgebraicEquipment],
+    picard_relax: f64,
 ) -> PicardStatus {
     let mut effective_fixed = fixed_pressure_nodes.clone();
     apply_equipment_constraints(equipment, node_pressures, &mut effective_fixed);
@@ -113,6 +114,7 @@ pub fn advance_network_one_step(
             composition,
             equipment,
             &mut equip_incomplete,
+            picard_relax,
         )
     };
 
@@ -304,6 +306,7 @@ fn advance_nodal_dirichlet(
     composition: &GasComposition,
     equipment: &[AlgebraicEquipment],
     equip_incomplete: &mut bool,
+    picard_relax: f64,
 ) -> PicardStatus {
     let snapshots: Vec<(Vec<f64>, Vec<f64>)> = pipes
         .iter()
@@ -456,7 +459,7 @@ fn advance_nodal_dirichlet(
             let imbalance = nodal_mass_imbalance(node, pipes, demands);
             let g_eff =
                 nodal_effective_conductance(node, pipes, node_pressures, composition).max(1e-3);
-            let dp = (NODAL_RELAX * imbalance / g_eff).clamp(-2.0, 2.0);
+            let dp = (picard_relax * imbalance / g_eff).clamp(-2.0, 2.0);
             let p = node_pressures.entry(node.clone()).or_insert(50.0);
             *p = (*p + dp).clamp(1.0, 200.0);
         }
@@ -483,12 +486,17 @@ fn spanning_tree_partition(
             .or_default()
             .push((idx, ctx.pipe.from.as_str()));
     }
+    for neighbors in adj.values_mut() {
+        neighbors.sort_by(|a, b| a.1.cmp(b.1).then(a.0.cmp(&b.0)));
+    }
     let mut parent_edge: HashMap<&str, usize> = HashMap::new();
     let mut seen: HashSet<&str> = HashSet::new();
     let mut q = VecDeque::new();
-    for n in fixed_pressure_nodes {
-        if seen.insert(n.as_str()) {
-            q.push_back(n.as_str());
+    let mut seeds: Vec<&str> = fixed_pressure_nodes.iter().map(|s| s.as_str()).collect();
+    seeds.sort_unstable();
+    for n in seeds {
+        if seen.insert(n) {
+            q.push_back(n);
         }
     }
     if q.is_empty()
@@ -747,11 +755,17 @@ fn tree_leaf_to_root_order(
             .push((idx, ctx.pipe.from.as_str()));
     }
 
+    for neighbors in adj.values_mut() {
+        neighbors.sort_by(|a, b| a.1.cmp(b.1).then(a.0.cmp(&b.0)));
+    }
+
     let mut dist: HashMap<&str, usize> = HashMap::new();
     let mut q: VecDeque<&str> = VecDeque::new();
-    for n in fixed_pressure_nodes {
-        dist.insert(n.as_str(), 0);
-        q.push_back(n.as_str());
+    let mut seeds: Vec<&str> = fixed_pressure_nodes.iter().map(|s| s.as_str()).collect();
+    seeds.sort_unstable();
+    for n in seeds {
+        dist.insert(n, 0);
+        q.push_back(n);
     }
     if q.is_empty() {
         return (0..pipes.len()).collect();

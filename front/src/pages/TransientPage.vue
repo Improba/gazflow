@@ -112,6 +112,14 @@
             label="dt adaptatif"
           />
         </div>
+        <div v-if="hasLastSolvePressures" class="col-12 col-sm-auto">
+          <q-checkbox
+            v-model="useSteadyPressuresIc"
+            dense
+            dark
+            label="CI depuis dernière simu steady"
+          />
+        </div>
         <div v-if="loading && useWebSocket" class="col-12 col-sm-auto">
           <q-btn
             flat
@@ -251,6 +259,7 @@ const demandStepFactor = ref(2);
 const loading = ref(false);
 const useWebSocket = ref(false);
 const adaptiveDt = ref(false);
+const useSteadyPressuresIc = ref(false);
 const result = ref<TransientResultDto | null>(null);
 const requestedMode = ref<TransientMode>('quasi_steady');
 const currentRunId = ref<string | null>(null);
@@ -293,6 +302,12 @@ const showPdeFallbackBanner = computed(() => {
 const hasNonConvergedStep = computed(
   () => result.value?.steps.some((s) => s.converged === false) ?? false,
 );
+
+const hasLastSolvePressures = computed(() => {
+  const fromResult = simulateStore.result?.pressures;
+  if (fromResult && Object.keys(fromResult).length > 0) return true;
+  return Object.keys(simulateStore.livePressures).length > 0;
+});
 
 const tableRows = computed(() =>
   (result.value?.steps ?? []).map((step, idx) => ({ ...step, _idx: idx })),
@@ -365,6 +380,19 @@ function resolveInitialDemands(): Record<string, number> | undefined {
   return simulateStore.lastInputDemands();
 }
 
+/** Pressions nodales de la dernière simu steady (optionnel, CI transitoire). */
+function resolveInitialPressures(): Record<string, number> | undefined {
+  if (!useSteadyPressuresIc.value) return undefined;
+  const fromResult = simulateStore.result?.pressures;
+  if (fromResult && Object.keys(fromResult).length > 0) {
+    return { ...fromResult };
+  }
+  if (Object.keys(simulateStore.livePressures).length > 0) {
+    return { ...simulateStore.livePressures };
+  }
+  return undefined;
+}
+
 function buildEvents(): TransientEventDto[] {
   if (!demandStepEnabled.value || !demandStepSink.value) return [];
   const demands = resolveInitialDemands() ?? {};
@@ -382,6 +410,7 @@ function buildEvents(): TransientEventDto[] {
 
 function buildTransientRequest(): TransientRequest {
   const initial = resolveInitialDemands();
+  const initialPressures = resolveInitialPressures();
   return {
     duration_s: durationS.value,
     dt_s: dtS.value,
@@ -391,6 +420,7 @@ function buildTransientRequest(): TransientRequest {
     adaptive_dt: mode.value === 'pde' ? adaptiveDt.value : false,
     ...(mode.value === 'pde' ? { n_cells_per_pipe: nCellsPerPipe.value } : {}),
     ...(initial ? { initial_demands: initial } : {}),
+    ...(initialPressures ? { initial_pressures: initialPressures } : {}),
   };
 }
 
@@ -508,6 +538,8 @@ async function runTransientWs(): Promise<TransientResultDto> {
       nCellsPerPipe: req.n_cells_per_pipe,
       adaptiveDt: req.adaptive_dt,
       gasComposition: req.gas_composition,
+      initialPressures: req.initial_pressures,
+      picardRelax: req.picard_relax,
     });
   });
 }

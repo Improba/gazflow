@@ -14,6 +14,9 @@ pub struct TransientConfig {
     /// Si vrai, réduit `dt` selon C/G et un hint CFL (précision ; schéma déjà implicite).
     #[serde(default)]
     pub adaptive_dt: bool,
+    /// Relaxation Picard nodale (cycles). `None` → 0,35 par défaut.
+    #[serde(default)]
+    pub picard_relax: Option<f64>,
 }
 
 impl Default for TransientConfig {
@@ -24,6 +27,7 @@ impl Default for TransientConfig {
             gas_composition: GasComposition::default(),
             n_cells_per_pipe: None,
             adaptive_dt: false,
+            picard_relax: None,
         }
     }
 }

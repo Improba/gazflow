@@ -23,6 +23,7 @@ pub mod mesh;
 pub mod state;
 pub mod system;
 pub mod time_integration;
+pub mod trr154;
 
 pub use boundary::{SinkBoundary, SourceBoundary};
 pub use config::TransientConfig;
@@ -33,8 +34,9 @@ pub use state::TransientPipeState;
 
 use mesh::default_n_cells;
 use time_integration::{
-    ActivePipeContext, AlgebraicEquipment, PicardStatus, advance_network_one_step,
-    fold_demands_through_equipment, is_pde_meshable, suggest_adaptive_dt_s,
+    ActivePipeContext, AlgebraicEquipment, DEFAULT_PICARD_RELAX, PicardStatus,
+    advance_network_one_step, fold_demands_through_equipment, is_pde_meshable,
+    suggest_adaptive_dt_s,
 };
 
 #[allow(dead_code)]
@@ -99,8 +101,18 @@ pub fn simulate_transient(
     initial_demands: &HashMap<String, f64>,
     events: &[TransientEvent],
     config: &TransientConfig,
+    initial_pressures: Option<&HashMap<String, f64>>,
+    initial_pipe_states: Option<&HashMap<String, TransientPipeState>>,
 ) -> Result<TransientResult> {
-    simulate_transient_with_mode(network, initial_demands, events, config, TransientMode::QuasiSteady)
+    simulate_transient_with_mode(
+        network,
+        initial_demands,
+        events,
+        config,
+        TransientMode::QuasiSteady,
+        initial_pressures,
+        initial_pipe_states,
+    )
 }
 
 pub fn simulate_transient_with_mode(
@@ -109,6 +121,8 @@ pub fn simulate_transient_with_mode(
     events: &[TransientEvent],
     config: &TransientConfig,
     mode: TransientMode,
+    initial_pressures: Option<&HashMap<String, f64>>,
+    initial_pipe_states: Option<&HashMap<String, TransientPipeState>>,
 ) -> Result<TransientResult> {
     simulate_transient_with_mode_progress(
         network,
@@ -116,6 +130,8 @@ pub fn simulate_transient_with_mode(
         events,
         config,
         mode,
+        initial_pressures,
+        initial_pipe_states,
         None,
     )
 }
@@ -126,15 +142,28 @@ pub fn simulate_transient_with_mode_progress(
     events: &[TransientEvent],
     config: &TransientConfig,
     mode: TransientMode,
+    initial_pressures: Option<&HashMap<String, f64>>,
+    initial_pipe_states: Option<&HashMap<String, TransientPipeState>>,
     on_step: Option<&dyn Fn(&TransientStepResult) -> TransientControl>,
 ) -> Result<TransientResult> {
     match mode {
-        TransientMode::QuasiSteady => {
-            simulate_transient_quasi_steady_progress(network, initial_demands, events, config, on_step)
-        }
-        TransientMode::Pde => {
-            simulate_transient_pde_progress(network, initial_demands, events, config, on_step)
-        }
+        TransientMode::QuasiSteady => simulate_transient_quasi_steady_progress(
+            network,
+            initial_demands,
+            events,
+            config,
+            initial_pressures,
+            on_step,
+        ),
+        TransientMode::Pde => simulate_transient_pde_progress(
+            network,
+            initial_demands,
+            events,
+            config,
+            initial_pressures,
+            initial_pipe_states,
+            on_step,
+        ),
     }
 }
 
@@ -144,8 +173,16 @@ pub fn simulate_transient_quasi_steady(
     initial_demands: &HashMap<String, f64>,
     events: &[TransientEvent],
     config: &TransientConfig,
+    initial_pressures: Option<&HashMap<String, f64>>,
 ) -> Result<TransientResult> {
-    simulate_transient_quasi_steady_progress(network, initial_demands, events, config, None)
+    simulate_transient_quasi_steady_progress(
+        network,
+        initial_demands,
+        events,
+        config,
+        initial_pressures,
+        None,
+    )
 }
 
 fn simulate_transient_quasi_steady_progress(
@@ -153,6 +190,7 @@ fn simulate_transient_quasi_steady_progress(
     initial_demands: &HashMap<String, f64>,
     events: &[TransientEvent],
     config: &TransientConfig,
+    initial_pressures: Option<&HashMap<String, f64>>,
     on_step: Option<&dyn Fn(&TransientStepResult) -> TransientControl>,
 ) -> Result<TransientResult> {
     validate_config(config)?;
@@ -166,10 +204,13 @@ fn simulate_transient_quasi_steady_progress(
         ..SteadyStateConfig::default()
     };
 
-    let initial =
-        solve_steady_state_with_progress(&network_state, &demands, None, steady_cfg, |_| {
-            SolverControl::Continue
-        })?;
+    let initial = solve_steady_state_with_progress(
+        &network_state,
+        &demands,
+        initial_pressures,
+        steady_cfg,
+        |_| SolverControl::Continue,
+    )?;
 
     let mut total_iterations = initial.iterations;
     let mut previous_pressures = initial.pressures.clone();
@@ -272,8 +313,18 @@ pub fn simulate_transient_pde(
     initial_demands: &HashMap<String, f64>,
     events: &[TransientEvent],
     config: &TransientConfig,
+    initial_pressures: Option<&HashMap<String, f64>>,
+    initial_pipe_states: Option<&HashMap<String, TransientPipeState>>,
 ) -> Result<TransientResult> {
-    simulate_transient_pde_progress(network, initial_demands, events, config, None)
+    simulate_transient_pde_progress(
+        network,
+        initial_demands,
+        events,
+        config,
+        initial_pressures,
+        initial_pipe_states,
+        None,
+    )
 }
 
 fn simulate_transient_pde_progress(
@@ -281,6 +332,8 @@ fn simulate_transient_pde_progress(
     initial_demands: &HashMap<String, f64>,
     events: &[TransientEvent],
     config: &TransientConfig,
+    initial_pressures: Option<&HashMap<String, f64>>,
+    initial_pipe_states: Option<&HashMap<String, TransientPipeState>>,
     on_step: Option<&dyn Fn(&TransientStepResult) -> TransientControl>,
 ) -> Result<TransientResult> {
     validate_config(config)?;
@@ -292,6 +345,7 @@ fn simulate_transient_pde_progress(
             initial_demands,
             events,
             config,
+            initial_pressures,
             on_step,
         )?;
         result.limitation = format!(
@@ -309,18 +363,25 @@ fn simulate_transient_pde_progress(
         ..SteadyStateConfig::default()
     };
 
-    let initial =
-        match solve_steady_state_with_progress(&network_state, &demands, None, steady_cfg, |_| {
-            SolverControl::Continue
-        }) {
-            Ok(r) => r,
-            Err(_) => synthetic_pde_initial(&network_state, &demands)?,
-        };
+    let pde_seed = seed_pde_initial(
+        &network_state,
+        &demands,
+        initial_pressures,
+        steady_cfg,
+    )?;
 
     let mut topology = pde_topology(&network_state)?;
-    let mut node_pressures = initial.pressures.clone();
+    let mut node_pressures = pde_seed.node_pressures;
     let mut fixed_pressure_nodes = fixed_pressure_node_set(&network_state);
-    sync_equipment_fixed_nodes(&topology.equipment, &mut node_pressures, &mut fixed_pressure_nodes);
+    // Toujours projeter les sorties d'organes sur l'algèbre GazFlow (ratio catalogue).
+    // Préserver la CI brute sur les CS (TRR154) rend le Picard instable (collapse /
+    // P→200 bar selon les essais). Les nœuds libres gardent la CI.
+    sync_equipment_fixed_nodes(
+        &topology.equipment,
+        &mut node_pressures,
+        &mut fixed_pressure_nodes,
+    );
+    let external_ic = initial_pressures.is_some();
     let mut pipe_contexts = build_pipe_contexts(
         &network_state,
         &topology.pipe_ids,
@@ -330,20 +391,30 @@ fn simulate_transient_pde_progress(
         config,
         None,
     )?;
+    apply_spatial_pipe_ic(&mut pipe_contexts, initial_pipe_states);
+
+    let picard_relax = config.picard_relax.unwrap_or(DEFAULT_PICARD_RELAX);
 
     let mut previous_linepack = total_pde_linepack(&pipe_contexts, &config.gas_composition);
     let (initial_flows_in, initial_flows_out) =
-        snapshot_pipe_boundary_flows(&pipe_contexts, &initial.flows);
+        snapshot_pipe_boundary_flows(&pipe_contexts, &pde_seed.flows);
+    // CI externe : pressions nodales après projection organes (= état intégré).
+    // (Les centres de cellule FV biaiseraient les exits si on snapshottait le maillage.)
+    let step0_pressures = if external_ic {
+        node_pressures.clone()
+    } else {
+        snapshot_node_pressures(&pipe_contexts, &node_pressures)
+    };
     let mut steps = vec![TransientStepResult {
         time_s: 0.0,
         demands: demands.clone(),
-        pressures: snapshot_node_pressures(&pipe_contexts, &node_pressures),
+        pressures: step0_pressures,
         flows: initial_flows_out.clone(),
         flows_in: initial_flows_in,
         flows_out: initial_flows_out,
-        iterations: initial.iterations,
-        residual: initial.residual,
-        converged: initial.residual < 1.0,
+        iterations: pde_seed.iterations,
+        residual: pde_seed.residual,
+        converged: pde_seed.residual < 1.0,
         linepack_kg: previous_linepack,
         linepack_delta_kg: 0.0,
     }];
@@ -362,7 +433,7 @@ fn simulate_transient_pde_progress(
     let mut event_cursor = 0usize;
 
     let mut time_s = 0.0;
-    let mut total_iterations = initial.iterations;
+    let mut total_iterations = pde_seed.iterations;
     let max_steps = ((config.duration_s / config.dt_s).ceil() as usize)
         .saturating_mul(if config.adaptive_dt { 40 } else { 2 })
         .max(2)
@@ -467,6 +538,7 @@ fn simulate_transient_pde_progress(
             &config.gas_composition,
             topology.is_tree,
             &topology.equipment,
+            picard_relax,
         );
         total_iterations = total_iterations.saturating_add(picard.iterations);
         let mut actual_dt = dt;
@@ -490,6 +562,7 @@ fn simulate_transient_pde_progress(
                 &config.gas_composition,
                 topology.is_tree,
                 &topology.equipment,
+                picard_relax,
             );
             total_iterations = total_iterations.saturating_add(retry.iterations);
             if retry.converged {
@@ -532,7 +605,7 @@ fn simulate_transient_pde_progress(
             residual = residual.max(1.0);
         }
         let (flows_in, flows_out) =
-            snapshot_pipe_boundary_flows(&pipe_contexts, &initial.flows);
+            snapshot_pipe_boundary_flows(&pipe_contexts, &pde_seed.flows);
         let step = TransientStepResult {
             time_s,
             demands: demands.clone(),
@@ -614,6 +687,7 @@ fn finish_pde_with_quasi_steady_fallback(
         gas_composition: config.gas_composition,
         n_cells_per_pipe: config.n_cells_per_pipe,
         adaptive_dt: false,
+        picard_relax: config.picard_relax,
     };
     let shifted: Vec<TransientEvent> = remaining_events
         .iter()
@@ -624,6 +698,7 @@ fn finish_pde_with_quasi_steady_fallback(
         demands,
         &shifted,
         &qs_cfg,
+        None,
         on_step,
     ) {
         Ok(qs) => qs,
@@ -705,6 +780,9 @@ fn sync_equipment_fixed_nodes(
     node_pressures: &mut HashMap<String, f64>,
     fixed_pressure_nodes: &mut HashSet<String>,
 ) {
+    // Projette toujours les sorties d'organes sur l'algèbre GazFlow.
+    // Essais CI TRR154 : préserver P_CS brutes ou caler r sur le `.state` → Picard
+    // instable (collapse ou P→200 bar). Les nœuds libres gardent leur CI en amont.
     for eq in equipment {
         match eq {
             AlgebraicEquipment::Regulator {
@@ -857,6 +935,91 @@ fn pde_topology(network: &GasNetwork) -> Result<PdeTopology> {
     })
 }
 
+struct PdeInitialSeed {
+    node_pressures: HashMap<String, f64>,
+    flows: HashMap<String, f64>,
+    iterations: usize,
+    residual: f64,
+}
+
+/// Initialise le PDE : Newton/synthétique par défaut ; CI externe si `initial_pressures` fourni.
+fn seed_pde_initial(
+    network: &GasNetwork,
+    demands: &HashMap<String, f64>,
+    initial_pressures: Option<&HashMap<String, f64>>,
+    steady_cfg: SteadyStateConfig,
+) -> Result<PdeInitialSeed> {
+    if let Some(ic) = initial_pressures {
+        let mut node_pressures = build_node_pressures_from_external_ic(network, ic, demands);
+        for node in network.nodes() {
+            if let Some(p) = node.pressure_fixed_bar {
+                node_pressures.insert(node.id.clone(), p);
+            }
+        }
+        let newton = solve_steady_state_with_progress(network, demands, Some(ic), steady_cfg, |_| {
+            SolverControl::Continue
+        });
+        // CI imposée : le résidu Newton de l'attracteur GazFlow n'est pas celui de la CI.
+        let (flows, iterations) = match newton {
+            Ok(r) => (r.flows, r.iterations),
+            Err(_) => (HashMap::new(), 0usize),
+        };
+        return Ok(PdeInitialSeed {
+            node_pressures,
+            flows,
+            iterations,
+            residual: 0.0,
+        });
+    }
+
+    let initial =
+        match solve_steady_state_with_progress(network, demands, None, steady_cfg, |_| {
+            SolverControl::Continue
+        }) {
+            Ok(r) => r,
+            Err(_) => synthetic_pde_initial(network, demands)?,
+        };
+    Ok(PdeInitialSeed {
+        node_pressures: initial.pressures.clone(),
+        flows: initial.flows.clone(),
+        iterations: initial.iterations,
+        residual: initial.residual,
+    })
+}
+
+/// Pressions nodales à partir d'une CI externe ; nœuds absents → heuristique synthétique.
+fn build_node_pressures_from_external_ic(
+    network: &GasNetwork,
+    ic: &HashMap<String, f64>,
+    demands: &HashMap<String, f64>,
+) -> HashMap<String, f64> {
+    let p_anchor = network
+        .nodes()
+        .filter_map(|n| n.pressure_fixed_bar)
+        .fold(None, |acc: Option<f64>, p| Some(acc.map_or(p, |a| a.max(p))))
+        .or_else(|| {
+            ic.values()
+                .copied()
+                .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        })
+        .unwrap_or(70.0);
+
+    let mut pressures = HashMap::new();
+    for n in network.nodes() {
+        let p = if let Some(&p_ic) = ic.get(&n.id) {
+            p_ic
+        } else if let Some(p_fix) = n.pressure_fixed_bar {
+            p_fix
+        } else if demands.get(&n.id).copied().unwrap_or(0.0).abs() > 1e-12 {
+            p_anchor * 0.85
+        } else {
+            p_anchor * 0.95
+        };
+        pressures.insert(n.id.clone(), p);
+    }
+    pressures
+}
+
 fn synthetic_pde_initial(
     network: &GasNetwork,
     demands: &HashMap<String, f64>,
@@ -900,6 +1063,23 @@ fn synthetic_pde_initial(
         warnings: vec!["PDE initialised from synthetic pressures (steady Newton failed)".into()],
         demand_scale_achieved: None,
     })
+}
+
+fn apply_spatial_pipe_ic(
+    pipe_contexts: &mut [ActivePipeContext],
+    initial_pipe_states: Option<&HashMap<String, TransientPipeState>>,
+) {
+    let Some(spatial) = initial_pipe_states else {
+        return;
+    };
+    for ctx in pipe_contexts.iter_mut() {
+        if let Some(state) = spatial.get(&ctx.pipe.id)
+            && state.pressures.len() == ctx.mesh.n_cells
+            && state.flows.len() == ctx.mesh.n_cells + 1
+        {
+            ctx.state = state.clone();
+        }
+    }
 }
 
 fn build_pipe_contexts(
@@ -1309,6 +1489,7 @@ mod tests {
             gas_composition: GasComposition::default(),
             n_cells_per_pipe: Some(12),
             adaptive_dt: false,
+            picard_relax: None,
         }
     }
 
@@ -1325,6 +1506,8 @@ mod tests {
             events,
             cfg,
             TransientMode::Pde,
+            None,
+            None,
         )
         .expect("pde series");
         result
@@ -1345,7 +1528,7 @@ mod tests {
         demands.insert("SK".to_string(), -5.0);
 
         let cfg = transient_cfg(3600.0, 900.0);
-        let result = simulate_transient(&net, &demands, &[], &cfg).expect("transient");
+        let result = simulate_transient(&net, &demands, &[], &cfg, None, None).expect("transient");
 
         assert_eq!(result.steps.len(), 5);
         let p0 = result.steps[0]
@@ -1374,7 +1557,7 @@ mod tests {
         }];
 
         let cfg = transient_cfg(1200.0, 600.0);
-        let result = simulate_transient(&net, &demands, &events, &cfg).expect("transient");
+        let result = simulate_transient(&net, &demands, &events, &cfg, None, None).expect("transient");
 
         assert!(
             result
@@ -1429,6 +1612,8 @@ mod tests {
             &[],
             &cfg,
             TransientMode::Pde,
+            None,
+            None,
         )
         .expect("pde transient");
 
@@ -1485,6 +1670,8 @@ mod tests {
             &events,
             &cfg,
             TransientMode::Pde,
+            None,
+            None,
         )
         .expect("pde transient");
 
@@ -1593,6 +1780,8 @@ mod tests {
             &[],
             &cfg,
             TransientMode::Pde,
+            None,
+            None,
         )
         .expect("branched pde");
 
@@ -1678,6 +1867,8 @@ mod tests {
             &[],
             &cfg,
             TransientMode::Pde,
+            None,
+            None,
         )
         .expect("cyclic parallel pde");
 
@@ -1768,10 +1959,11 @@ mod tests {
             gas_composition: GasComposition::default(),
             n_cells_per_pipe: Some(8),
             adaptive_dt: false,
+            picard_relax: None,
         };
 
         // Steady peut être difficile avec régulateur ; on autorise un warm via demands faibles.
-        let result = match simulate_transient_with_mode(&net, &demands, &[], &cfg, TransientMode::Pde)
+        let result = match simulate_transient_with_mode(&net, &demands, &[], &cfg, TransientMode::Pde, None, None)
         {
             Ok(r) => r,
             Err(_) => {
@@ -1779,7 +1971,7 @@ mod tests {
                 // Soften: use smaller demand for steady init via empty events after zero demand.
                 let mut soft = HashMap::new();
                 soft.insert("SK".to_string(), -0.5);
-                simulate_transient_with_mode(&net, &soft, &[], &cfg, TransientMode::Pde)
+                simulate_transient_with_mode(&net, &soft, &[], &cfg, TransientMode::Pde, None, None)
                     .expect("regulator pde soft")
             }
         };
@@ -1910,7 +2102,7 @@ mod tests {
         demands.insert("SK2".to_string(), -2.0);
 
         let cfg = transient_cfg(900.0, 300.0);
-        let result = simulate_transient_with_mode(&net, &demands, &[], &cfg, TransientMode::Pde)
+        let result = simulate_transient_with_mode(&net, &demands, &[], &cfg, TransientMode::Pde, None, None)
             .expect("junction demand+children");
 
         for step in result.steps.iter().skip(2) {
@@ -1977,7 +2169,7 @@ mod tests {
         }];
         let cfg = transient_cfg(900.0, 300.0);
         let result =
-            simulate_transient_with_mode(&net, &demands, &events, &cfg, TransientMode::Pde)
+            simulate_transient_with_mode(&net, &demands, &events, &cfg, TransientMode::Pde, None, None)
                 .expect("valve_close pde");
 
         assert!(
@@ -2035,7 +2227,7 @@ mod tests {
         }];
         let cfg = transient_cfg(600.0, 300.0);
         let result =
-            simulate_transient_with_mode(&net, &demands, &events, &cfg, TransientMode::Pde)
+            simulate_transient_with_mode(&net, &demands, &events, &cfg, TransientMode::Pde, None, None)
                 .expect("disconnecting valve should not bail");
         assert!(
             result.limitation.to_lowercase().contains("fallback"),
@@ -2066,6 +2258,8 @@ mod tests {
             &[],
             &cfg_fixed,
             TransientMode::Pde,
+            None,
+            None,
         )
         .expect("fixed-dt pde");
 
@@ -2077,6 +2271,8 @@ mod tests {
             &[],
             &cfg_adaptive,
             TransientMode::Pde,
+            None,
+            None,
         )
         .expect("adaptive pde");
 
@@ -2132,6 +2328,8 @@ mod tests {
             &[],
             &cfg,
             TransientMode::Pde,
+            None,
+            None,
         )
         .expect("pde transient");
 
@@ -2202,6 +2400,8 @@ mod tests {
             &[],
             &cfg,
             TransientMode::Pde,
+            None,
+            None,
         )
         .expect("pde transient");
 
@@ -2243,6 +2443,8 @@ mod tests {
             &[],
             &cfg,
             TransientMode::Pde,
+            None,
+            None,
         )
         .expect("pde transient");
 

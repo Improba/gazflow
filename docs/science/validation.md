@@ -241,8 +241,22 @@ Each transient step exposes nodal `flows` [Nm³/s] plus boundary-oriented fields
 
 - `flows_in` : upstream boundary flow (PDE: `flows[0]`; quasi-steady: equals `flows`)
 - `flows_out` : downstream boundary flow (PDE: `flows[n]`; quasi-steady: equals `flows`)
+- Optional request fields: `initial_pressures` (nodal CI, bar), `picard_relax` ∈ (0, 1]
 
 These support Qin/Qout mass-balance checks in the UI (TransientPlayer) and in pack tests T13.
+
+### TRR154 GasLib-11 (P11 smoke, not trajectory oracle)
+
+Corpus: `docs/testing/corpus/external/transient/gaslib-11/` (fetch via `./scripts/fetch_test_corpus.sh`). Module: `solver::transient::trr154`.
+
+| Test | Role | Engineering pass criterion |
+|------|------|------------------------------|
+| `test_trr154_gaslib11_pde_ic_from_state` | Nodal + spatial IC, CS catalogue projection | t=0 match (strict off CS; tolerant N01/N05) |
+| `test_trr154_gaslib11_consistent_bc_and_bcd` | ρ_* + BCD snapshots | Q_scn recovery; P band; P vs `.state` gap may be ~50 % (P² ≠ Euler) |
+| `test_trr154_gaslib11_pde_smoke_900s` | Multi-hour stability (CI gate) | Measured P ∈ [40, 62] bar; not vs TRR154 time series |
+| `test_trr154_gaslib11_pde_smoke_24h` (`#[ignore]`, prefer `--release`) | Long horizon | Measured P ∈ [40, 68] bar; `dt_s=60` + `adaptive_dt` + `picard_relax=0.25` |
+
+Outside validation-pack T1–T16 unless added later. Spatial pipe IC is Rust-only; HTTP/WS expose nodal CI + `picard_relax` only.
 
 ---
 
